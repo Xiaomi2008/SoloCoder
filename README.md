@@ -154,9 +154,9 @@ pip install -e ".[all]"
 1. **Download and install [LM Studio](https://lmstudio.ai/)**
 
 2. **Pull the Qwen3.5-35B-A3B model**:
-   - Open LM Studio
-   - Go to the search tab (magnifying glass icon)
-   - Search for `Qwen3.5-35B-A3B` or similar variant
+   - Open LM Studio and go to the search tab (magnifying glass icon)
+   - Search for `Qwen3.5-35B-A3B` or similar variants
+     - Note: `Qwen3.5-27b` offers slightly better performance but is slower and may only support context lengths up to 130K on 32GB GPUs
    - Download a quantized version (Q4_K_M or Q5_K_M recommended for balance of speed/quality)
 
 3. **Start the local server**:
