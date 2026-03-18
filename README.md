@@ -1,8 +1,8 @@
-# SoloCoder: A Claude Code-like CLI Coding Assistant Built Entirely with Local LLMs
+# SoloCoder
 
-**Local LLMs on a single GPU can perform coding jobs as well as many cloud-based models.**
+**A Claude Code-like CLI coding assistant that runs entirely on your local machine.**
 
-This repository itself is proof: the entire CLI coding assistant was created solely by a local LLM (Qwen3.5-35B-A3B via LM Studio) running on a single RTX 5090 GPU—no cloud APIs required.
+This project demonstrates that powerful coding agents don't need cloud APIs. Built with Qwen3.5-35B-A3B served through LM Studio, it proves a capable autonomous coding agent can run locally on consumer hardware like an RTX 5090—without depending on flagship cloud models.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -11,16 +11,16 @@ This repository itself is proof: the entire CLI coding assistant was created sol
 
 ## Overview
 
-**This project proves that local LLMs on a single GPU can perform coding tasks as well as many cloud-based models.**
+This project makes a simple but powerful claim: **local LLMs running on consumer-grade GPUs can handle real coding work as effectively as many cloud-hosted models.**
 
-The entire CLI coding assistant you see here was created solely by Qwen3.5-35B-A3B running locally via LM Studio on an RTX 5090—no cloud APIs, no external dependencies for the actual development work.
+The evidence speaks for itself—this entire CLI assistant was developed using only local inference. Qwen3.5-35B-A3B, served through LM Studio on an RTX 5090, wrote the code you're reading right now. No cloud APIs were involved in its creation.
 
-This setup provides:
+Beyond proving feasibility, this setup offers practical advantages:
 
-- **Full privacy**: Your code never leaves your machine
-- **Complete ownership**: No vendor lock-in, no usage quotas
-- **Cost control**: Zero per-token costs after hardware investment
-- **Offline capability**: Work without internet connectivity
+- **Full privacy**: Your codebase never leaves your machine
+- **Complete ownership**: No vendor lock-in or usage quotas
+- **Cost control**: Zero per-token costs after the initial hardware investment
+- **Offline capability**: Work reliably without internet connectivity
 
 ---
 
@@ -38,9 +38,11 @@ Most AI coding assistants today rely on cloud-hosted models (GPT-4, Claude, etc.
 | **Availability** | Dependent on internet/API uptime | Works offline, always available |
 | **Customization** | Fixed model capabilities | Choose any compatible model |
 
-### The Proof Is In the Code
+### Why This Matters
 
-This very repository was built entirely by Qwen3.5-35B-A3B running locally on a single RTX 5090 via LM Studio. No cloud APIs were used in its creation—the coding assistant itself wrote this codebase, demonstrating that local LLMs can handle real development work competently.
+Modern consumer GPUs have reached an inflection point. An RTX 5090 (or comparable hardware) can comfortably run 35B parameter models with quantized inference, delivering response times suitable for interactive coding assistance—all while keeping your codebase entirely local.
+
+This project is living proof: the entire CLI assistant was developed using only local inference. Qwen3.5-35B-A3B served through LM Studio on an RTX 5090 wrote this codebase from scratch, demonstrating that capable autonomous coding agents can run without relying on cloud-hosted flagship models.
 
 ---
 
