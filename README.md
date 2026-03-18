@@ -163,13 +163,45 @@ python cli_coder.py [OPTIONS]
 
 ```
 SoloCoder/
-├── cli_coder.py              # Main CLI entry point
+├── cli_coder.py              # Main CLI entry point with interactive session
 ├── openagent/                # Agent framework package
-│   ├── core/                 # Agent, tools, sessions, retry logic
-│   ├── provider/             # LLM providers (OpenAI, Anthropic, Google, Ollama)
-│   └── tools/                # Built-in tool implementations
+│   ├── __init__.py           # Public API exports
+│   ├── coder.py              # CoderAgent - specialized coding agent
+│   ├── core/                 # Core components
+│   │   ├── agent.py          # Agent class - main orchestrator
+│   │   ├── types.py          # Canonical types (Message, ToolUseBlock, etc.)
+│   │   ├── tool.py           # @tool decorator and registry
+│   │   ├── session.py        # Session management and persistence
+│   │   ├── logging.py        # Logging configuration
+│   │   ├── retry.py          # Retry logic with exponential backoff
+│   │   ├── display.py        # Output formatting and display
+│   │   ├── bash_manager.py   # Shell command execution manager
+│   │   ├── task_manager.py   # Task tracking and management
+│   │   └── skill_manager.py  # Skill/command system
+│   ├── provider/             # LLM providers
+│   │   ├── base.py           # BaseProvider ABC
+│   │   ├── converter.py      # Message conversion utilities
+│   │   ├── openai.py         # OpenAI-compatible API support
+│   │   ├── anthropic.py      # Anthropic/Claude support
+│   │   ├── google.py         # Google/Gemini support
+│   │   └── ollama.py         # Ollama local models support
+│   ├── tools/                # Built-in tools
+│   │   ├── __init__.py       # Tool exports
+│   │   └── builtin.py        # File, shell, search tool implementations
+│   └── mcp.py                # MCP client integration
 ├── tests/                    # Test suite
-└── examples/                 # Usage examples
+│   ├── test_agent.py         # Agent core tests
+│   ├── test_builtin_tools.py # Built-in tools tests
+│   ├── test_session.py       # Session persistence tests
+│   └── ...                   # Additional test files
+├── examples/                 # Usage examples
+│   ├── coder_example.py      # CoderAgent usage example
+│   ├── example.py            # Basic agent example
+│   └── ...                   # More examples
+├── dev_docs/                 # Development documentation
+│   └── architecture.md       # Architecture details
+├── CLAUDE.md                 # Project guidelines for Claude
+└── README.md                 # This file
 ```
 
 ---
