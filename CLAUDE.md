@@ -1,7 +1,8 @@
-# OpenAgent - Project Guidelines
+# SoloCoder - Project Guidelines
 
 ## Overview
-OpenAgent is a lightweight, async-first Python framework for building LLM-powered agents with pluggable provider support. It provides a unified interface across multiple LLM providers (OpenAI, Anthropic, Google Gemini, Ollama) with built-in tool execution, session persistence, MCP integration, and retry logic.
+
+SoloCoder is a Claude Code-style CLI coding assistant that runs entirely locally. It's built on **OpenAgent**, a lightweight async-first Python framework for building LLM-powered agents with pluggable provider support.
 
 **Python version:** 3.11+
 **Build system:** hatchling (PEP 517/518)
@@ -10,28 +11,39 @@ OpenAgent is a lightweight, async-first Python framework for building LLM-powere
 ## Repository Structure
 
 ```
-openagent/
-├── __init__.py                  # Public API exports
-├── core/
-│   ├── agent.py                 # Agent class — main orchestrator (run loop, tool dispatch)
-│   ├── types.py                 # Canonical types: Message, TextBlock, ToolUseBlock, ToolResultBlock, ToolDef
-│   ├── tool.py                  # @tool decorator, ToolRegistry, parameter schema generation
-│   ├── session.py               # Session — message history, save/load JSON persistence
-│   ├── logging.py               # AgentLogger, configure_logging
-│   └── retry.py                 # Exponential backoff retry decorator with provider-specific exceptions
-├── provider/
-│   ├── base.py                  # BaseProvider ABC (chat, stream methods)
-│   ├── converter.py             # MessageConverterMixin — abstract converter pattern
-│   ├── anthropic.py             # AnthropicProvider (Claude models)
-│   ├── openai.py                # OpenAIProvider (GPT models)
-│   ├── google.py                # GoogleProvider (Gemini models)
-│   └── ollama.py                # OllamaProvider (local models)
-├── tools/                       # Built-in tool implementations
-└── mcp.py                       # McpClient — MCP stdio/SSE transport integration
-
-tests/                           # Test suite location
-examples/                        # Usage examples (multi-provider, MCP, streaming)
-cli_coder.py                     # Coder Agent CLI with interactive features
+SoloCoder/
+├── cli_coder.py              # Main CLI entry point with interactive session
+├── openagent/                # Agent framework package
+│   ├── __init__.py           # Public API exports
+│   ├── coder.py              # CoderAgent - specialized coding agent
+│   ├── core/                 # Core components
+│   │   ├── agent.py          # Agent class — main orchestrator (run loop, tool dispatch)
+│   │   ├── types.py          # Canonical types: Message, TextBlock, ToolUseBlock, etc.
+│   │   ├── tool.py           # @tool decorator, ToolRegistry, parameter schema generation
+│   │   ├── session.py        # Session — message history, save/load JSON persistence
+│   │   ├── logging.py        # AgentLogger, configure_logging
+│   │   ├── retry.py          # Exponential backoff retry logic
+│   │   ├── display.py        # Output formatting and display utilities
+│   │   ├── bash_manager.py   # Shell command execution manager
+│   │   ├── task_manager.py   # Task tracking and management
+│   │   └── skill_manager.py  # Skill/command system
+│   ├── provider/             # LLM providers
+│   │   ├── base.py           # BaseProvider ABC (chat, stream methods)
+│   │   ├── converter.py      # MessageConverterMixin — abstract converter pattern
+│   │   ├── openai.py         # OpenAIProvider (GPT models, LM Studio)
+│   │   ├── anthropic.py      # AnthropicProvider (Claude models)
+│   │   ├── google.py         # GoogleProvider (Gemini models)
+│   │   └── ollama.py         # OllamaProvider (local models)
+│   ├── tools/                # Built-in tool implementations
+│   │   ├── __init__.py       # Tool exports
+│   │   └── builtin.py        # File, shell, search tool implementations
+│   └── mcp.py                # McpClient — MCP stdio/SSE transport integration
+├── tests/                    # Test suite location
+├── examples/                 # Usage examples (multi-provider, MCP, streaming)
+├── dev_docs/                 # Development documentation
+│   └── architecture.md       # Architecture details
+├── CLAUDE.md                 # This file — project guidelines for Claude
+└── README.md                 # User-facing documentation
 ```
 
 ## Development Commands
