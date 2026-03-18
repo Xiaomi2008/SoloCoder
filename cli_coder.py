@@ -165,12 +165,12 @@ async def run_interactive_session(coder) -> None:
     print(f"\n{dim('Working directory:')} {coder.working_dir}")
     print(f"{dim('Max turns per request:')} {coder.max_turns}")
     print("\nType 'quit' or 'exit' to stop.")
-    print("Use '@' prefix for quick commands:")
-    print("  @list     - List files in current directory")
-    print("  @read     - Preview file contents before editing")
-    print("  @todo     - Show task list")
-    print("  @model    - Change LLM model mid-session (e.g., @model claude-sonnet-4)")
-    print("  @clear    - Clear conversation history")
+    print("Use '/' prefix for quick commands:")
+    print("  /list     - List files in current directory")
+    print("  /read     - Preview file contents before editing")
+    print("  /todo     - Show task list")
+    print("  /model    - Change LLM model mid-session (e.g., /model claude-sonnet-4)")
+    print("  /clear    - Clear conversation history")
     print(cyan("=" * 60) + "\n")
 
     try:
@@ -187,12 +187,12 @@ async def run_interactive_session(coder) -> None:
                 continue
 
             # Handle quick commands
-            if user_input.startswith("@"):
+            if user_input.startswith("/"):
                 parts = user_input.split(maxsplit=1)
                 cmd = parts[0].lower()
                 arg = parts[1] if len(parts) > 1 else ""
 
-                if cmd in ("@list", "@ls"):
+                if cmd in ("/list", "/ls"):
                     from openagent.tools import bash
                     result = await coder.bash_manager.execute_command(
                         (await coder.bash_manager.start_session()).split("-")[0],
@@ -200,10 +200,10 @@ async def run_interactive_session(coder) -> None:
                     )
                     print(f"\n{bold('Coder: ')}{result}")
 
-                elif cmd == "@read":
+                elif cmd == "/read":
                     """Preview file contents using the read tool."""
                     if not arg:
-                        print("\n" + bold("Coder: ") + "Usage: @read <filepath>")
+                        print("\n" + bold("Coder: ") + "Usage: /read <filepath>")
                         continue
 
                     from openagent.tools import read
@@ -213,12 +213,12 @@ async def run_interactive_session(coder) -> None:
                     except Exception as e:
                         print(f"\n{red('Coder: ')}Error reading file: {e}")
 
-                elif cmd == "@todo":
+                elif cmd == "/todo":
                     from openagent.tools import todo_list
                     result = todo_list()
                     print(f"\n{result}")
 
-                elif cmd == "@model":
+                elif cmd == "/model":
                     """Change LLM model mid-session."""
                     if not arg:
                         # Show current model info
@@ -275,17 +275,17 @@ async def run_interactive_session(coder) -> None:
                     except Exception as e:
                         print(f"\n{red('Coder: ')}Error switching model: {e}")
 
-                elif cmd in ("@clear", "@reset"):
+                elif cmd in ("/clear", "/reset"):
                     coder.session.clear()
                     turn_counter = 0
                     print("\n" + bold("Coder: ") + "Conversation history cleared.")
 
-                elif cmd in ("@quit", "@exit"):
+                elif cmd in ("/quit", "/exit"):
                     print("Goodbye!")
                     break
 
                 else:
-                    print(f"Unknown command: {cmd}. Use @list, @read, @todo, @model, or @clear")
+                    print(f"Unknown command: {cmd}. Use /list, /read, /todo, /model, or /clear")
                     continue
 
             # Handle quit/exit commands
