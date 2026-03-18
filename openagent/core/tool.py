@@ -6,6 +6,7 @@ import json
 from typing import Any, Callable, get_type_hints
 from dataclasses import dataclass
 
+from .retry import with_retry
 from .types import ToolDef, ToolResultBlock, ToolUseBlock
 
 PYTHON_TYPE_TO_JSON: dict[type, str] = {
@@ -50,11 +51,38 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    retry: bool = False,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
 ) -> Any:
+    """Decorator to register a function as a tool.
+
+    Args:
+        func: The function to decorate (if not using keyword args only)
+        name: Optional custom name for the tool
+        description: Optional custom description for the tool
+        retry: If True, apply automatic retry logic with exponential backoff
+        max_retries: Maximum retry attempts (default: 3)
+        base_delay: Initial delay in seconds for retries (default: 1.0)
+
+    Returns:
+        Decorated function with tool metadata
+
+    Example:
+        @tool(retry=True, max_retries=5)
+        def read_file(path: str) -> str:
+            \"\"\"Read a file with automatic retry on transient failures.\"\"\"
+            ...
+    """
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         fn._tool_name = name or fn.__name__  # type: ignore[attr-defined]
         fn._tool_description = description or fn.__doc__ or ""  # type: ignore[attr-defined]
         fn._tool_parameters = _build_parameters_schema(fn)  # type: ignore[attr-defined]
+
+        # Apply retry decorator if requested
+        if retry:
+            fn = with_retry(max_retries=max_retries, base_delay=base_delay)(fn)  # type: ignore[assignment]
+
         return fn
 
     if func is not None:
@@ -126,11 +154,18 @@ class ToolRegistry:
             )
         try:
             func = entry.func
+
+            # Check if the function has retry logic applied via @with_retry decorator
+            # The decorator wraps the function and adds _retry_config attribute
+            has_retry = hasattr(func, '_retry_config') or (
+                hasattr(func, '__wrapped__') and hasattr(func.__wrapped__, '_retry_config')
+            )
+
             if asyncio.iscoroutinefunction(func):
                 result = await func(**tool_call.arguments)
             else:
                 result = func(**tool_call.arguments)
-            
+
             # Ensure result is a string (or convert to JSON string if not)
             content = result if isinstance(result, str) else json.dumps(result)
             return ToolResultBlock(
@@ -138,6 +173,7 @@ class ToolRegistry:
                 content=content,
             )
         except Exception as e:
+            # If retry was configured but exhausted, the exception will propagate here
             return ToolResultBlock(
                 tool_use_id=tool_call.id,
                 content=f"Error: {e}",

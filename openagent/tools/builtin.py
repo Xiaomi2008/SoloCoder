@@ -20,7 +20,7 @@ from ..core.tool import tool
 # File Operations Tools
 # ============================================================================
 
-@tool
+@tool(retry=True, max_retries=3, base_delay=0.5)
 def read(
     path: str,
     line_start: int | None = None,
@@ -80,7 +80,7 @@ def read(
         return f"Error reading file: {e}"
 
 
-@tool
+@tool(retry=True, max_retries=3, base_delay=0.5)
 def write(
     path: str,
     content: str,
@@ -118,7 +118,7 @@ def write(
         return f"Error writing file: {e}"
 
 
-@tool
+@tool(retry=True, max_retries=3, base_delay=0.5)
 def edit(
     path: str,
     find: str,
@@ -430,7 +430,7 @@ def format_grep_results(results: list[dict]) -> str:
 # Shell & Process Management Tools
 # ============================================================================
 
-@tool
+@tool(retry=True, max_retries=3, base_delay=0.5)
 def bash(
     command: str,
     timeout: int | None = None,
@@ -883,6 +883,255 @@ def slash_command(
 
 
 # ============================================================================
+# Git Integration Tools
+# ============================================================================
+
+@tool
+def git_status() -> str:
+    """Get the current git status of the repository.
+
+    Returns:
+        Formatted output showing modified, staged, and untracked files
+    """
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return "Error: Not a git repository or git command failed."
+
+        lines = result.stdout.strip().split('\n')
+        if not lines or (len(lines) == 1 and not lines[0]):
+            return "Working tree is clean. No changes staged for commit."
+
+        modified = []
+        staged = []
+        untracked = []
+
+        for line in lines:
+            if not line.strip():
+                continue
+            # Format: XX YYY file_path
+            # XX = status (modified, added, deleted, etc.)
+            # YYY = secondary status
+            status = line[:3]
+            filepath = line[3:].strip()
+
+            if status[0] == '?':
+                untracked.append(filepath)
+            elif status[0] in ('M', 'A', 'D', 'R', 'C'):
+                staged.append(filepath)
+            else:
+                modified.append(filepath)
+
+        output = []
+        if staged:
+            output.append("\nStaged changes:")
+            for f in staged:
+                output.append(f"  M {f}")
+        if modified:
+            output.append("\nModified (unstaged):")
+            for f in modified:
+                output.append(f"  M {f}")
+        if untracked:
+            output.append("\nUntracked files:")
+            for f in untracked:
+                output.append(f"  ? {f}")
+
+        return '\n'.join(output) + "\n"
+    except subprocess.TimeoutExpired:
+        return "Error: git status command timed out."
+    except Exception as e:
+        return f"Error getting git status: {e}"
+
+
+@tool
+def git_diff(file_path: str | None = None, staged: bool = False) -> str:
+    """Show diff for files in the repository.
+
+    Args:
+        file_path: Optional specific file to show diff for. If None, shows all changes.
+        staged: If True, show diff of staged changes only.
+
+    Returns:
+        Git diff output with color-coded additions/deletions
+    """
+    try:
+        import subprocess
+        cmd = ["git", "diff"]
+        if staged:
+            cmd = ["git", "diff", "--staged"]
+        if file_path:
+            cmd.extend(["--", file_path])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return "Error: git diff command failed."
+
+        output = result.stdout.strip()
+        if not output:
+            file_msg = f" in '{file_path}'" if file_path else ""
+            scope = "staged changes" if staged else "changes"
+            return f"No {scope}{file_msg} to display."
+
+        # Format diff with line numbers and color hints
+        lines = output.split('\n')
+        formatted = []
+        current_line_num = None
+
+        for line in lines:
+            if not line:
+                continue
+            if line.startswith('@@'):
+                # Hunk header - bold cyan
+                formatted.append(f"\033[1;36m{line}\033[0m")
+                # Extract starting line number
+                import re
+                match = re.search(r'-\d+,', line)
+                if match:
+                    current_line_num = int(match.group()[1:])
+            elif line.startswith('+') and not line.startswith('+++'):
+                # Addition - green with line number
+                num_str = str(current_line_num) if current_line_num else ""
+                formatted.append(f"\033[32m{num_str} {line[1:]}\033[0m")
+                if current_line_num is not None:
+                    current_line_num += 1
+            elif line.startswith('-') and not line.startswith('---'):
+                # Deletion - red with line number
+                num_str = str(current_line_num) if current_line_num else ""
+                formatted.append(f"\033[31m{num_str} {line[1:]}\033[0m")
+                if current_line_num is not None:
+                    current_line_num += 1
+            elif line.startswith('diff') or line.startswith('index') or '+++' in line or '---' in line:
+                # File headers - dim white
+                formatted.append(f"\033[2;37m{line}\033[0m")
+            else:
+                # Context - dim with line number
+                num_str = str(current_line_num) if current_line_num else ""
+                formatted.append(f"\033[2m{num_str} {line}\033[0m")
+                if current_line_num is not None:
+                    current_line_num += 1
+
+        return '\n'.join(formatted) + "\n"
+    except subprocess.TimeoutExpired:
+        return "Error: git diff command timed out."
+    except Exception as e:
+        return f"Error getting git diff: {e}"
+
+
+@tool
+def git_commit(
+    message: str,
+    amend: bool = False,
+    allow_empty: bool = False,
+) -> str:
+    """Create a new commit with the given message.
+
+    Args:
+        message: Commit message
+        amend: If True, amend the last commit instead of creating a new one
+        allow_empty: If True, allow empty commits (useful for hooks)
+
+    Returns:
+        Result message with commit hash and summary
+    """
+    try:
+        import subprocess
+
+        cmd = ["git", "commit", "-m", message]
+        if amend:
+            cmd.append("--amend")
+        if allow_empty:
+            cmd.append("--allow-empty")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or "git commit failed."
+            # Check for common cases
+            if "nothing to commit" in error_msg.lower():
+                return "Error: No changes to commit. Use git status to see uncommitted changes."
+            elif "amend" in error_msg.lower() and "no previous commit" in error_msg.lower():
+                return "Error: Cannot amend - no previous commit. Use --no-amend flag or create initial commit first."
+            return f"Error: {error_msg}"
+
+        # Parse output for commit hash
+        lines = result.stdout.strip().split('\n')
+        summary_line = next((l for l in lines if '[' in l and ']' in l), None)
+
+        if summary_line:
+            return f"Committed:\n  {summary_line}"
+        else:
+            return f"Successfully created commit.\n{result.stdout.strip()}"
+    except subprocess.TimeoutExpired:
+        return "Error: git commit command timed out."
+    except Exception as e:
+        return f"Error creating commit: {e}"
+
+
+@tool
+def git_log(
+    n: int = 10,
+    oneline: bool = True,
+) -> str:
+    """Show recent commit history.
+
+    Args:
+        n: Number of commits to show (default: 10)
+        oneline: If True, show one line per commit; otherwise full format
+
+    Returns:
+        Formatted commit log
+    """
+    try:
+        import subprocess
+
+        cmd = ["git", "log"]
+        if oneline:
+            cmd.extend(["-n", str(n), "--oneline"])
+        else:
+            cmd.extend(["-n", str(n)])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return "Error: git log command failed."
+
+        output = result.stdout.strip()
+        if not output:
+            return "No commits found in this repository."
+
+        # Add line numbers to each commit for easy reference
+        lines = output.split('\n')
+        numbered = []
+        for i, line in enumerate(lines, 1):
+            numbered.append(f"  {i}. {line}")
+
+        return '\n'.join(numbered) + f"\n\nShowing last {min(n, len(lines))} commit(s)."
+    except subprocess.TimeoutExpired:
+        return "Error: git log command timed out."
+    except Exception as e:
+        return f"Error getting git log: {e}"
+
+
+# ============================================================================
 # Export all tools
 # ============================================================================
 
@@ -902,6 +1151,11 @@ __all__ = [
     # Web & search
     "web_search",
     "web_fetch",
+    # Git integration
+    "git_status",
+    "git_diff",
+    "git_commit",
+    "git_log",
     # Agent orchestration
     "task",
     # Planning & workflow

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import inspect
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
@@ -41,14 +42,53 @@ def with_retry(
         retryable_exceptions: Tuple of exception types to retry on
 
     Returns:
-        Decorator that wraps async functions with retry behavior
+        Decorator that wraps functions with retry behavior (supports both sync and async)
     """
     if retryable_exceptions is None:
         retryable_exceptions = DEFAULT_RETRYABLE_EXCEPTIONS
 
     def decorator(func: F) -> F:
+        is_async = asyncio.iscoroutinefunction(func)
+
         @wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            """Sync wrapper for synchronous functions."""
+            last_exception: Exception | None = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exception = e
+
+                    if attempt == max_retries:
+                        logger.error(
+                            f"All {max_retries} retries exhausted for {func.__name__}: {e}"
+                        )
+                        raise
+
+                    # Calculate delay with exponential backoff
+                    delay = min(base_delay * (exponential_base**attempt), max_delay)
+
+                    # Add jitter if enabled (±25% of delay)
+                    if jitter:
+                        delay = delay * (0.75 + random.random() * 0.5)
+
+                    logger.warning(
+                        f"Retry {attempt + 1}/{max_retries} for {func.__name__} "
+                        f"after {delay:.2f}s: {e}"
+                    )
+                    # Use time.sleep for sync functions to avoid mixing event loops
+                    import time
+                    time.sleep(delay)
+
+            if last_exception:
+                raise last_exception
+            raise RuntimeError("Unexpected retry loop exit")
+
+        @wraps(func)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            """Async wrapper for asynchronous functions."""
             last_exception: Exception | None = None
 
             for attempt in range(max_retries + 1):
@@ -76,12 +116,12 @@ def with_retry(
                     )
                     await asyncio.sleep(delay)
 
-            # Should not reach here, but satisfy type checker
             if last_exception:
                 raise last_exception
             raise RuntimeError("Unexpected retry loop exit")
 
-        return wrapper  # type: ignore[return-value]
+        # Return the appropriate wrapper based on function type
+        return sync_wrapper if not is_async else async_wrapper  # type: ignore[return-value]
 
     return decorator
 

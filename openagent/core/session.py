@@ -18,8 +18,16 @@ from .types import (
 
 @dataclass
 class Session:
+    """Manages conversation state and persistence.
+
+    Supports automatic context compression when message count exceeds threshold,
+    which helps manage token usage in long conversations.
+    """
+
     system_prompt: str = ""
     _messages: list[Message] = field(default_factory=list)
+    max_messages: int = 50  # Maximum messages before compression kicks in
+    summary_threshold: int = 30  # Start summarizing after this many messages
 
     @property
     def messages(self) -> list[Message]:
@@ -28,15 +36,105 @@ class Session:
     def add(self, role: Literal["user", "assistant", "system"], content: str) -> Message:
         msg = text_message(role, content)
         self._messages.append(msg)
+        # Check if we need to compress after adding a message
+        self._maybe_compress()
         return msg
 
     def add_message(self, message: Message) -> None:
         self._messages.append(message)
+        # Check if we need to compress after adding a message
+        self._maybe_compress()
 
     def add_tool_results(self, results: list[ToolResultBlock]) -> Message:
         msg = tool_result_message(results)
         self._messages.append(msg)
         return msg
+
+    def _maybe_compress(self) -> None:
+        """Compress messages if they exceed the threshold."""
+        if len(self._messages) <= self.summary_threshold:
+            return
+
+        # Compress when we exceed max_messages
+        if len(self._messages) > self.max_messages:
+            self._compress_old_messages()
+
+    def _compress_old_messages(self) -> None:
+        """Compress older messages by summarizing them.
+
+        Keeps the system prompt, first few messages (for context), and recent messages.
+        Older tool calls and their results are summarized into a single summary message.
+        """
+        if len(self._messages) <= 5:
+            return  # Can't compress further
+
+        # Keep: system prompt + first 2 user-assistant pairs + last 3 messages
+        keep_count = min(7, len(self._messages) - 3)
+
+        # Messages to summarize (everything between kept start and end)
+        messages_to_summarize = self._messages[keep_count:-3] if len(self._messages) > 10 else []
+
+        if not messages_to_summarize:
+            return
+
+        # Create a summary of the summarized messages
+        summary_content = self._create_summary(messages_to_summarize)
+
+        # Keep system prompt, initial context, summary, and recent messages
+        new_messages = (
+            self._messages[:keep_count] +
+            [Message(role="assistant", content=summary_content)] +
+            self._messages[-3:] if len(self._messages) > 3 else []
+        )
+
+        self._messages = new_messages
+
+    def _create_summary(self, messages: list[Message]) -> str:
+        """Create a summary of the given messages.
+
+        Args:
+            messages: Messages to summarize (typically tool calls and results)
+
+        Returns:
+            Summary text describing what happened in these messages
+        """
+        if not messages:
+            return "No recent activity."
+
+        # Count operations by type
+        operations = {}
+        for msg in messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ToolUseBlock):
+                        name = block.name
+                        operations[name] = operations.get(name, 0) + 1
+
+        # Generate summary text
+        parts = ["\n\n--- Conversation Summary ---"]
+
+        if operations:
+            parts.append("\nRecent operations:")
+            for op_name, count in sorted(operations.items(), key=lambda x: -x[1]):
+                parts.append(f"  • {op_name}: {count} time(s)")
+
+        # Add file changes summary
+        files_changed = set()
+        for msg in messages:
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ToolUseBlock) and block.name in ('write', 'edit'):
+                        files_changed.add(block.arguments.get('file') or block.arguments.get('path'))
+
+        if files_changed:
+            parts.append(f"\nFiles modified: {len(files_changed)}")
+            for f in list(files_changed)[:5]:  # Limit to 5 files
+                parts.append(f"  • {f}")
+            if len(files_changed) > 5:
+                parts.append(f"  ... and {len(files_changed) - 5} more")
+
+        parts.append("\n--- End Summary ---\n")
+        return "".join(parts)
 
     def clear(self) -> None:
         self._messages.clear()
