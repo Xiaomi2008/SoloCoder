@@ -124,9 +124,10 @@ class Agent:
         task_manager: TaskManager | None = None,
         skill_manager: SkillManager | None = None,
         mcp_client: Any | None = None,  # MCP client for tool discovery
+        max_messages: int | None = None,  # Max messages before compression kicks in
     ) -> None:
         self.provider = provider
-        self.session = Session(system_prompt=system_prompt)
+        self.session = Session(system_prompt=system_prompt, max_messages=max_messages)
         self.max_turns = max_turns
         self.tool_registry = ToolRegistry()
         self._logger = AgentLogger(agent_id)

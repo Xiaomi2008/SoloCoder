@@ -26,6 +26,10 @@ from .builtin import (
     edit,
     enter_plan_mode,
     exit_plan_mode,
+    git_commit,
+    git_diff,
+    git_log,
+    git_status,
     glob,
     grep,
     kill_shell,
@@ -58,6 +62,11 @@ __all__ = [
     # Web & search (fully implemented)
     "web_search",
     "web_fetch",
+    # Git integration (fully implemented)
+    "git_status",
+    "git_diff",
+    "git_commit",
+    "git_log",
     # Agent orchestration (requires agent integration)
     "task",
     # Planning & workflow with task manager

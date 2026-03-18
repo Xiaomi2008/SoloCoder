@@ -1,8 +1,8 @@
-# SoloCoder: Local AI Coding Agent
+# SoloCoder
 
-**Build Claude Code-like coding agents with fully local LLMs on a single GPU.**
+**A Claude Code-like CLI coding assistant that runs entirely on your local machine.**
 
-A capable autonomous coding agent running entirely locally—powered by Qwen3.5-35B-A3B via LM Studio, without relying on cloud-hosted flagship models.
+This project demonstrates that powerful coding agents don't need cloud APIs. Built with Qwen3.5-35B-A3B served through LM Studio, it proves a capable autonomous coding agent can run locally on consumer hardware like an RTX 5090—without depending on flagship cloud models.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -11,15 +11,16 @@ A capable autonomous coding agent running entirely locally—powered by Qwen3.5-
 
 ## Overview
 
-SoloCoder demonstrates that **powerful autonomous coding agents don't require cloud APIs**. By leveraging modern local LLM inference through LM Studio, you can run a fully functional coding assistant on a single consumer GPU—specifically optimized for machines like the RTX 5090.
+This project makes a simple but powerful claim: **local LLMs running on consumer-grade GPUs can handle real coding work as effectively as many cloud-hosted models.**
 
-The backbone model is **Qwen3.5-35B-A3B**, served locally via LM Studio's OpenAI-compatible API. This setup provides:
+The evidence speaks for itself: this entire CLI assistant was developed using only local inference. Built with ClaudeCode-style workflows and Qwen3.5-35B-A3B served through LM Studio on a single RTX 5090, it wrote the code you're reading right now—no cloud APIs involved.
 
-- **Full privacy**: Your code never leaves your machine
-- **Complete ownership**: No vendor lock-in, no usage quotas
-- **Cost control**: Zero per-token costs after hardware investment
-- **Offline capability**: Work without internet connectivity
-- **Customizable models**: Swap in any compatible local model as needed
+Beyond proving feasibility, this setup offers practical advantages:
+
+- **Full privacy**: Your codebase never leaves your machine
+- **Complete ownership**: No vendor lock-in or usage quotas
+- **Cost control**: Zero per-token costs after the initial hardware investment
+- **Offline capability**: Work reliably without internet connectivity
 
 ---
 
@@ -37,11 +38,11 @@ Most AI coding assistants today rely on cloud-hosted models (GPT-4, Claude, etc.
 | **Availability** | Dependent on internet/API uptime | Works offline, always available |
 | **Customization** | Fixed model capabilities | Choose any compatible model |
 
-### The Local-First Alternative
+### Why This Matters
 
-Modern consumer GPUs have reached a tipping point. An RTX 5090 (or similar high-end GPU) can comfortably run 35B parameter models with quantized inference, delivering response times suitable for interactive coding assistance—all while keeping your codebase entirely local.
+Modern consumer GPUs have reached an inflection point. An RTX 5090 (or comparable hardware) can comfortably run 35B parameter models with quantized inference, delivering response times suitable for interactive coding assistance—all while keeping your codebase entirely local.
 
-SoloCoder proves this architecture works in practice: it's a fully functional coding agent that reads files, writes code, executes shell commands, searches codebases, and manages complex multi-turn development tasks—without ever calling an external API.
+This project is living proof: the entire CLI assistant was developed using only local inference. Qwen3.5-35B-A3B served through LM Studio on an RTX 5090 wrote this codebase from scratch, demonstrating that capable autonomous coding agents can run without relying on cloud-hosted flagship models.
 
 ---
 
@@ -74,7 +75,7 @@ SoloCoder proves this architecture works in practice: it's a fully functional co
 | Component | Purpose |
 |-----------|---------|
 | **OpenAgent** | Async-first agent framework with pluggable providers, tool registry, and session persistence |
-| **Coder Agent** | Specialized agent for code editing tasks with file operations, shell execution, and task tracking |
+| **Coder Agent** | Specialized agent for coding tasks with file operations, shell execution, and task tracking build on top of **OpenAgent**|
 | **LM Studio** | Local LLM server providing OpenAI-compatible API endpoint |
 | **Qwen3.5-35B-A3B** | Backbone model serving as the "brain" of the coding agent |
 
@@ -153,15 +154,16 @@ pip install -e ".[all]"
 1. **Download and install [LM Studio](https://lmstudio.ai/)**
 
 2. **Pull the Qwen3.5-35B-A3B model**:
-   - Open LM Studio
-   - Go to the search tab (magnifying glass icon)
-   - Search for `Qwen3.5-35B-A3B` or similar variant
+   - Open LM Studio and go to the search tab (magnifying glass icon)
+   - Search for `Qwen3.5-35B-A3B` or similar variants
+     - Note: `Qwen3.5-27b` offers slightly better performance but is slower and may only support context lengths up to 130K on 32GB GPUs
    - Download a quantized version (Q4_K_M or Q5_K_M recommended for balance of speed/quality)
 
 3. **Start the local server**:
    - Go to the server tab (power plug icon)
    - Select your downloaded model
    - Choose a GPU layer count (max out if you have VRAM, otherwise ~20-28 layers for 35B models on 24GB)
+   - **Context length**: Set to at least 64K; we recommend 200K+ for complex coding tasks
    - Click "Start Server"
    - Note the local URL (typically `http://localhost:1234/v1`)
 
