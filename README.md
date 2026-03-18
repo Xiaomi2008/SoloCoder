@@ -13,7 +13,7 @@ This project demonstrates that powerful coding agents don't need cloud APIs. Bui
 
 This project makes a simple but powerful claim: **local LLMs running on consumer-grade GPUs can handle real coding work as effectively as many cloud-hosted models.**
 
-The evidence speaks for itself—this entire CLI assistant was developed using only local inference. Qwen3.5-35B-A3B, served through LM Studio on an RTX 5090, wrote the code you're reading right now. No cloud APIs were involved in its creation.
+The evidence speaks for itself: this entire CLI assistant was developed using only local inference. Built with ClaudeCode-style workflows and Qwen3.5-35B-A3B served through LM Studio on a single RTX 5090, it wrote the code you're reading right now—no cloud APIs involved.
 
 Beyond proving feasibility, this setup offers practical advantages:
 
@@ -75,7 +75,7 @@ This project is living proof: the entire CLI assistant was developed using only 
 | Component | Purpose |
 |-----------|---------|
 | **OpenAgent** | Async-first agent framework with pluggable providers, tool registry, and session persistence |
-| **Coder Agent** | Specialized agent for code editing tasks with file operations, shell execution, and task tracking |
+| **Coder Agent** | Specialized agent for coding tasks with file operations, shell execution, and task tracking build on top of **OpenAgent**|
 | **LM Studio** | Local LLM server providing OpenAI-compatible API endpoint |
 | **Qwen3.5-35B-A3B** | Backbone model serving as the "brain" of the coding agent |
 
@@ -163,6 +163,7 @@ pip install -e ".[all]"
    - Go to the server tab (power plug icon)
    - Select your downloaded model
    - Choose a GPU layer count (max out if you have VRAM, otherwise ~20-28 layers for 35B models on 24GB)
+   - **Context length**: Set to at least 64K; we recommend 200K+ for complex coding tasks
    - Click "Start Server"
    - Note the local URL (typically `http://localhost:1234/v1`)
 
