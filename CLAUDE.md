@@ -1,11 +1,11 @@
-# CLAUDE.md — Open-Agent
+# OpenAgent - Project Guidelines
 
-## Project Overview
-
-Open-Agent (`openagent`) is a lightweight, async-first Python framework for building LLM-powered agents with pluggable provider support. It provides a unified interface across multiple LLM providers (OpenAI, Anthropic, Google Gemini, Ollama) with built-in tool execution, session persistence, MCP integration, and retry logic.
+## Overview
+OpenAgent is a lightweight, async-first Python framework for building LLM-powered agents with pluggable provider support. It provides a unified interface across multiple LLM providers (OpenAI, Anthropic, Google Gemini, Ollama) with built-in tool execution, session persistence, MCP integration, and retry logic.
 
 **Python version:** 3.11+
 **Build system:** hatchling (PEP 517/518)
+**Package manager:** uv (recommended for all Python operations)
 
 ## Repository Structure
 
@@ -26,71 +26,46 @@ openagent/
 │   ├── openai.py                # OpenAIProvider (GPT models)
 │   ├── google.py                # GoogleProvider (Gemini models)
 │   └── ollama.py                # OllamaProvider (local models)
+├── tools/                       # Built-in tool implementations
 └── mcp.py                       # McpClient — MCP stdio/SSE transport integration
 
-tests/
-├── conftest.py                  # Shared fixtures (MockProvider, response helpers)
-├── test_agent.py                # Agent initialization, tool calls, parallel execution, max_turns
-├── test_tool.py                 # @tool decorator, ToolRegistry, schema generation, async tools
-├── test_session.py              # Session management, serialization
-├── test_types.py                # Message types and conversions
-└── test_ollama_provider.py      # Ollama provider tests
-
+tests/                           # Test suite location
 examples/                        # Usage examples (multi-provider, MCP, streaming)
+cli_coder.py                     # Coder Agent CLI with interactive features
 ```
-
-## Architecture
-
-### Canonical Message Format
-
-All providers convert to/from a unified `Message` type (`core/types.py`) with typed content blocks:
-- `TextBlock` — plain text content
-- `ToolUseBlock` — LLM requesting a tool call (with `name`, `arguments`, `id`)
-- `ToolResultBlock` — result returned to LLM (with `tool_use_id`, `content`, `is_error`)
-
-### Provider Pattern
-
-Each provider extends `BaseProvider` and implements `async chat()`. Providers use a `MessageConverterMixin` to translate between the canonical `Message` format and provider-specific API formats. Adding a new provider means:
-1. Subclass `BaseProvider`
-2. Implement a converter mixin
-3. Handle tool definitions and tool results in the provider's format
-
-### Agent Loop
-
-`Agent._loop()` runs a turn-based loop (up to `max_turns`):
-1. Send messages to provider via `provider.chat()`
-2. If response has tool calls, execute them in parallel via `asyncio.gather()`
-3. Append tool results to session and repeat
-4. If no tool calls, return the text response
-
-### Tool System
-
-- Use `@tool` decorator to mark functions as tools (supports sync and async)
-- `ToolRegistry` manages registration and execution
-- Parameter schemas are auto-generated from Python type hints and function signatures
-- Tools return strings; non-string results are JSON-serialized
-
-### MCP Integration
-
-`McpClient` connects to MCP servers (stdio or SSE transport), discovers tools, and wraps them as callable functions compatible with the tool registry.
 
 ## Development Commands
 
+### Python Package Management (uv recommended)
+
 ```bash
-# Install with all providers and dev dependencies
+# Install the package with all dependencies
+uv pip install -e ".[all,dev]"
+
+# Run tests using uv
+uv run pytest
+
+# Run a specific test file
+uv run pytest tests/test_agent.py
+
+# Run a specific test
+uv run pytest tests/test_agent.py::test_agent_run
+
+# Add new dependency
+uv add package-name
+
+# Add dev dependency
+uv add --group dev package-name
+```
+
+### Alternative: Using pip directly
+
+```bash
+# Install the package with all dependencies
 pip install -e ".[all,dev]"
 
 # Run tests
 pytest
-
-# Run tests with verbose output
-pytest -v
-
-# Run a specific test file
-pytest tests/test_agent.py
-
-# Run a specific test
-pytest tests/test_agent.py::test_agent_run
 ```
 
 ## Key Conventions
@@ -112,7 +87,8 @@ pytest tests/test_agent.py::test_agent_run
 | `anthropic` | Anthropic API client |
 | `google-genai` | Google Gemini (optional) |
 | `ollama` | Ollama local models (optional) |
-| `pytest` / `pytest-asyncio` | Testing (dev) |
+| `duckduckgo-search`, `httpx` | Web search capabilities (optional) |
+| `pytest`, `pytest-asyncio` | Testing (dev) |
 
 ## Common Patterns
 
