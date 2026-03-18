@@ -1,494 +1,359 @@
-# OpenAgent
+# SoloCoder: Local AI Coding Agent
+
+**Build Claude Code-like coding agents with fully local LLMs on a single GPU.**
+
+A capable autonomous coding agent running entirely locally—powered by Qwen3.5-35B-A3B via LM Studio, without relying on cloud-hosted flagship models.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/openagent.svg)](https://pypi.org/project/openagent/)
 
-A lightweight, async-first agent framework with pluggable LLM providers and comprehensive built-in tools.
+---
+
+## Overview
+
+SoloCoder demonstrates that **powerful autonomous coding agents don't require cloud APIs**. By leveraging modern local LLM inference through LM Studio, you can run a fully functional coding assistant on a single consumer GPU—specifically optimized for machines like the RTX 5090.
+
+The backbone model is **Qwen3.5-35B-A3B**, served locally via LM Studio's OpenAI-compatible API. This setup provides:
+
+- **Full privacy**: Your code never leaves your machine
+- **Complete ownership**: No vendor lock-in, no usage quotas
+- **Cost control**: Zero per-token costs after hardware investment
+- **Offline capability**: Work without internet connectivity
+- **Customizable models**: Swap in any compatible local model as needed
+
+---
+
+## Why This Matters
+
+### The Cloud Dependency Problem
+
+Most AI coding assistants today rely on cloud-hosted models (GPT-4, Claude, etc.). While convenient, this approach has significant drawbacks:
+
+| Issue | Cloud Models | Local SoloCoder |
+|-------|--------------|-----------------|
+| **Privacy** | Code sent to external servers | Entirely local execution |
+| **Cost** | Per-token pricing accumulates | One-time hardware cost |
+| **Latency** | Network round-trips required | Direct GPU inference |
+| **Availability** | Dependent on internet/API uptime | Works offline, always available |
+| **Customization** | Fixed model capabilities | Choose any compatible model |
+
+### The Local-First Alternative
+
+Modern consumer GPUs have reached a tipping point. An RTX 5090 (or similar high-end GPU) can comfortably run 35B parameter models with quantized inference, delivering response times suitable for interactive coding assistance—all while keeping your codebase entirely local.
+
+SoloCoder proves this architecture works in practice: it's a fully functional coding agent that reads files, writes code, executes shell commands, searches codebases, and manages complex multi-turn development tasks—without ever calling an external API.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    SoloCoder CLI                            │
+│  (Interactive coding agent with Claude Code-style UI)       │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     OpenAgent                               │
+│         Lightweight async-first agent framework             │
+│  ┌─────────────┬──────────────┬─────────────────────────┐   │
+│  │ Agent Core  │  Tool System │    Session Management   │   │
+│  └─────────────┴──────────────┴─────────────────────────┘   │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              LM Studio (Local OpenAI API)                   │
+│           Qwen3.5-35B-A3B served locally                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Core Components
+
+| Component | Purpose |
+|-----------|---------|
+| **OpenAgent** | Async-first agent framework with pluggable providers, tool registry, and session persistence |
+| **Coder Agent** | Specialized agent for code editing tasks with file operations, shell execution, and task tracking |
+| **LM Studio** | Local LLM server providing OpenAI-compatible API endpoint |
+| **Qwen3.5-35B-A3B** | Backbone model serving as the "brain" of the coding agent |
+
+### Workflow
+
+1. User types a coding request in the CLI interface
+2. Coder Agent processes the request using its tool system (file read/write, shell commands, grep search)
+3. The OpenAgent framework formats messages and sends them to the local LM Studio endpoint
+4. Qwen3.5-35B-A3B generates a response with tool calls or code changes
+5. Results are displayed in Claude Code-style formatting
+
+---
 
 ## Features
 
-- **Multi-provider support**: OpenAI (GPT), Anthropic (Claude), Google (Gemini), Ollama (local), and LMStudio
-- **Async-first**: Built for modern Python 3.11+ async/await patterns
-- **Tool system**: Easy function-to-tool conversion with `@tool` decorator
-- **Coder Agent**: Specialized agent for code editing tasks with interactive CLI
-- **MCP support**: Integrate Model Context Protocol servers for additional tools
-- **Built-in tools**: File operations, shell execution, task management, web search, and more
-- **Streaming**: Real-time token streaming from all providers
-- **Retry logic**: Automatic exponential backoff for transient failures
-- **Session persistence**: Save and load conversations to JSON
-- **Task tracking**: Built-in TODO manager for multi-step workflow coordination
-- **Background execution**: Persistent bash sessions with output retrieval
+### Agent Capabilities
 
-## Installation
+- **File Operations**: Read, write, edit files seamlessly
+- **Code Search**: Find patterns across your project with regex grep
+- **Shell Execution**: Run bash commands for testing and building
+- **Task Tracking**: Automatically break down complex tasks into manageable steps
+- **Multi-turn Conversations**: Maintain context across extended interactions
 
-### Using uv (recommended)
+### Interactive CLI Features
+
+- **Claude Code-style display**: Clean, readable output with syntax highlighting
+- **Quick commands**: `/list`, `/read`, `/todo`, `/model`, `/clear` for common operations
+- **Direct shell access**: `! <command>` prefix for immediate terminal execution
+- **Turn tracking**: Visual indicator of remaining conversation budget
+
+### Built-in Tools (OpenAgent)
+
+| Category | Tools |
+|----------|-------|
+| File Operations | `read`, `write`, `edit`, `glob`, `grep`, `notebook_edit` |
+| Shell Management | `bash`, `bash_background`, `bash_output`, `kill_shell` |
+| Task Manager | `todo_write`, `todo_update`, `todo_list` |
+| Web & Search | `web_search`, `web_fetch` (requires optional deps) |
+| Planning | `enter_plan_mode`, `exit_plan_mode` |
+| User Interaction | `ask_user_question` |
+
+### Provider Support
+
+OpenAgent supports multiple LLM providers, making it easy to switch between cloud and local:
+
+- **OpenAIProvider**: GPT models (with custom base_url for LM Studio)
+- **AnthropicProvider**: Claude models
+- **GoogleProvider**: Gemini models
+- **OllamaProvider**: Local Ollama instances
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Python 3.11+
+- An RTX 5090 (or comparable GPU with ~24GB VRAM) for running Qwen3.5-35B-A3B
+- Git (for cloning the repository)
+
+### Step 1: Clone and Install Dependencies
 
 ```bash
-# Install the package
-uv pip install openagent
+git clone https://github.com/your-repo/SoloCoder.git
+cd SoloCoder
 
-# Install with optional dependencies
-uv pip install "openagent[openai]"      # OpenAI support
-uv pip install "openagent[anthropic]"   # Anthropic/Claude support
-uv pip install "openagent[google]"      # Google/Gemini support
-uv pip install "openagent[ollama]"      # Ollama/local models support
-uv pip install "openagent[web]"         # Web search capabilities
-uv pip install "openagent[all]"         # All providers and tools
+# Using uv (recommended)
+uv sync
 
-# Or use uv to manage a project with openagent
-uv init my-project
-cd my-project
-uv add openagent
+# Or using pip
+pip install -e ".[all]"
 ```
 
-### Using pip
+### Step 2: Set Up LM Studio
+
+1. **Download and install [LM Studio](https://lmstudio.ai/)**
+
+2. **Pull the Qwen3.5-35B-A3B model**:
+   - Open LM Studio
+   - Go to the search tab (magnifying glass icon)
+   - Search for `Qwen3.5-35B-A3B` or similar variant
+   - Download a quantized version (Q4_K_M or Q5_K_M recommended for balance of speed/quality)
+
+3. **Start the local server**:
+   - Go to the server tab (power plug icon)
+   - Select your downloaded model
+   - Choose a GPU layer count (max out if you have VRAM, otherwise ~20-28 layers for 35B models on 24GB)
+   - Click "Start Server"
+   - Note the local URL (typically `http://localhost:1234/v1`)
+
+### Step 3: Run SoloCoder with LM Studio
 
 ```bash
-pip install openagent
+# Quick start with default settings pointing to LM Studio
+python cli_coder.py --model qwen3.5-35b-a3b --base-url http://localhost:1234/v1
 
-# Install provider dependencies
-pip install "openagent[all]"  # All providers and tools
+# Or set the model name you loaded in LM Studio exactly
+python cli_coder.py -m your-model-name-here -k "" --base-url http://localhost:1234/v1
 ```
 
-## Quick Start
+**Note**: When using local servers like LM Studio, API keys are typically not required. You can pass an empty string or omit the `--api-key` flag.
 
-### Basic Agent
+### Alternative: Using Ollama
 
-```python
-import asyncio
-from openagent import Agent, OpenAIProvider, tool
-
-@tool
-def get_weather(city: str) -> str:
-    """Get the current weather for a city."""
-    return f"The weather in {city} is sunny and 22°C."
-
-async def main():
-    agent = Agent(
-        provider=OpenAIProvider(model="gpt-4o"),
-        system_prompt="You are a helpful assistant.",
-        tools=[get_weather],
-    )
-
-    answer = await agent.run("What's the weather in Tokyo?")
-    print(answer)
-
-asyncio.run(main())
-```
-
-### Coder Agent - Chat-based Coding Assistant
-
-For code editing and development tasks, use the specialized `CoderAgent`:
-
-```python
-import asyncio
-from openagent import create_coder
-
-# Quick start with defaults
-coder = await create_coder(model="gpt-4o")
-result = await coder.run("Create a new Python file with a hello world function")
-
-# Or use the full constructor for more control
-from openagent import CoderAgent, OpenAIProvider
-
-provider = OpenAIProvider(model="gpt-4-turbo", api_key="sk-...")
-coder = CoderAgent(
-    provider=provider,
-    system_prompt="You are an expert Python developer.",
-    max_turns=20,
-    working_dir="/path/to/project",
-)
-result = await coder.run("Add a new endpoint to the API that handles user registration")
-```
-
-**Key Features:**
-- File operations: Read, write, and edit files seamlessly
-- Code search: Find patterns across your project with grep
-- Shell commands: Execute bash for testing and building
-- Task tracking: Automatically breaks down complex tasks into steps
-- Working directory: Set context for file operations
-
-**Quick Commands (in CLI):**
-- `@list` - List files in current directory
-- `@todo` - Show task list
-- `@clear` - Clear conversation history
-
-## Providers
-
-### OpenAI
-
-```python
-from openagent import OpenAIProvider
-
-provider = OpenAIProvider(
-    model="gpt-4o",           # or "gpt-4-turbo", "gpt-3.5-turbo", etc.
-    api_key="sk-...",         # optional, uses OPENAI_API_KEY env var
-    max_retries=3,            # retry on transient failures
-)
-```
-
-### Anthropic (Claude)
-
-```python
-from openagent import AnthropicProvider
-
-provider = AnthropicProvider(
-    model="claude-sonnet-4-20250514",
-    api_key="sk-ant-...",     # optional, uses ANTHROPIC_API_KEY env var
-    max_tokens=4096,          # configurable max output tokens
-    max_retries=3,
-)
-```
-
-### Google (Gemini)
-
-```python
-from openagent import GoogleProvider
-
-provider = GoogleProvider(
-    model="gemini-2.0-flash",
-    api_key="...",            # optional, uses GOOGLE_API_KEY env var
-    max_retries=3,
-)
-```
-
-### Ollama (Local Models)
-
-```python
-from openagent import OllamaProvider
-
-provider = OllamaProvider(
-    model="llama2",           # or any model available in your Ollama instance
-    base_url="http://localhost:11434",
-    max_retries=3,
-)
-```
-
-## Tools
-
-Define tools using the `@tool` decorator:
-
-```python
-from openagent import tool
-
-@tool
-def calculate(expression: str) -> str:
-    """Evaluate a math expression."""
-    return str(eval(expression))
-
-@tool(name="search", description="Search the web for information")
-def web_search(query: str, max_results: int = 5) -> str:
-    # Your search implementation
-    return "Search results..."
-```
-
-### Built-in Tools
-
-OpenAgent includes a comprehensive set of built-in tools that can be used directly:
-
-#### File Operations
-
-```python
-from openagent.tools import read, write, edit, glob, grep, notebook_edit
-
-# Read file contents (with optional line range)
-content = read("path/to/file.txt", line_start=1, line_end=10)
-
-# Write/overwrite files
-write("output.txt", "Hello World!", create_parents=True)
-
-# Edit files with string replacement
-edit("file.py", old_text="old_value", new_text="new_value")
-
-# Search for files by pattern
-files = glob("*.py", path="/project", max_results=50)
-
-# Grep/search file contents
-results = grep("function_name", path="/project", regex=True, context_lines=2)
-
-# Edit Jupyter notebook cells
-notebook_edit("notebook.ipynb", cell_index=0, new_source="print('hello')")
-```
-
-#### Shell & Process Management
-
-```python
-from openagent.tools import bash, bash_background, bash_output, kill_shell
-
-# Execute a single command (synchronous)
-result = bash("ls -la")
-
-# Start background session and execute commands
-session_msg = bash_background("echo Hello; ls -la", working_dir="/project")
-# Returns: "Started bash session 'abc123' in '/project'. Use bash_output to retrieve output."
-
-# Retrieve output from a background session
-output = bash_output("abc123", tail_lines=50)  # Last 50 lines only
-
-# Terminate a background session
-kill_shell("abc123")  # Returns: "Session 'abc123' terminated successfully."
-```
-
-#### Task/TODO Manager
-
-Track multi-step workflows with the integrated task manager:
-
-```python
-from openagent.tools import todo_write, todo_update, todo_list
-
-# Create multiple tasks at once
-tasks = [
-    {"subject": "Implement feature A", "description": "Add new functionality", "activeForm": "Implementing feature A"},
-    {"subject": "Write tests", "description": "Create unit tests", "activeForm": "Writing tests"},
-]
-todo_write(tasks)
-
-# Update task status and details
-todo_update("task_abc123", status="in_progress")  # pending, in_progress, completed, deleted
-todo_update("task_abc123", subject="[DONE] Feature A")
-
-# View all tasks with statuses
-print(todo_list())
-```
-
-#### Web & Search (requires dependencies)
+If you prefer Ollama over LM Studio:
 
 ```bash
-pip install duckduckgo-search httpx
+# Install Ollama from https://ollama.com
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull a model (e.g., Qwen2.5-32B as an alternative)
+ollama pull qwen2.5:32b
+
+# Run SoloCoder with Ollama provider
+python cli_coder.py --model qwen2.5:32 --working-dir /path/to/project
 ```
 
-```python
-from openagent.tools import web_search, web_fetch
+---
 
-# Search the web
-results = web_search("Python programming", num_results=5)
+## Usage Examples
 
-# Fetch and parse a webpage
-content = web_fetch("https://example.com")
+### Basic Interactive Session
+
+```bash
+cd /path/to/your/project
+python cli_coder.py -w . --base-url http://localhost:1234/v1
 ```
 
-#### Planning & Workflow
+Then interact naturally:
 
-```python
-from openagent.tools import enter_plan_mode, exit_plan_mode
+> "Create a new Python file with a hello world function"
 
-# Enter planning mode before complex tasks
-enter_plan_mode("Need to design database schema first")
+> "Add error handling to the API endpoint in main.py"
 
-# Exit plan mode when ready to implement
-exit_plan_mode("Plan approved: Use PostgreSQL with SQLAlchemy")
+> "Search for all TODO comments and create a task list"
+
+### Quick Commands (in CLI)
+
+| Command | Description |
+|---------|-------------|
+| `/list` or `/ls` | List files in current directory |
+| `/read <file>` | Preview file contents before editing |
+| `/todo` | Show task list |
+| `/model` | Change LLM model mid-session |
+| `/clear` | Clear conversation history |
+
+### Direct Shell Commands
+
+Prefix with `!` for immediate terminal execution:
+
+```
+! ls -la          # List files
+! python main.py  # Run a script
+! git status      # Check git state
 ```
 
-#### User Interaction
+---
 
-```python
-from openagent.tools import ask_user_question
+## Configuration
 
-# Ask user for input with options
-result = ask_user_question(
-    "What approach should we take?",
-    options=["Option A", "Option B", "Option C"],
-    multi_select=False,
-)
+### Command Line Options
+
+```bash
+python cli_coder.py [OPTIONS]
+
+Options:
+  --model, -m MODEL       LLM model name (default: gpt-4o)
+  --working-dir, -w DIR   Working directory for file operations
+  --max-turns, -t N       Max conversation turns before stopping (default: 20)
+  --api-key, -k KEY       API key (optional for local servers)
+  --base-url              OpenAI-compatible API URL (e.g., http://localhost:1234/v1)
 ```
 
-#### Extensibility
+### Environment Variables
 
-```python
-from openagent.tools import skill, slash_command, task
+| Variable | Purpose |
+|----------|---------|
+| `OPENAI_API_KEY` | API key for OpenAI provider |
+| `ANTHROPIC_API_KEY` | API key for Anthropic provider |
+| `GOOGLE_API_KEY` | API key for Google provider |
+| `AGENT_PROJECT_ROOT` | Security confinement root (set automatically) |
 
-# Launch specialized sub-agents
-task("explore", "Find all Python files in the project", None)
+---
 
-# Use custom skills (requires setup)
-skill("simplify", None)
+## Limitations
 
-# Execute slash commands (requires setup)
-slash_command("/review", ["--changed-files"])
-```
+### Hardware Requirements
 
-### Using Built-in Tools with Agent
+Running 35B parameter models locally requires significant GPU resources:
 
-```python
-from openagent import Agent, OpenAIProvider
-from openagent.tools import read, write, edit, glob, grep, bash, todo_write
+| Model Size | Recommended VRAM | Minimum VRAM |
+|------------|------------------|--------------|
+| 7B | 8GB | 6GB |
+| 14B | 12GB | 8GB |
+| 35B | 24GB (RTX 5090) | 16GB (slower, more quantization) |
 
-provider = OpenAIProvider(model="gpt-4o")
+**Note**: Using lower VRAM will require heavier quantization, which may reduce model quality.
 
-agent = Agent(
-    provider=provider,
-    system_prompt="You are a helpful coding assistant with file and shell access.",
-    tools=[read, write, edit, glob, grep, bash, todo_write],
-)
+### Performance Considerations
 
-await agent.run("Create a new Python file with a hello world function")
-```
+- **Response time**: Local inference is slower than cloud APIs. Expect 2-10 seconds per token depending on GPU and model size
+- **Context window**: Limited by available RAM when running large context windows
+- **Concurrent tasks**: Running other GPU-intensive applications will impact performance
 
-## Streaming
+### Model Capabilities
 
-All providers support streaming responses:
+While Qwen3.5-35B-A3B is highly capable, it may not match the raw capability of flagship cloud models (GPT-4o, Claude 3.5 Sonnet) on:
+- Extremely complex reasoning tasks
+- Very long context understanding (8K+ tokens)
+- Specialized domain knowledge requiring massive training data
 
-```python
-async def stream_example():
-    provider = OpenAIProvider(model="gpt-4o")
-    messages = [Message(role="user", content="Tell me a story")]
+However, for most day-to-day coding tasks—reading files, writing functions, debugging errors, refactoring code—a well-tuned local 35B model provides excellent results.
 
-    async for chunk in provider.stream(messages):
-        print(chunk, end="", flush=True)
-```
+---
 
-## Session Persistence
+## Future Work
 
-Save and restore conversations:
+### Planned Enhancements
 
-```python
-from openagent import Session
+- [ ] **Model quantization presets**: Pre-configured settings for different GPU VRAM capacities
+- [ ] **Multi-model support**: Seamlessly switch between models based on task complexity
+- [ ] **GPU memory monitoring**: Real-time VRAM usage display in CLI
+- [ ] **Batch inference**: Process multiple requests more efficiently
+- [ ] **Fine-tuning pipeline**: Custom fine-tuning for project-specific patterns
+- [ ] **RAG integration**: Vector search over codebase for better context retrieval
 
-# Create and use session
-session = Session(system_prompt="You are helpful.")
-session.add("user", "Hello!")
-session.add("assistant", "Hi there!")
+### Community Contributions Welcome
 
-# Save to file
-session.save("conversation.json")
+SoloCoder is designed to be extensible. Consider contributing:
 
-# Load from file
-restored = Session.load("conversation.json")
-```
+- New tool implementations
+- Additional provider integrations
+- UI improvements and themes
+- Documentation enhancements
+- Performance optimizations for specific GPU architectures
 
-## Logging
-
-Enable logging for debugging:
-
-```python
-import logging
-from openagent import configure_logging
-
-# Enable debug logging
-configure_logging(level=logging.DEBUG)
-
-# Or use the logger directly
-from openagent import logger
-logger.setLevel(logging.INFO)
-```
-
-## MCP Integration
-
-Use Model Context Protocol servers to extend the Agent with additional tools:
-
-```python
-from openagent import Agent, OpenAIProvider
-from openagent.mcp import McpClient
-
-# Using stdio transport (local MCP server)
-async def main():
-    async with McpClient("npx", ["@modelcontextprotocol/server-filesystem", "/path/to/dir"]) as mcp_client:
-        agent = Agent(
-            provider=OpenAIProvider(model="gpt-4o"),
-            mcp_client=mcp_client,  # Automatically discover and register MCP tools
-        )
-        result = await agent.run("List files in /path/to/dir")
-
-# Using SSE transport (remote MCP server)
-async with McpClient("http://localhost:8000/sse") as mcp_client:
-    agent = Agent(
-        provider=OpenAIProvider(model="gpt-4o"),
-        mcp_client=mcp_client,
-    )
-```
-
-## API Reference
-
-### Agent
-
-```python
-Agent(
-    provider: BaseProvider,      # LLM provider instance
-    system_prompt: str = "",     # System prompt for the agent
-    tools: list[Callable] = [],  # List of tool functions
-    max_turns: int = 10,         # Max conversation turns
-    agent_id: str = None,        # Optional ID for logging
-)
-
-# Methods
-await agent.run(user_input: str) -> str
-agent.messages -> list[Message]
-```
-
-### McpClient
-
-```python
-McpClient(command: str, args: list[str] | None = None, env: dict[str, str] | None = None)
-
-# Methods
-async with client as mcp_client:
-    tools = await mcp_client.get_tools()  # Discover available MCP tools
-```
-
-Supports both stdio transport (local subprocesses like `npx @modelcontextprotocol/server-filesystem`) and SSE transport (remote servers at HTTP/SSE endpoints).
-
-### Session
-
-```python
-Session(system_prompt: str = "")
-
-# Methods
-session.add(role, content) -> Message
-session.add_message(message) -> None
-session.add_tool_results(results) -> Message
-session.clear() -> None
-session.save(path) -> None
-Session.load(path) -> Session
-```
-
-### Task Manager
-
-```python
-from openagent.core.task_manager import get_task_manager, TodoTask, TaskStatus
-
-manager = get_task_manager()
-
-# Create tasks
-task_id = manager.create_task(
-    subject="Implement feature",
-    description="Add new functionality",
-    active_form="Implementing feature"
-)
-
-# Update task status
-manager.update_task(task_id, status=TaskStatus.IN_PROGRESS)
-
-# List all tasks
-tasks = manager.list_tasks(status_filter=TaskStatus.PENDING)
-
-# Get formatted summary
-summary = manager.get_summary()
-```
+---
 
 ## Project Structure
 
 ```
-openagent/
-├── __init__.py                  # Public API exports
-├── core/
-│   ├── agent.py                 # Agent class — main orchestrator
-│   ├── types.py                 # Canonical types: Message, ToolUseBlock, etc.
-│   ├── tool.py                  # @tool decorator and ToolRegistry
-│   ├── session.py               # Session management and persistence
-│   ├── logging.py               # Logging configuration
-│   └── retry.py                 # Retry logic with exponential backoff
-├── provider/
-│   ├── base.py                  # BaseProvider ABC
-│   ├── anthropic.py             # Anthropic/Claude support
-│   ├── openai.py                # OpenAI/GPT support
-│   ├── google.py                # Google/Gemini support
-│   └── ollama.py                # Ollama/local models support
-├── tools/                       # Built-in tool implementations
-└── mcp.py                       # MCP client integration
+SoloCoder/
+├── cli_coder.py              # Main CLI entry point with interactive session
+├── openagent/                # Agent framework package
+│   ├── __init__.py          # Public API exports
+│   ├── core/                # Core agent components
+│   │   ├── agent.py         # Agent class — main orchestrator
+│   │   ├── types.py         # Canonical types (Message, ToolUseBlock, etc.)
+│   │   ├── tool.py          # @tool decorator and registry
+│   │   ├── session.py       # Session management and persistence
+│   │   ├── logging.py       # Logging configuration
+│   │   └── retry.py         # Retry logic with exponential backoff
+│   ├── provider/            # LLM provider implementations
+│   │   ├── base.py          # BaseProvider ABC
+│   │   ├── openai.py        # OpenAI-compatible API support
+│   │   ├── anthropic.py     # Anthropic/Claude support
+│   │   ├── google.py        # Google/Gemini support
+│   │   └── ollama.py        # Ollama local models support
+│   ├── tools/               # Built-in tool implementations
+│   └── mcp.py               # MCP client integration
+├── tests/                    # Test suite
+└── examples/                 # Usage examples
 ```
+
+---
 
 ## License
 
-MIT
-# SoloCoder
+MIT License — feel free to use, modify, and distribute for personal or commercial projects.
+
+---
+
+## Acknowledgments
+
+- **OpenAgent**: The underlying agent framework that powers SoloCoder's capabilities
+- **LM Studio**: Excellent local LLM server with OpenAI-compatible API
+- **Qwen Team**: For releasing high-quality open weights models
+- **Claude Code**: Inspiration for the interactive CLI design and output formatting
+
+---
+
+**Built with ❤️ for the local-first AI movement.**
