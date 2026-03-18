@@ -28,12 +28,13 @@ from typing import Any
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from openagent.core.display import (
+from openagent import (
     bold, dim, blue, green, yellow, red, cyan, magenta, white,
     code, diff_addition, diff_deletion, format_diff_output,
     display_code_block, display_diff_claude_style,
-    display_tool_call_claude_style as dtc,
-    display_tool_result_claude_style as dtr
+    display_tool_call_claude_style, display_tool_result_claude_style,
+    truncate_text, format_file_list, format_grep_results_claude_style,
+    display_claude_code_block
 )
 
 
@@ -137,16 +138,12 @@ def get_api_key_env_var(provider_name: str) -> str:
 
 def display_tool_call(name: str, arguments: dict) -> None:
     """Display a tool call in Claude Code style."""
-    args_str = ", ".join(f"{k}={v}" for k, v in arguments.items())
-    print(f"  {cyan('🔧')} {bold(name)}({args_str})")
+    display_tool_call_claude_style(name, arguments)
 
 
 def display_tool_result(is_error: bool, content: str) -> None:
-    """Display a tool result with appropriate styling."""
-    icon = "❌" if is_error else "✅"
-    color = red if is_error else green
-    preview = content[:150] + "..." if len(content) > 150 else content
-    print(f"     {color(icon)} {dim('Result:')} {preview}")
+    """Display a tool result with appropriate styling (Claude Code style)."""
+    display_tool_result_claude_style(is_error, content)
 
 
 def display_tool_result_full(is_error: bool, content: str) -> None:
@@ -158,20 +155,21 @@ def display_tool_result_full(is_error: bool, content: str) -> None:
 
 
 async def run_interactive_session(coder) -> None:
-    """Run the interactive chat session with improved display."""
-    print("\n" + bold(cyan("=" * 60)))
-    print(bold("  CODER AGENT - Chat-based coding assistant"))
-    print(cyan("=" * 60))
-    print(f"\n{dim('Working directory:')} {coder.working_dir}")
+    """Run the interactive chat session with Claude Code style display."""
+    print(f"\n{bold('Coder Agent')} - Chat-based coding assistant")
+    print(dim("-" * 40))
+    print(f"{dim('Working directory:')} {coder.working_dir}")
     print(f"{dim('Max turns per request:')} {coder.max_turns}")
     print("\nType 'quit' or 'exit' to stop.")
     print("Use '/' prefix for quick commands:")
-    print("  /list     - List files in current directory")
-    print("  /read     - Preview file contents before editing")
-    print("  /todo     - Show task list")
-    print("  /model    - Change LLM model mid-session (e.g., /model claude-sonnet-4)")
-    print("  /clear    - Clear conversation history")
-    print(cyan("=" * 60) + "\n")
+    print(dim("  /list     - List files in current directory"))
+    print(dim("  /read     - Preview file contents before editing"))
+    print(dim("  /todo     - Show task list"))
+    print(dim("  /model    - Change LLM model mid-session"))
+    print(dim("  /clear    - Clear conversation history"))
+    print("\nUse '!' prefix for direct terminal commands:")
+    print(dim("  ! ls      - List files (direct bash execution)"))
+    print(dim("  ! pwd     - Print working directory"))
 
     try:
         turn_counter = 0  # Track turns for this session
@@ -186,7 +184,7 @@ async def run_interactive_session(coder) -> None:
             if not user_input:
                 continue
 
-            # Handle quick commands
+            # Handle quick commands with "/" prefix
             if user_input.startswith("/"):
                 parts = user_input.split(maxsplit=1)
                 cmd = parts[0].lower()
@@ -287,6 +285,24 @@ async def run_interactive_session(coder) -> None:
                 else:
                     print(f"Unknown command: {cmd}. Use /list, /read, /todo, /model, or /clear")
                     continue
+
+            # Handle terminal commands with "!" prefix (direct bash execution)
+            if user_input.startswith("!"):
+                cmd = user_input[1:].strip()
+                if not cmd:
+                    print("\n" + bold("Coder: ") + "Usage: ! <command>")
+                    continue
+
+                from openagent.tools import bash
+                try:
+                    result = await coder.bash_manager.execute_command(
+                        (await coder.bash_manager.start_session()).split("-")[0],
+                        cmd
+                    )
+                    print(f"\n{bold('Coder: ')}{result}")
+                except Exception as e:
+                    print(f"\n{red('Coder: ')}Error executing command: {e}")
+                continue
 
             # Handle quit/exit commands
             if user_input.lower() in ("quit", "exit"):

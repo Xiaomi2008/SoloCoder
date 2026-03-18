@@ -1,5 +1,13 @@
 from openagent.coder import CoderAgent, create_coder
 from openagent.core.agent import Agent
+from openagent.core.display import (
+    bold, dim, blue, green, yellow, red, cyan, magenta, white, code,
+    diff_addition, diff_deletion, format_diff_output, display_code_block,
+    display_diff_claude_style, display_tool_call_claude_style,
+    display_tool_result_claude_style, truncate_text,
+    format_file_list, format_grep_results_claude_style,
+    display_claude_code_block
+)
 from openagent.core.logging import AgentLogger, configure_logging, logger
 from openagent.mcp import McpClient
 from openagent.provider.anthropic import AnthropicProvider
@@ -19,25 +27,52 @@ from openagent.core.types import (
 )
 
 __all__ = [
+    # Core classes
     "Agent",
-    "AgentLogger",
+    "CoderAgent",
+    "Session",
+    "McpClient",
+    "ToolRegistry",
+    # Providers
     "AnthropicProvider",
     "BaseProvider",
-    "CoderAgent",
-    "ContentBlock",
     "GoogleProvider",
-    "Message",
-    "McpClient",
     "OllamaProvider",
     "OpenAIProvider",
-    "Session",
+    # Logging
+    "AgentLogger",
+    "configure_logging",
+    "logger",
+    # Types
+    "ContentBlock",
+    "Message",
     "TextBlock",
     "ToolDef",
-    "ToolRegistry",
     "ToolResultBlock",
     "ToolUseBlock",
-    "configure_logging",
-    "create_coder",
-    "logger",
+    # Decorators and helpers
     "tool",
+    "create_coder",
+    # Display utilities (Claude Code style)
+    "bold",
+    "dim",
+    "blue",
+    "green",
+    "yellow",
+    "red",
+    "cyan",
+    "magenta",
+    "white",
+    "code",
+    "diff_addition",
+    "diff_deletion",
+    "format_diff_output",
+    "display_code_block",
+    "display_diff_claude_style",
+    "display_tool_call_claude_style",
+    "display_tool_result_claude_style",
+    "truncate_text",
+    "format_file_list",
+    "format_grep_results_claude_style",
+    "display_claude_code_block",
 ]
