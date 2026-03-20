@@ -15,6 +15,7 @@ from .core.agent import Agent as BaseAgent
 from .core.bash_manager import BashManager, get_bash_manager
 from .core.skill_manager import SkillManager, get_skill_manager
 from .core.task_manager import TaskManager, get_task_manager
+from .provider.base import BaseProvider
 from .provider.openai import OpenAIProvider
 
 
@@ -60,21 +61,37 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
 
     def __init__(
         self,
-        provider: OpenAIProvider | None = None,
+        provider: BaseProvider | None = None,
         system_prompt: str | None = None,
-        max_turns: int = 20,
+        max_turns: int = 100,
         working_dir: str | None = None,
         bash_manager: BashManager | None = None,
         task_manager: TaskManager | None = None,
         skill_manager: SkillManager | None = None,
+        max_context_tokens: int = 128000,
+        compact_threshold: float = 0.8,
+        disable_compaction: bool = False,
     ) -> None:
         """Initialize the CoderAgent with all built-in tools."""
         from .tools import (
-            read, write, edit, glob, grep, notebook_edit,
-            bash, bash_background, bash_output, kill_shell,
-            todo_write, todo_update, todo_list,
-            enter_plan_mode, exit_plan_mode, ask_user_question,
-            web_search, web_fetch
+            read,
+            write,
+            edit,
+            glob,
+            grep,
+            notebook_edit,
+            bash,
+            bash_background,
+            bash_output,
+            kill_shell,
+            todo_write,
+            todo_update,
+            todo_list,
+            enter_plan_mode,
+            exit_plan_mode,
+            ask_user_question,
+            web_search,
+            web_fetch,
         )
 
         # Use default provider if not provided
@@ -90,12 +107,24 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             provider=provider,
             system_prompt=system_prompt,
             tools=[
-                read, write, edit, glob, grep, notebook_edit,  # File operations
-                bash, bash_background, bash_output, kill_shell,  # Shell commands
-                todo_write, todo_update, todo_list,  # Task management
-                enter_plan_mode, exit_plan_mode,  # Planning mode
+                read,
+                write,
+                edit,
+                glob,
+                grep,
+                notebook_edit,  # File operations
+                bash,
+                bash_background,
+                bash_output,
+                kill_shell,  # Shell commands
+                todo_write,
+                todo_update,
+                todo_list,  # Task management
+                enter_plan_mode,
+                exit_plan_mode,  # Planning mode
                 ask_user_question,  # User interaction
-                web_search, web_fetch,  # Web tools
+                web_search,
+                web_fetch,  # Web tools
             ],
             max_turns=max_turns,
             bash_manager=bash_manager or get_bash_manager(),
@@ -104,6 +133,11 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
         )
 
         self._working_dir = working_dir or str(Path.cwd())
+
+        # Context compaction settings
+        self.max_context_tokens = max_context_tokens
+        self.compact_threshold = compact_threshold
+        self.disable_compaction = disable_compaction
 
     @property
     def working_dir(self) -> str:
@@ -134,7 +168,7 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
 async def create_coder(
     model: str = "gpt-4o",
     api_key: str | None = None,
-    max_turns: int = 20,
+    max_turns: int = 100,
     working_dir: str | None = None,
 ) -> CoderAgent:
     """Factory function to create a configured CoderAgent.
@@ -164,22 +198,24 @@ if __name__ == "__main__":
     import argparse
 
     async def main():
-        parser = argparse.ArgumentParser(description="Coder Agent - A chat-based coding assistant")
-        parser.add_argument(
-            "--model", "-m",
-            default="gpt-4o",
-            help="LLM model to use (default: gpt-4o)"
+        parser = argparse.ArgumentParser(
+            description="Coder Agent - A chat-based coding assistant"
         )
         parser.add_argument(
-            "--working-dir", "-w",
+            "--model", "-m", default="gpt-4o", help="LLM model to use (default: gpt-4o)"
+        )
+        parser.add_argument(
+            "--working-dir",
+            "-w",
             default=None,
-            help="Working directory for file operations"
+            help="Working directory for file operations",
         )
         parser.add_argument(
-            "--max-turns", "-t",
+            "--max-turns",
+            "-t",
             type=int,
-            default=20,
-            help="Maximum conversation turns (default: 20)"
+            default=100,
+            help="Maximum conversation turns (default: 100)",
         )
 
         args = parser.parse_args()

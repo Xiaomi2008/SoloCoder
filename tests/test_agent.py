@@ -116,3 +116,70 @@ async def test_agent_parallel_tool_execution(mock_provider):
     # Both should have been called
     assert "a" in call_order
     assert "b" in call_order
+
+
+async def test_agent_retries_empty_assistant_response(mock_provider):
+    """Test that an empty final response triggers a retry instead of stopping."""
+    provider = mock_provider(
+        [
+            Message(role="assistant", content=""),
+            Message(role="assistant", content="Recovered response"),
+        ]
+    )
+    agent = Agent(provider=provider)
+
+    result = await agent.run("Finish the task")
+
+    assert result == "Recovered response"
+    assert [message.role for message in agent.messages] == [
+        "user",
+        "system",
+        "assistant",
+    ]
+
+
+async def test_agent_returns_message_after_repeated_empty_responses(mock_provider):
+    """Test that repeated empty replies return a useful fallback instead of blank output."""
+    provider = mock_provider(
+        [
+            Message(role="assistant", content=""),
+            Message(role="assistant", content=""),
+            Message(role="assistant", content=""),
+            Message(role="assistant", content=""),
+        ]
+    )
+    agent = Agent(provider=provider)
+
+    result = await agent.run("Finish the task")
+
+    assert "empty responses repeatedly" in result
+    assert [message.role for message in agent.messages] == ["user", "system"]
+
+
+async def test_agent_allows_final_answer_after_last_tool_turn(mock_provider):
+    """Test that the agent allows one final answer after the last tool turn."""
+
+    @tool
+    def get_weather(city: str) -> str:
+        return f"Sunny in {city}"
+
+    tool_response = Message(
+        role="assistant",
+        content=[
+            ToolUseBlock(id="call_1", name="get_weather", arguments={"city": "Tokyo"})
+        ],
+    )
+    final_response = Message(role="assistant", content="The weather is sunny in Tokyo!")
+
+    provider = mock_provider([tool_response, final_response])
+    agent = Agent(provider=provider, tools=[get_weather], max_turns=1)
+
+    result = await agent.run("What's the weather in Tokyo?")
+
+    assert result == "The weather is sunny in Tokyo!"
+    assert [message.role for message in agent.messages] == [
+        "user",
+        "assistant",
+        "tool_result",
+        "assistant",
+    ]

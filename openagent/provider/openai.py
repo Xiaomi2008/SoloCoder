@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -17,8 +19,60 @@ from openagent.core.types import (
 )
 
 
+logger = logging.getLogger("openagent.provider.openai")
+
+
 class OpenAIConverterMixin(MessageConverterMixin):
     """Converts between canonical message format and OpenAI's chat format."""
+
+    def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
+        """Hook for provider-specific response anomaly logging."""
+
+    @staticmethod
+    def _safe_response_payload(response: Any) -> str:
+        try:
+            if hasattr(response, "model_dump"):
+                payload = response.model_dump(exclude_none=True)
+            elif hasattr(response, "dict"):
+                payload = response.dict()
+            else:
+                payload = repr(response)
+
+            text = (
+                payload
+                if isinstance(payload, str)
+                else json.dumps(payload, default=str)
+            )
+        except Exception:
+            text = repr(response)
+
+        if len(text) > 4000:
+            return text[:4000] + "... [truncated]"
+        return text
+
+    @staticmethod
+    def _extract_reasoning_text(message: Any) -> str:
+        for attr in ("reasoning_content", "reasoning", "thinking"):
+            value = getattr(message, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
+    @staticmethod
+    def _extract_tool_call_from_reasoning(reasoning_text: str) -> ToolUseBlock | None:
+        function_match = re.search(r"<function=([^>\n]+)>", reasoning_text)
+        if not function_match:
+            return None
+
+        arguments: dict[str, Any] = {}
+        for key, value in re.findall(
+            r"<parameter=([^>\n]+)>\s*(.*?)\s*</parameter>",
+            reasoning_text,
+            flags=re.DOTALL,
+        ):
+            arguments[key.strip()] = value.strip()
+
+        return ToolUseBlock(name=function_match.group(1).strip(), arguments=arguments)
 
     def convert_messages(
         self, messages: list[Message], system_prompt: str = ""
@@ -40,7 +94,9 @@ class OpenAIConverterMixin(MessageConverterMixin):
                 if isinstance(msg.content, str):
                     entry["content"] = msg.content
                 else:
-                    text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
+                    text_parts = [
+                        b.text for b in msg.content if isinstance(b, TextBlock)
+                    ]
                     entry["content"] = "\n".join(text_parts) if text_parts else None
                     tool_calls = [
                         {
@@ -62,11 +118,13 @@ class OpenAIConverterMixin(MessageConverterMixin):
                 if isinstance(msg.content, list):
                     for block in msg.content:
                         if isinstance(block, ToolResultBlock):
-                            converted.append({
-                                "role": "tool",
-                                "tool_call_id": block.tool_use_id,
-                                "content": block.content,
-                            })
+                            converted.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": block.tool_use_id,
+                                    "content": block.content,
+                                }
+                            )
 
         return {"messages": converted}
 
@@ -74,17 +132,50 @@ class OpenAIConverterMixin(MessageConverterMixin):
         choice = response.choices[0]
         message = choice.message
         blocks: list[ContentBlock] = []
+        reasoning_text = self._extract_reasoning_text(message)
 
         if message.content:
             blocks.append(TextBlock(text=message.content))
 
         if message.tool_calls:
             for tc in message.tool_calls:
-                blocks.append(ToolUseBlock(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
-                ))
+                try:
+                    arguments = json.loads(tc.function.arguments)
+                except Exception as exc:
+                    self._log_response_issue(
+                        "invalid_tool_arguments",
+                        response,
+                        tool_name=getattr(tc.function, "name", None),
+                        arguments=getattr(tc.function, "arguments", None),
+                        error=str(exc),
+                    )
+                    raise
+
+                blocks.append(
+                    ToolUseBlock(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=arguments,
+                    )
+                )
+
+        if not blocks and reasoning_text:
+            recovered_tool_call = self._extract_tool_call_from_reasoning(reasoning_text)
+            if recovered_tool_call is not None:
+                self._log_response_issue(
+                    "recovered_tool_call_from_reasoning",
+                    response,
+                    tool_name=recovered_tool_call.name,
+                )
+                blocks.append(recovered_tool_call)
+
+        if not blocks:
+            self._log_response_issue(
+                "empty_assistant_message",
+                response,
+                finish_reason=getattr(choice, "finish_reason", None),
+                reasoning_present=bool(reasoning_text),
+            )
 
         if len(blocks) == 1 and isinstance(blocks[0], TextBlock):
             return Message(role="assistant", content=blocks[0].text)
@@ -127,10 +218,19 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             effective_api_key = ""  # Empty string tells OpenAI client no auth required
 
         self._client = AsyncOpenAI(
-            api_key=effective_api_key,
-            base_url=base_url or None,
-            **kwargs
+            api_key=effective_api_key, base_url=base_url or None, **kwargs
         )
+        self.base_url = base_url
+
+    def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
+        metadata = {
+            "issue": issue,
+            "model": self.model,
+            "base_url": self.base_url,
+            **details,
+        }
+        logger.warning("OpenAI-compatible response anomaly: %s", metadata)
+        logger.debug("Raw response payload: %s", self._safe_response_payload(response))
 
     async def chat(
         self,
