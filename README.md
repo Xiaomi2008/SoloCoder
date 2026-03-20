@@ -356,4 +356,10 @@ MIT License — feel free to use, modify, and distribute for personal or commerc
 
 ---
 
+## Demo
+
+[![SoloCoder Demo](https://img.youtube.com/vi/iTODVW8L22c/maxresdefault.jpg)](https://www.youtube.com/watch?v=iTODVW8L22c)
+
+▶️ *Click the image above to watch the demo*
+
 **Built with ❤️ for the local-first AI movement.**
