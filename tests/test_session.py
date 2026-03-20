@@ -10,6 +10,13 @@ import pytest
 
 from openagent import Session
 from openagent.core.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from openagent.provider.base import BaseProvider
+
+
+class DummyProvider(BaseProvider):
+    async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+        assert all(isinstance(message, Message) for message in messages)
+        return Message(role="assistant", content="Compacted summary")
 
 
 def test_session_init():
@@ -131,9 +138,11 @@ def test_session_save_load_complex():
     session.add_message(msg)
 
     # Add tool result
-    session.add_tool_results([
-        ToolResultBlock(tool_use_id="abc", content="Found it", is_error=False),
-    ])
+    session.add_tool_results(
+        [
+            ToolResultBlock(tool_use_id="abc", content="Found it", is_error=False),
+        ]
+    )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         path = f.name
@@ -157,3 +166,63 @@ def test_session_save_load_complex():
         assert second_msg.content[0].content == "Found it"
     finally:
         Path(path).unlink()
+
+
+@pytest.mark.asyncio
+async def test_compact_context_uses_canonical_messages_and_summary_boundary():
+    """Compaction should call providers with Message objects and keep a valid tail."""
+    session = Session(system_prompt="Test system")
+    session.add("user", "First request")
+    session.add_message(
+        Message(
+            role="assistant",
+            content=[
+                TextBlock(text="Running tool"),
+                ToolUseBlock(id="tool-1", name="search", arguments={"q": "x"}),
+            ],
+        )
+    )
+    session.add_tool_results([ToolResultBlock(tool_use_id="tool-1", content="done")])
+    session.add("assistant", "Tool finished")
+    session.add("user", "Second request")
+    session.add("assistant", "Second response")
+
+    summary = await session.compact_context(DummyProvider(model="dummy"), keep_recent=3)
+
+    assert summary == "Compacted summary"
+    assert session.messages[0].role == "system"
+    assert session.messages[0].content == "Conversation summary:\n\nCompacted summary"
+    assert [message.role for message in session.messages[1:]] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_compact_context_fallback_keeps_messages_from_user_boundary():
+    """Fallback truncation should not start with an assistant-only fragment."""
+    session = Session()
+    session.add("user", "First request")
+    session.add("assistant", "First response")
+    session.add_message(
+        Message(
+            role="assistant",
+            content=[
+                TextBlock(text="Running tool"),
+                ToolUseBlock(id="tool-2", name="search", arguments={"q": "y"}),
+            ],
+        )
+    )
+    session.add_tool_results([ToolResultBlock(tool_use_id="tool-2", content="done")])
+    session.add("assistant", "Tool finished")
+    session.add("user", "Latest request")
+    session.add("assistant", "Latest response")
+
+    class FailingProvider(BaseProvider):
+        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+            raise RuntimeError("boom")
+
+    summary = await session.compact_context(
+        FailingProvider(model="dummy"), keep_recent=2
+    )
+
+    assert "Compaction failed" in summary
+    assert session.messages[0].role == "user"
+    assert [message.role for message in session.messages] == ["user", "assistant"]

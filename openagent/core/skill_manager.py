@@ -244,7 +244,34 @@ def get_command_registry() -> SlashCommandRegistry:
     global _global_command_registry
     if _global_command_registry is None:
         _global_command_registry = SlashCommandRegistry()
+    
+    # Register built-in slash commands if not already registered
+    registry = _global_command_registry
+    
+    # Register /compact command if not present
+    if "compact" not in registry.commands:
+        async def compact_handler(args: list[str]) -> str:
+            """Handler for the /compact command."""
+            from openagent.core.session import Session
+            from openagent.provider.base import BaseProvider
+            
+            # This will be called with access to coder instance
+            return "Context compaction triggered manually."
+        
+        registry.register(
+            name="compact",
+            handler=lambda args: "Use /compact in the CLI to trigger context compaction.",
+            description="Manually compact conversation history"
+        )
+    
     return _global_command_registry
+
+
+async def reset_managers():
+    """Reset all managers (useful for testing)."""
+    global _global_skill_manager, _global_command_registry
+    _global_skill_manager = None
+    _global_command_registry = None
 
 
 async def reset_managers():

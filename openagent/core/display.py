@@ -18,6 +18,7 @@ class Colors:
     CYAN = "\033[96m"
     MAGENTA = "\033[95m"
     WHITE = "\033[97m"
+    USER_INPUT = "\033[92m"  # Bright green for user input to distinguish from agent responses
 
 
 def should_use_colors() -> bool:
@@ -54,6 +55,10 @@ if should_use_colors():
 
     def white(text: str) -> str:
         return f"{Colors.WHITE}{text}{Colors.RESET}"
+
+    def user_input(text: str) -> str:
+        """Style text as user input (bright green)."""
+        return f"{Colors.USER_INPUT}{text}{Colors.RESET}"
 else:
     # Fallback to plain text when colors are not available
     def bold(text: str) -> str:
@@ -81,6 +86,10 @@ else:
         return text
 
     def white(text: str) -> str:
+        return text
+
+    def user_input(text: str) -> str:
+        """Style text as user input (bright green)."""
         return text
 
 
