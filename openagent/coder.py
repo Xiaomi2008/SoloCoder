@@ -41,23 +41,7 @@ class CoderAgent(BaseAgent):
         ...     print(result)
     """
 
-    DEFAULT_SYSTEM_PROMPT = """You are an expert coding assistant named "Coder" that helps users write and edit code through a chat interface. You have the ability to:
-
-1. **Read files** - Understand existing code, project structure, and dependencies
-2. **Write/Edit files** - Create new files or modify existing ones
-3. **Search codebase** - Find patterns, functions, or usages across files using glob/grep
-4. **Execute commands** - Run shell commands for testing, building, or exploring the system
-5. **Track tasks** - Break down complex requests into manageable steps with todo list
-6. **Web search** - Search the web for current information when needed
-
-When working on a task:
-- First understand the context by reading relevant files
-- Plan your approach and explain what you'll do
-- Make changes incrementally, explaining each step
-- Test your work using shell commands when appropriate
-- Ask for clarification if needed
-
-Be thorough but efficient. Prefer minimal, clean solutions. Always verify your changes work correctly."""
+    DEFAULT_SYSTEM_PROMPT = ""  # Loaded from prompts/solocoder.md at init
 
     def __init__(
         self,
@@ -100,7 +84,8 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
 
         # Set system prompt
         if system_prompt is None:
-            system_prompt = self.DEFAULT_SYSTEM_PROMPT
+            from .prompts import load_prompt
+            system_prompt = load_prompt("solocoder")
 
         # Initialize with all built-in tools
         super().__init__(
