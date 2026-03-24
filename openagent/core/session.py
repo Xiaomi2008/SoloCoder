@@ -38,6 +38,9 @@ class Session:
     def add_message(self, message: Message) -> None:
         self._messages.append(message)
 
+    def replace_history(self, messages: list[Message]) -> None:
+        self._messages = list(messages)
+
     def add_tool_results(self, results: list[ToolResultBlock]) -> Message:
         msg = tool_result_message(results)
         self._messages.append(msg)
@@ -69,14 +72,15 @@ class Session:
                             }
                         )
                     elif isinstance(b, ToolResultBlock):
-                        blocks.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": b.tool_use_id,
-                                "content": b.content,
-                                "is_error": b.is_error,
-                            }
-                        )
+                        block = {
+                            "type": "tool_result",
+                            "tool_use_id": b.tool_use_id,
+                            "content": b.content,
+                            "is_error": b.is_error,
+                        }
+                        if b.tool_name is not None:
+                            block["tool_name"] = b.tool_name
+                        blocks.append(block)
                 out.append({"role": msg.role, "content": blocks})
         return out
 
@@ -129,6 +133,7 @@ class Session:
                         blocks.append(
                             ToolResultBlock(
                                 tool_use_id=block_data["tool_use_id"],
+                                tool_name=block_data.get("tool_name"),
                                 content=block_data["content"],
                                 is_error=block_data.get("is_error", False),
                             )
@@ -162,14 +167,15 @@ class Session:
                             }
                         )
                     elif isinstance(b, ToolResultBlock):
-                        blocks.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": b.tool_use_id,
-                                "content": b.content,
-                                "is_error": b.is_error,
-                            }
-                        )
+                        block = {
+                            "type": "tool_result",
+                            "tool_use_id": b.tool_use_id,
+                            "content": b.content,
+                            "is_error": b.is_error,
+                        }
+                        if b.tool_name is not None:
+                            block["tool_name"] = b.tool_name
+                        blocks.append(block)
                 out.append({"role": msg.role, "content": blocks})
         return out
 
@@ -287,11 +293,15 @@ Please provide the summary now.""",
             summary_text = response.text
 
             # Replace old messages with summary and keep recent ones
-            self._messages = [
-                Message(
-                    role="system", content=f"Conversation summary:\n\n{summary_text}"
-                )
-            ] + self._get_compaction_tail(keep_recent)
+            self.replace_history(
+                [
+                    Message(
+                        role="system",
+                        content=f"Conversation summary:\n\n{summary_text}",
+                    )
+                ]
+                + self._get_compaction_tail(keep_recent)
+            )
 
             return (
                 f"Context compacted. Summary:\n{summary_text[:200]}..."
@@ -301,7 +311,7 @@ Please provide the summary now.""",
 
         except Exception as e:
             # Fallback: simple truncation without LLM summarization
-            self._messages = self._get_compaction_tail(keep_recent * 2)
+            self.replace_history(self._get_compaction_tail(keep_recent * 2))
             return f"Compaction failed ({e}). Kept last {len(self._messages)} messages."
 
     def check_compaction_needed(

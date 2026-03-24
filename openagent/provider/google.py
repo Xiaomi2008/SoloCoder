@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import uuid
 from typing import Any
 
 from openagent.provider.base import BaseProvider
@@ -13,6 +14,14 @@ from openagent.core.types import (
     ToolDef,
     ToolResultBlock,
     ToolUseBlock,
+)
+from openagent.providers import (
+    ProviderError,
+    ProviderMessageCompleted,
+    ProviderMessageStarted,
+    ProviderStreamEvent,
+    ProviderTextDelta,
+    ProviderToolCall,
 )
 
 
@@ -38,10 +47,12 @@ class GoogleConverterMixin(MessageConverterMixin):
                 )
 
             elif msg.role == "user":
-                contents.append(types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=msg.text)],
-                ))
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=msg.text)],
+                    )
+                )
 
             elif msg.role == "assistant":
                 parts: list[types.Part] = []
@@ -52,10 +63,12 @@ class GoogleConverterMixin(MessageConverterMixin):
                         if isinstance(b, TextBlock):
                             parts.append(types.Part.from_text(text=b.text))
                         elif isinstance(b, ToolUseBlock):
-                            parts.append(types.Part.from_function_call(
-                                name=b.name,
-                                args=b.arguments,
-                            ))
+                            parts.append(
+                                types.Part.from_function_call(
+                                    name=b.name,
+                                    args=b.arguments,
+                                )
+                            )
                 contents.append(types.Content(role="model", parts=parts))
 
             elif msg.role == "tool_result":
@@ -63,10 +76,12 @@ class GoogleConverterMixin(MessageConverterMixin):
                 if isinstance(msg.content, list):
                     for b in msg.content:
                         if isinstance(b, ToolResultBlock):
-                            parts.append(types.Part.from_function_response(
-                                name=b.tool_use_id,
-                                response={"result": b.content},
-                            ))
+                            parts.append(
+                                types.Part.from_function_response(
+                                    name=b.tool_name or b.tool_use_id,
+                                    response={"result": b.content},
+                                )
+                            )
                 if parts:
                     contents.append(types.Content(role="user", parts=parts))
 
@@ -82,10 +97,12 @@ class GoogleConverterMixin(MessageConverterMixin):
                 blocks.append(TextBlock(text=part.text))
             elif part.function_call is not None:
                 fc = part.function_call
-                blocks.append(ToolUseBlock(
-                    name=fc.name,
-                    arguments=dict(fc.args) if fc.args else {},
-                ))
+                blocks.append(
+                    ToolUseBlock(
+                        name=fc.name,
+                        arguments=dict(fc.args) if fc.args else {},
+                    )
+                )
 
         if len(blocks) == 1 and isinstance(blocks[0], TextBlock):
             return Message(role="assistant", content=blocks[0].text)
@@ -96,11 +113,13 @@ class GoogleConverterMixin(MessageConverterMixin):
         for t in tools:
             params = dict(t.parameters)
             params.pop("additionalProperties", None)
-            declarations.append({
-                "name": t.name,
-                "description": t.description,
-                "parameters": params,
-            })
+            declarations.append(
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": params,
+                }
+            )
         return declarations
 
 
@@ -148,7 +167,9 @@ class GoogleProvider(GoogleConverterMixin, BaseProvider):
                 config_kwargs["system_instruction"] = converted["system_instruction"]
             if tools:
                 declarations = self.convert_tools(tools)
-                config_kwargs["tools"] = [types.Tool(function_declarations=declarations)]
+                config_kwargs["tools"] = [
+                    types.Tool(function_declarations=declarations)
+                ]
 
             response = await self._client.aio.models.generate_content(
                 model=self.model,
@@ -165,8 +186,8 @@ class GoogleProvider(GoogleConverterMixin, BaseProvider):
         tools: list[ToolDef] | None = None,
         system_prompt: str = "",
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """Stream text chunks from Google."""
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        """Stream provider events from Google."""
         from google.genai import types
 
         converted = self.convert_messages(messages, system_prompt)
@@ -177,10 +198,36 @@ class GoogleProvider(GoogleConverterMixin, BaseProvider):
             declarations = self.convert_tools(tools)
             config_kwargs["tools"] = [types.Tool(function_declarations=declarations)]
 
-        async for chunk in await self._client.aio.models.generate_content_stream(
-            model=self.model,
-            contents=converted["contents"],
-            config=types.GenerateContentConfig(**config_kwargs),
-        ):
-            if chunk.text:
-                yield chunk.text
+        message_id = f"msg_{uuid.uuid4().hex[:24]}"
+        yield ProviderMessageStarted(message_id=message_id)
+
+        try:
+            stream = await self._client.aio.models.generate_content_stream(
+                model=self.model,
+                contents=converted["contents"],
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+            async for chunk in stream:
+                if chunk.text:
+                    yield ProviderTextDelta(message_id=message_id, delta=chunk.text)
+
+                for candidate in getattr(chunk, "candidates", None) or []:
+                    content = getattr(candidate, "content", None)
+                    for part in getattr(content, "parts", None) or []:
+                        function_call = getattr(part, "function_call", None)
+                        if function_call is None:
+                            continue
+
+                        yield ProviderToolCall(
+                            message_id=message_id,
+                            id=f"call_{uuid.uuid4().hex[:24]}",
+                            name=function_call.name,
+                            arguments=dict(function_call.args)
+                            if function_call.args
+                            else {},
+                        )
+        except Exception as exc:
+            yield ProviderError(message_id=message_id, error=str(exc))
+            return
+
+        yield ProviderMessageCompleted(message_id=message_id)
