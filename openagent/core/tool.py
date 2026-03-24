@@ -27,6 +27,8 @@ def _build_parameters_schema(func: Callable[..., Any]) -> dict[str, Any]:
     for name, param in sig.parameters.items():
         if name == "self":
             continue
+        if name == "context":
+            continue
         hint = hints.get(name, str)
         json_type = PYTHON_TYPE_TO_JSON.get(hint, "string")
         properties[name] = {"type": json_type}
@@ -70,6 +72,38 @@ class ToolEntry:
     func: Callable[..., Any]
 
 
+async def _execute_tool_entry(
+    entry: ToolEntry,
+    tool_call: ToolUseBlock,
+    context: Any | None = None,
+) -> ToolResultBlock:
+    try:
+        func = entry.func
+        arguments = dict(tool_call.arguments)
+
+        if context is not None and "context" in inspect.signature(func).parameters:
+            arguments["context"] = context
+
+        if asyncio.iscoroutinefunction(func):
+            result = await func(**arguments)
+        else:
+            result = func(**arguments)
+
+        content = result if isinstance(result, str) else json.dumps(result)
+        return ToolResultBlock(
+            tool_use_id=tool_call.id,
+            tool_name=entry.name,
+            content=content,
+        )
+    except Exception as e:
+        return ToolResultBlock(
+            tool_use_id=tool_call.id,
+            tool_name=entry.name,
+            content=f"Error: {e}",
+            is_error=True,
+        )
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolEntry] = {}
@@ -93,7 +127,7 @@ class ToolRegistry:
         """Register a Python function as a tool (via @tool decorator or automatic inspection)."""
         if not hasattr(func, "_tool_name"):
             func = tool(func)
-        
+
         self.register_tool(
             name=getattr(func, "_tool_name"),
             description=getattr(func, "_tool_description"),
@@ -104,6 +138,9 @@ class ToolRegistry:
     def get(self, name: str) -> Callable[..., Any] | None:
         entry = self._tools.get(name)
         return entry.func if entry else None
+
+    def resolve(self, name: str) -> ToolEntry | None:
+        return self._tools.get(name)
 
     @property
     def definitions(self) -> list[ToolDef]:
@@ -116,33 +153,20 @@ class ToolRegistry:
             for entry in self._tools.values()
         ]
 
-    async def execute(self, tool_call: ToolUseBlock) -> ToolResultBlock:
-        entry = self._tools.get(tool_call.name)
+    async def execute(
+        self,
+        tool_call: ToolUseBlock,
+        context: Any | None = None,
+    ) -> ToolResultBlock:
+        entry = self.resolve(tool_call.name)
         if entry is None:
             return ToolResultBlock(
                 tool_use_id=tool_call.id,
+                tool_name=tool_call.name,
                 content=f"Error: tool '{tool_call.name}' not found",
                 is_error=True,
             )
-        try:
-            func = entry.func
-            if asyncio.iscoroutinefunction(func):
-                result = await func(**tool_call.arguments)
-            else:
-                result = func(**tool_call.arguments)
-            
-            # Ensure result is a string (or convert to JSON string if not)
-            content = result if isinstance(result, str) else json.dumps(result)
-            return ToolResultBlock(
-                tool_use_id=tool_call.id,
-                content=content,
-            )
-        except Exception as e:
-            return ToolResultBlock(
-                tool_use_id=tool_call.id,
-                content=f"Error: {e}",
-                is_error=True,
-            )
+        return await _execute_tool_entry(entry, tool_call, context)
 
     def __len__(self) -> int:
         return len(self._tools)

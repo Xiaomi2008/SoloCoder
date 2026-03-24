@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from openagent import Agent, tool
+from openagent.core import agent as core_agent_module
+from openagent.core.session import Session
 from openagent.core.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from openagent.runtime import AgentResult
 
 
 def test_agent_init(mock_provider, simple_response):
@@ -40,6 +43,200 @@ async def test_agent_simple_run(mock_provider, simple_response):
 
     assert result == "Hello!"
     assert len(agent.messages) == 2  # user + assistant
+
+
+async def test_agent_simple_run_bridges_to_runtime_agent(mock_provider, monkeypatch):
+    """Test simple runs delegate through the bootstrap runtime agent."""
+
+    calls = {}
+
+    class FakeRuntimeAgent:
+        def __init__(self, provider, system_prompt=""):
+            calls["provider"] = provider
+            calls["system_prompt"] = system_prompt
+            self.session = Session(system_prompt=system_prompt)
+
+        async def run(self, user_input: str, **kwargs):
+            calls["user_input"] = user_input
+            calls["kwargs"] = kwargs
+            self.session.add("user", user_input)
+            self.session.add("assistant", "Hello from runtime")
+            return AgentResult(
+                run_id="run_123",
+                final_message_id="msg_123",
+                output_text="Hello from runtime",
+            )
+
+    monkeypatch.setattr(
+        core_agent_module, "RuntimeAgent", FakeRuntimeAgent, raising=False
+    )
+
+    provider = mock_provider()
+    agent = Agent(provider=provider, system_prompt="Test prompt")
+
+    result = await agent.run("Hello!", temperature=0)
+
+    assert result == "Hello from runtime"
+    assert calls == {
+        "provider": provider,
+        "system_prompt": "Test prompt",
+        "user_input": "Hello!",
+        "kwargs": {"temperature": 0},
+    }
+    assert [message.role for message in agent.messages] == ["user", "assistant"]
+
+
+async def test_agent_simple_run_filters_core_only_kwargs_before_provider_call() -> None:
+    """Test no-tool runtime bridge strips core-only kwargs before provider.chat."""
+
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+            self.kwargs = kwargs
+            return Message(role="assistant", content="Hello!")
+
+    provider = RecordingProvider()
+    agent = Agent(provider=provider)
+
+    result = await agent.run(
+        "Hello!",
+        temperature=0,
+        max_context_tokens=123,
+        compact_threshold=0.5,
+        disable_compaction=True,
+    )
+
+    assert result == "Hello!"
+    assert provider.kwargs == {"temperature": 0}
+
+
+async def test_agent_simple_run_compacts_context_before_runtime_provider_call(
+    monkeypatch,
+) -> None:
+    """Test no-tool runtime bridge preserves legacy session compaction behavior."""
+
+    events = []
+
+    class RecordingProvider:
+        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+            events.append(("provider_chat", kwargs))
+            return Message(role="assistant", content="Hello!")
+
+    provider = RecordingProvider()
+    agent = Agent(provider=provider)
+
+    def fake_check_compaction_needed(*, max_tokens: int, threshold: float) -> bool:
+        events.append(("check", max_tokens, threshold))
+        return True
+
+    async def fake_compact_context(
+        *, provider, keep_recent: int, summary_type: str
+    ) -> str:
+        events.append(("compact", provider, keep_recent, summary_type))
+        return "summary"
+
+    monkeypatch.setattr(
+        agent.session, "check_compaction_needed", fake_check_compaction_needed
+    )
+    monkeypatch.setattr(agent.session, "compact_context", fake_compact_context)
+
+    result = await agent.run("Hello!", max_context_tokens=123, compact_threshold=0.5)
+
+    assert result == "Hello!"
+    assert events == [
+        ("check", 123, 0.5),
+        ("compact", provider, 5, "detailed"),
+        ("provider_chat", {}),
+    ]
+
+
+async def test_agent_simple_run_disable_compaction_bypasses_runtime_compaction(
+    monkeypatch,
+) -> None:
+    """Test no-tool runtime bridge skips compaction when disabled."""
+
+    events = []
+
+    class RecordingProvider:
+        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+            events.append(("provider_chat", kwargs))
+            return Message(role="assistant", content="Hello!")
+
+    provider = RecordingProvider()
+    agent = Agent(provider=provider)
+
+    def fake_check_compaction_needed(*, max_tokens: int, threshold: float) -> bool:
+        events.append(("check", max_tokens, threshold))
+        return True
+
+    async def fake_compact_context(
+        *, provider, keep_recent: int, summary_type: str
+    ) -> str:
+        events.append(("compact", provider, keep_recent, summary_type))
+        return "summary"
+
+    monkeypatch.setattr(
+        agent.session, "check_compaction_needed", fake_check_compaction_needed
+    )
+    monkeypatch.setattr(agent.session, "compact_context", fake_compact_context)
+
+    result = await agent.run(
+        "Hello!",
+        max_context_tokens=123,
+        compact_threshold=0.5,
+        disable_compaction=True,
+    )
+
+    assert result == "Hello!"
+    assert events == [("provider_chat", {})]
+
+
+async def test_agent_simple_run_preserves_history_across_no_tool_runs() -> None:
+    """Test consecutive no-tool runs keep session history in provider messages."""
+
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.calls = []
+            self.responses = iter(
+                [
+                    Message(role="assistant", content="Hello!"),
+                    Message(role="assistant", content="I remember."),
+                ]
+            )
+
+        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+            self.calls.append(
+                {
+                    "messages": list(messages),
+                    "tools": tools,
+                    "system_prompt": system_prompt,
+                    "kwargs": kwargs,
+                }
+            )
+            return next(self.responses)
+
+    provider = RecordingProvider()
+    agent = Agent(provider=provider, system_prompt="Test prompt")
+
+    first_result = await agent.run("Hello!")
+    second_result = await agent.run("What did I just say?")
+
+    assert first_result == "Hello!"
+    assert second_result == "I remember."
+    assert [message.role for message in provider.calls[0]["messages"]] == ["user"]
+    assert [message.content for message in provider.calls[0]["messages"]] == ["Hello!"]
+    assert [message.role for message in provider.calls[1]["messages"]] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert [message.content for message in provider.calls[1]["messages"]] == [
+        "Hello!",
+        "Hello!",
+        "What did I just say?",
+    ]
 
 
 async def test_agent_with_tool_call(mock_provider):

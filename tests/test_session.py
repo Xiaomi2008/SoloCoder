@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -60,6 +62,25 @@ def test_session_clear():
     assert len(session) == 2
     session.clear()
     assert len(session) == 0
+
+
+def test_session_replace_history_replaces_messages_with_summary():
+    """Replacing history should swap the authoritative session store."""
+    session = Session(system_prompt="Test prompt")
+    session.add("user", "Old request")
+    session.add("assistant", "Old response")
+
+    replacement = [
+        Message(role="system", content="Conversation summary:\n\nCompacted history"),
+        Message(role="user", content="Latest request"),
+    ]
+
+    session.replace_history(replacement)
+    replacement.append(Message(role="assistant", content="Should not leak in"))
+
+    assert [message.role for message in session.messages] == ["system", "user"]
+    assert session.messages[0].content == "Conversation summary:\n\nCompacted history"
+    assert session.messages[1].content == "Latest request"
 
 
 def test_session_to_list():
@@ -168,6 +189,33 @@ def test_session_save_load_complex():
         Path(path).unlink()
 
 
+def test_session_save_load_preserves_tool_result_tool_name():
+    """Tool result tool names should survive session persistence."""
+    session = Session()
+    session.add_tool_results(
+        [
+            ToolResultBlock(
+                tool_use_id="abc",
+                tool_name="search",
+                content="Found it",
+            )
+        ]
+    )
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        path = f.name
+
+    try:
+        session.save(path)
+        loaded = Session.load(path)
+
+        tool_result = loaded.messages[0].content[0]
+        assert isinstance(tool_result, ToolResultBlock)
+        assert tool_result.tool_name == "search"
+    finally:
+        Path(path).unlink()
+
+
 @pytest.mark.asyncio
 async def test_compact_context_uses_canonical_messages_and_summary_boundary():
     """Compaction should call providers with Message objects and keep a valid tail."""
@@ -226,3 +274,39 @@ async def test_compact_context_fallback_keeps_messages_from_user_boundary():
     assert "Compaction failed" in summary
     assert session.messages[0].role == "user"
     assert [message.role for message in session.messages] == ["user", "assistant"]
+
+
+def test_session_token_count_uses_fallback_when_tiktoken_unavailable(monkeypatch):
+    """Token counting should not crash if tiktoken cannot be imported."""
+    session = Session()
+    session.add("user", "alpha beta")
+    session.add_message(
+        Message(role="assistant", content=[TextBlock(text="gamma delta")])
+    )
+
+    monkeypatch.setitem(sys.modules, "tiktoken", None)
+    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
+
+    token_count = session.token_count
+
+    assert token_count == 12
+
+    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
+    importlib.import_module("openagent.core.utils")
+
+
+def test_session_check_compaction_needed_uses_fallback_when_tiktoken_unavailable(
+    monkeypatch,
+):
+    """Compaction checks should keep working without tiktoken."""
+    session = Session()
+    session.add("user", "alpha beta")
+    session.add("assistant", "gamma delta")
+
+    monkeypatch.setitem(sys.modules, "tiktoken", None)
+    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
+
+    assert session.check_compaction_needed(max_tokens=11, threshold=1.0) is True
+
+    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
+    importlib.import_module("openagent.core.utils")

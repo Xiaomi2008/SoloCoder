@@ -73,10 +73,18 @@ SoloCoder proves this architecture works in practice: it's a fully functional co
 
 | Component | Purpose |
 |-----------|---------|
-| **OpenAgent** | Async-first agent framework with pluggable providers, tool registry, and session persistence |
-| **Coder Agent** | Specialized agent for code editing tasks with file operations, shell execution, and task tracking |
+| **OpenAgent** | Async-first agent framework with `openagent.model`, `openagent.runtime`, provider integrations, and session persistence |
+| **SoloCoder app** | `openagent.apps.solocoder` composes the coding workflow, tool bundle, and CLI-facing agent |
 | **LM Studio** | Local LLM server providing OpenAI-compatible API endpoint |
 | **Qwen3.5-35B-A3B** | Backbone model serving as the "brain" of the coding agent |
+
+### Python Namespaces
+
+- `openagent.model`: canonical message and tool block types
+- `openagent.runtime`: runtime agent, result objects, and runtime events
+- `openagent.providers`: shared provider stream event types; `openagent.provider` remains the compatibility path for provider implementations
+- `openagent.infrastructure`: MCP and shell-adjacent infrastructure helpers
+- `openagent.apps.solocoder`: SoloCoder-specific agent composition; top-level `openagent` imports still re-export common entry points
 
 ### Workflow
 
@@ -320,21 +328,27 @@ SoloCoder/
 ├── cli_coder.py              # Main CLI entry point with interactive session
 ├── openagent/                # Agent framework package
 │   ├── __init__.py          # Public API exports
-│   ├── core/                # Core agent components
+│   ├── apps/                # Application packages (including SoloCoder)
+│   ├── infrastructure/      # MCP and shell infrastructure helpers
+│   ├── model/               # Canonical message and tool block exports
+│   ├── runtime/             # Runtime agent, context, and event surfaces
+│   ├── core/                # Legacy/internal framework components
 │   │   ├── agent.py         # Agent class — main orchestrator
 │   │   ├── types.py         # Canonical types (Message, ToolUseBlock, etc.)
 │   │   ├── tool.py          # @tool decorator and registry
 │   │   ├── session.py       # Session management and persistence
 │   │   ├── logging.py       # Logging configuration
 │   │   └── retry.py         # Retry logic with exponential backoff
-│   ├── provider/            # LLM provider implementations
+│   ├── provider/            # Provider implementations and compatibility imports
+│   ├── providers/           # Shared provider event types
 │   │   ├── base.py          # BaseProvider ABC
 │   │   ├── openai.py        # OpenAI-compatible API support
 │   │   ├── anthropic.py     # Anthropic/Claude support
 │   │   ├── google.py        # Google/Gemini support
 │   │   └── ollama.py        # Ollama local models support
 │   ├── tools/               # Built-in tool implementations
-│   └── mcp.py               # MCP client integration
+│   ├── coder.py             # SoloCoder compatibility shim
+│   └── mcp.py               # MCP compatibility shim
 ├── tests/                    # Test suite
 └── examples/                 # Usage examples
 ```
