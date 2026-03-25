@@ -10,6 +10,12 @@ async def list_models():
     return ModelsResponse(
         models=[
             ModelInfo(
+                id="qwen3.5-35b-a3b",
+                name="Qwen3.5-35B-A3B",
+                provider="LM Studio (Local)",
+                description="Qwen3.5 35B model via LM Studio local server",
+            ),
+            ModelInfo(
                 id="gpt-4o",
                 name="GPT-4o",
                 provider="OpenAI",

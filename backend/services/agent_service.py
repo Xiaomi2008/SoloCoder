@@ -6,6 +6,7 @@ from openagent.coder import CoderAgent
 from openagent.provider.openai import OpenAIProvider
 from api.schemas import Message, MessageRole, ChatResponse
 
+
 class AgentService:
     """Service for managing CoderAgent instances."""
 
@@ -14,16 +15,15 @@ class AgentService:
         self._lock = asyncio.Lock()
 
     async def get_or_create_session(
-        self,
-        session_id: Optional[str],
-        model: str = "gpt-4o"
+        self, session_id: Optional[str], model: str = "qwen3.5-35b-a3b"
     ) -> CoderAgent:
         """Get or create a session for the given model."""
         async with self._lock:
             if not session_id or session_id not in self.sessions:
                 provider = OpenAIProvider(
                     model=model,
-                    api_key=settings.openai_api_key
+                    api_key=settings.openai_api_key,
+                    base_url=settings.openai_compatible_url,
                 )
                 agent = CoderAgent(
                     provider=provider,
@@ -43,24 +43,19 @@ class AgentService:
         message: str,
         session_id: Optional[str],
         model: Optional[str] = None,
-        timeout: int = 60
+        timeout: int = 60,
     ) -> ChatResponse:
         """Process a message through the agent."""
         import asyncio
 
-        actual_model = model or "gpt-4o"
+        actual_model = model or "qwen3.5-35b-a3b"
         agent = await self.get_or_create_session(session_id, actual_model)
 
         try:
-            response = await asyncio.wait_for(
-                agent.run(message),
-                timeout=timeout
-            )
+            response = await asyncio.wait_for(agent.run(message), timeout=timeout)
 
             msg = Message(
-                id=str(uuid.uuid4()),
-                role=MessageRole.assistant,
-                content=str(response)
+                id=str(uuid.uuid4()), role=MessageRole.assistant, content=str(response)
             )
 
             return ChatResponse(message=msg)
