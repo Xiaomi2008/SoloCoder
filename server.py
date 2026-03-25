@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from openagent import configure_logging, OpenAIProvider
 from openagent.coder import CoderAgent
@@ -61,6 +62,31 @@ def render_chat_history():
     """Render all messages in chat history."""
     for message in st.session_state.chat_history:
         display_chat_message(message["content"], is_user=message["role"] == "user")
+
+
+def handle_agent_response(prompt: str) -> bool:
+    """Process user prompt through agent and return response.
+
+    Returns:
+        True if successful, False if error occurred
+    """
+    try:
+        response = asyncio.run(st.session_state.agent.run(prompt))
+
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": str(response)}
+        )
+
+        st.session_state.turn_counter += 1
+
+        return True
+
+    except Exception as e:
+        error_msg = format_error_message(e)
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": error_msg}
+        )
+        return False
 
 
 def render_sidebar():
@@ -144,6 +170,16 @@ def main():
         # Add user message to history
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         display_chat_message(prompt, is_user=True)
+
+        # Process through agent if agent is ready
+        if st.session_state.agent:
+            with st.spinner("⏳ Thinking..."):
+                success = handle_agent_response(prompt)
+
+            if success:
+                display_chat_message(
+                    st.session_state.chat_history[-1]["content"], is_user=False
+                )
 
 
 if __name__ == "__main__":
