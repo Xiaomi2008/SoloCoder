@@ -6,7 +6,7 @@ from api.schemas import ChatRequest, ChatResponse, MessageRole, Message
 import uuid
 import asyncio
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1", tags=["chat"])
 
 
 class ChatResponseSchema(BaseModel):
@@ -15,19 +15,16 @@ class ChatResponseSchema(BaseModel):
     status: str
 
 
-@router.get("/")
+@router.get("/chat")
 async def chat_root():
     """Chat endpoint root."""
-    return ChatResponseSchema(status="chat endpoint ready")
+    return {"status": "chat endpoint ready"}
 
 
-@router.post("/message")
-async def chat_message(
-    request: ChatRequest, service: AgentService = None
-) -> ChatResponse:
+@router.post("/chat/message")
+async def chat_message(request: ChatRequest) -> ChatResponse:
     """Process a chat message."""
-    if service is None:
-        service = AgentService()
+    service = AgentService()
 
     try:
         response_text = await service.process_message(

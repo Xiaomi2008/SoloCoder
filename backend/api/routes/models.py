@@ -1,10 +1,10 @@
 from fastapi import APIRouter
 from api.schemas import ModelsResponse, ModelInfo
 
-router = APIRouter()
+router = APIRouter(prefix="/api/v1", tags=["models"])
 
 
-@router.get("/list")
+@router.get("/models/list")
 async def list_models():
     """List available models."""
     return ModelsResponse(
