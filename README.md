@@ -282,21 +282,27 @@ SoloCoder/
 ├── server.py                 # Streamlit web UI entry point
 ├── openagent/                # Agent framework package
 │   ├── __init__.py          # Public API exports
-│   ├── core/                # Core agent components
+│   ├── apps/                # Application packages (including SoloCoder)
+│   ├── infrastructure/      # MCP and shell infrastructure helpers
+│   ├── model/               # Canonical message and tool block exports
+│   ├── runtime/             # Runtime agent, context, and event surfaces
+│   ├── core/                # Legacy/internal framework components
 │   │   ├── agent.py         # Agent class — main orchestrator
 │   │   ├── types.py         # Canonical types (Message, ToolUseBlock, etc.)
 │   │   ├── tool.py          # @tool decorator and registry
 │   │   ├── session.py       # Session management and persistence
 │   │   ├── logging.py       # Logging configuration
 │   │   └── retry.py         # Retry logic with exponential backoff
-│   ├── provider/            # LLM provider implementations
+│   ├── provider/            # Provider implementations and compatibility imports
+│   ├── providers/           # Shared provider event types
 │   │   ├── base.py          # BaseProvider ABC
 │   │   ├── openai.py        # OpenAI-compatible API support
 │   │   ├── anthropic.py     # Anthropic/Claude support
 │   │   ├── google.py        # Google/Gemini support
 │   │   └── ollama.py        # Ollama local models support
 │   ├── tools/               # Built-in tool implementations
-│   └── mcp.py               # MCP client integration
+│   ├── coder.py             # SoloCoder compatibility shim
+│   └── mcp.py               # MCP compatibility shim
 ├── tests/                    # Test suite
 ├── examples/                 # Usage examples
 ├── .env.example              # Environment variables template

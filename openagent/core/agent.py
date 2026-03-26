@@ -179,7 +179,7 @@ from .skill_manager import (
 from .task_manager import TaskManager, get_task_manager
 from .tool import ToolRegistry, tool
 from .types import Message
-from pathlib import Path
+from openagent.runtime.agent import Agent as RuntimeAgent
 
 # BaseProvider is likely in parent package or sibling 'provider' package
 # Since we are in core/, provider/ is '../provider/'
@@ -253,6 +253,23 @@ class Agent:
 
     async def run(self, user_input: str, **kwargs: Any) -> str:
         self._logger.run_start(user_input)
+        if len(self.tool_registry) == 0:
+            runtime_agent = RuntimeAgent(
+                provider=self.provider,
+                system_prompt=self.session.system_prompt,
+            )
+            runtime_agent.session = self.session
+            try:
+                result = await runtime_agent.run(user_input, **kwargs)
+            except RuntimeError as exc:
+                self.session = runtime_agent.session
+                if "empty responses repeatedly" in str(exc):
+                    return str(exc)
+                raise
+
+            self.session = runtime_agent.session
+            return result.output_text
+
         self.session.add("user", user_input)
         result = await self._loop(**kwargs)
         return result
