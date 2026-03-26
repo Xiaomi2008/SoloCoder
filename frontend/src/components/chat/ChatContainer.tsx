@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react'
+import { useRef, useEffect } from 'react'
 import { useAgent } from '../../contexts/AgentContext'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'

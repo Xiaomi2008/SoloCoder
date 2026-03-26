@@ -7,7 +7,6 @@ import { ModelInfo } from '../../types/api'
 function StatusPanel() {
   const { state, updateModel, resetSession } = useAgent()
   const [models, setModels] = React.useState<ModelInfo[]>([])
-  const [isLoading, setIsLoading] = React.useState(false)
 
   React.useEffect(() => {
     const loadModels = async () => {
@@ -82,10 +81,9 @@ function StatusPanel() {
 
         <button
           onClick={handleNewSession}
-          disabled={isLoading}
           className="w-full py-2 px-4 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {isLoading ? 'Clearing...' : 'New Session'}
+          New Session
         </button>
       </div>
     </div>

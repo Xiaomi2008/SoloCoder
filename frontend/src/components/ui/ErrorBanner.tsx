@@ -1,4 +1,3 @@
-import React from 'react'
 import { AppErrorName } from '../../types/agent'
 
 interface ErrorBannerProps {

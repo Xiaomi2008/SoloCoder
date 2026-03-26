@@ -1,5 +1,3 @@
-import React from 'react'
-
 interface ToolCallDisplayProps {
   toolName: string
   arguments: Record<string, unknown>

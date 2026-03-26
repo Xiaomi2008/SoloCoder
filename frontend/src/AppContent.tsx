@@ -1,15 +1,10 @@
-import { useEffect } from 'react'
 import { useAgent } from './contexts/AgentContext'
 import ChatContainer from './components/chat/ChatContainer'
 import StatusPanel from './components/status/StatusPanel'
 import ErrorBanner from './components/ui/ErrorBanner'
 
 function AppContent() {
-  const { state, connect, clearError } = useAgent()
-
-  useEffect(() => {
-    connect()
-  }, [connect])
+  const { state, clearError } = useAgent()
 
   return (
     <div className="flex h-screen bg-gray-50">
