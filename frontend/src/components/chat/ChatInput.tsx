@@ -1,11 +1,7 @@
 import React, { useState } from 'react'
 import { useAgent } from '../../contexts/AgentContext'
 
-interface ChatInputProps {
-  onSend?: (message: string) => void
-}
-
-function ChatInput({ onSend }: ChatInputProps) {
+function ChatInput() {
   const [message, setMessage] = useState('')
   const { sendMessage, state } = useAgent()
 
