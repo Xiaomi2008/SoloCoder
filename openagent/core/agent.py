@@ -12,6 +12,8 @@ from .display import (
     green,
     red,
     white,
+    diff_addition,
+    diff_deletion,
     display_tool_call_claude_style,
     display_tool_result_claude_style,
     format_diff_output,
@@ -23,7 +25,7 @@ from .display import (
 
 def display_write_result(file_path: str, result_content: str) -> None:
     """Display write operation result with file info."""
-    print(f"  ● {bold('write')}({cyan(f'"{file_path}"')})")
+    print(f"  ➜ {bold('write')}({cyan(f'"{file_path}"')})")
 
     # Parse the success message to show bytes written
     if "Successfully wrote" in result_content:
@@ -52,7 +54,7 @@ def display_write_result(file_path: str, result_content: str) -> None:
 
 def display_edit_result(file_path: str, result_content: str) -> None:
     """Display edit operation result with changed lines highlighted."""
-    print(f"  ● {bold('edit')}({cyan(f'"{file_path}"')})")
+    print(f"  ➜ {bold('edit')}({cyan(f'"{file_path}"')})")
 
     # Check if this is a unified diff format
     has_diff_format = "@@" in result_content and any(
@@ -102,6 +104,70 @@ def display_edit_result(file_path: str, result_content: str) -> None:
             print(f"    {dim(line)}")
 
 
+def display_edit_result_with_lines(file_path: str, result_content: str) -> None:
+    """Display edit operation result with line numbers like Claude Code."""
+    print(f"  ➜ {bold('edit')}({cyan(f'"{file_path}"')})")
+
+    lines = result_content.split("\n")
+    additions = 0
+    deletions = 0
+    current_line_num: int | None = None
+
+    # Count additions and deletions
+    for line in lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+
+    # Show summary
+    if additions > 0 or deletions > 0:
+        parts = []
+        if additions > 0:
+            parts.append(green(f"Added {additions} line(s)"))
+        if deletions > 0:
+            parts.append(red(f"Removed {deletions} line(s)"))
+        print(f"    ⎿ {', '.join(parts)}")
+
+    print()
+
+    # Display diff with line numbers
+    for line in lines:
+        if not line or "Successfully" in line:
+            continue
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        elif line.startswith("@@"):
+            print(f"{bold(cyan(line))}")
+            # Extract starting line number from hunk header
+            parts = line.split()
+            for part in parts:
+                if part.startswith("-") and "," in part:
+                    current_line_num = int(part[1:].split(",")[0])
+                    break
+
+        elif line.startswith("+") and not line.startswith("+++"):
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {green(num_str.ljust(4))} {diff_addition(line[1:])}")
+
+        elif line.startswith("-") and not line.startswith("---"):
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {red(num_str.ljust(4))} {diff_deletion(line[1:])}")
+
+        else:
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {dim(num_str.ljust(4))} {dim(line)}")
+
+    if additions > 0 or deletions > 0:
+        print()
+
+
 from .logging import AgentLogger
 from .session import Session
 from .skill_manager import (
@@ -113,6 +179,7 @@ from .skill_manager import (
 from .task_manager import TaskManager, get_task_manager
 from .tool import ToolRegistry, tool
 from .types import Message
+from pathlib import Path
 
 # BaseProvider is likely in parent package or sibling 'provider' package
 # Since we are in core/, provider/ is '../provider/'
@@ -227,12 +294,55 @@ class Agent:
                 )
                 self._logger.info(f"Compacted context: {summary[:100]}...")
 
+            # Display thinking indicator
+            print("\x1b[2K\x1b[G\x1b[2m⠋ Thinking...\x1b[0m", end="", flush=True)
+
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
                 system_prompt=self.session.system_prompt,
                 **kwargs,
             )
+
+            # Clear thinking indicator
+            print("\x1b[2K\x1b[G", end="", flush=True)
+
+            # Show compact context usage indicator
+            try:
+                current_tokens = self.session.token_count
+                max_tokens = kwargs.get("max_context_tokens", 128000)
+                threshold = kwargs.get("compact_threshold", 0.8)
+                percentage = (
+                    (current_tokens / max_tokens) * 100 if max_tokens > 0 else 0
+                )
+
+                if percentage >= 90:
+                    bar_color = red
+                elif percentage >= 80:
+                    bar_color = yellow
+                elif percentage >= threshold * 100:
+                    bar_color = cyan
+                else:
+                    bar_color = green
+
+                bar_width = 40
+                filled_chars = int(bar_width * percentage / 100)
+                bar = "█" * min(filled_chars, bar_width) + "░" * max(
+                    bar_width - filled_chars, 0
+                )
+
+                usage_text = f"{current_tokens:,}"
+                if percentage > 70:
+                    percent_text = cyan(f"{percentage:.0f}% ")
+                    print(
+                        f"  {dim('Context: ')}{bar_color(usage_text)} / {bar_color(str(max_tokens)[:5] + 'k')}  {percent_text}"
+                    )
+                else:
+                    print(
+                        f"  {dim('Context: ')}{bar_color(usage_text)} / {bar_color(str(max_tokens)[:5] + 'k')}"
+                    )
+            except Exception:
+                pass
 
             if self._is_empty_final_response(response):
                 self._logger._logger.warning(
@@ -305,9 +415,9 @@ class Agent:
                         # For write operations, show success message with file info
                         if tc.name == "write":
                             display_write_result(rel_path, content)
-                        # For edit operations, try to extract and show the changed lines
+                        # For edit operations, extract line counts and show diff with line numbers
                         elif tc.name == "edit":
-                            display_edit_result(rel_path, content)
+                            display_edit_result_with_lines(rel_path, content)
 
                     else:
                         display_tool_result_claude_style(result.is_error, content)

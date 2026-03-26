@@ -76,6 +76,7 @@ class CoderAgent(BaseAgent):
             ask_user_question,
             web_search,
             web_fetch,
+            task,
         )
 
         # Use default provider if not provided
@@ -85,6 +86,7 @@ class CoderAgent(BaseAgent):
         # Set system prompt
         if system_prompt is None:
             from .prompts import load_prompt
+
             system_prompt = load_prompt("solocoder")
 
         # Initialize with all built-in tools

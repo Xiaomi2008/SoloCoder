@@ -8,6 +8,7 @@ import sys
 # ANSI color codes for terminal output
 class Colors:
     """ANSI color codes for terminal output."""
+
     RESET = "\033[0m"
     BOLD = "\033[1m"
     DIM = "\033[2m"
@@ -18,7 +19,9 @@ class Colors:
     CYAN = "\033[96m"
     MAGENTA = "\033[95m"
     WHITE = "\033[97m"
-    USER_INPUT = "\033[92m"  # Bright green for user input to distinguish from agent responses
+    USER_INPUT = (
+        "\033[92m"  # Bright green for user input to distinguish from agent responses
+    )
 
 
 def should_use_colors() -> bool:
@@ -29,6 +32,7 @@ def should_use_colors() -> bool:
 
 # Use color functions that respect the terminal capability
 if should_use_colors():
+
     def bold(text: str) -> str:
         return f"{Colors.BOLD}{text}{Colors.RESET}"
 
@@ -116,24 +120,24 @@ def format_diff_output(diff_text: str) -> str:
     lines starting with '-' are deletions (red),
     other lines are context (dimmed).
     """
-    lines = diff_text.split('\n')
+    lines = diff_text.split("\n")
     colored_lines = []
 
     for line in lines:
-        if line.startswith('+++') or line.startswith('---'):
+        if line.startswith("+++") or line.startswith("---"):
             # File headers - bold white
             colored_lines.append(f"{bold(white(line))}")
-        elif line.startswith('+') and not line.startswith('+++'):
+        elif line.startswith("+") and not line.startswith("+++"):
             # Addition - green
             colored_lines.append(diff_addition(line[1:]))
-        elif line.startswith('-') and not line.startswith('---'):
+        elif line.startswith("-") and not line.startswith("---"):
             # Deletion - red
             colored_lines.append(diff_deletion(line[1:]))
         else:
             # Context - dimmed
             colored_lines.append(dim(line))
 
-    return '\n'.join(colored_lines)
+    return "\n".join(colored_lines)
 
 
 def display_code_block(title: str, content: str, language: str = "python") -> None:
@@ -148,7 +152,9 @@ def display_code_block(title: str, content: str, language: str = "python") -> No
     print(dim("-" * min(len(title), 50)))
 
     # Format diff output if detected, otherwise show as regular code
-    if any(line.startswith('+') or line.startswith('-') for line in content.split('\n')):
+    if any(
+        line.startswith("+") or line.startswith("-") for line in content.split("\n")
+    ):
         formatted = format_diff_output(content)
     else:
         formatted = content
@@ -160,15 +166,17 @@ def truncate_text(text: str, max_length: int = 60) -> str:
     """Truncate text with ellipsis if too long."""
     if len(text) <= max_length:
         return text
-    return text[:max_length - 3] + "..."
+    return text[: max_length - 3] + "..."
 
 
 def display_tool_call_claude_style(name: str, arguments: dict, indent: int = 0) -> None:
     """Display a tool call in Claude Code style.
 
-    Format:
-      ● FunctionName(arg1=value1, arg2=...)
-        ⎿  Result preview or status
+    Format for grouped calls:
+      bash
+        - operation description
+      bash
+        - another operation
 
     Args:
         name: The tool/function name being called
@@ -176,17 +184,47 @@ def display_tool_call_claude_style(name: str, arguments: dict, indent: int = 0) 
         indent: Number of spaces for indentation (0 = top level)
     """
     prefix = "  " * indent
-    args_str = ", ".join(f"{k}={truncate_text(str(v), 80)}" for k, v in arguments.items())
 
-    # Use bullet point and cyan color like Claude Code
-    print(f"{prefix}● {bold(name)}({args_str})")
+    # Display tool name without arrow
+    print(f"{prefix}{name}")
+    # Show brief description based on tool type
+    if name == "bash":
+        cmd = arguments.get("command", "")
+        if cmd:
+            # Extract brief description from command
+            if "ls" in cmd:
+                desc = "listing files"
+            elif "grep" in cmd:
+                desc = "searching codebase"
+            elif "cat" in cmd or "read" in cmd:
+                desc = "viewing content"
+            else:
+                desc = cmd[:50]
+            print(f"{prefix}  - {desc}")
+    elif name == "read":
+        file_path = arguments.get("file", arguments.get("path", ""))
+        print(f"{prefix}  - reading {file_path[:40]}")
+    elif name == "write":
+        file_path = arguments.get("file", arguments.get("path", ""))
+        print(f"{prefix}  - writing {file_path[:40]}")
+    elif name == "glob":
+        pattern = arguments.get("pattern", "")
+        print(f"{prefix}  - matching {pattern}")
+    elif name == "web_search":
+        query = arguments.get("query", "")
+        print(f"{prefix}  - searching: {query[:40]}")
+    elif name == "web_fetch":
+        url = arguments.get("url", "")
+        print(f"{prefix}  - fetching: {url[:40]}")
+    elif arguments:
+        # Show first argument for other tools
+        first_arg = next(iter(arguments.items()), None)
+        if first_arg:
+            print(f"{prefix}  - {first_arg[0]}={str(first_arg[1])[:30]}")
 
 
 def display_tool_result_claude_style(
-    is_error: bool,
-    content: str,
-    indent: int = 0,
-    max_preview_length: int = 120
+    is_error: bool, content: str, indent: int = 0, max_preview_length: int = 120
 ) -> None:
     """Display a tool result in Claude Code style.
 
@@ -208,7 +246,7 @@ def display_tool_result_claude_style(
     else:
         color_func = green
         # Show summary instead of raw content for Claude Code style
-        lines = content.strip().split('\n')
+        lines = content.strip().split("\n")
         if len(lines) == 1:
             status = truncate_text(content, max_preview_length)
         elif len(lines) <= 3:
@@ -221,9 +259,7 @@ def display_tool_result_claude_style(
 
 
 def display_tool_result_full_claude_style(
-    is_error: bool,
-    content: str,
-    indent: int = 0
+    is_error: bool, content: str, indent: int = 0
 ) -> None:
     """Display a full tool result in Claude Code style.
 
@@ -245,7 +281,7 @@ def display_claude_code_block(
     arguments: dict,
     result_content: str,
     is_error: bool = False,
-    status_text: str | None = None
+    status_text: str | None = None,
 ) -> None:
     """Display a complete Claude Code style block.
 
@@ -305,9 +341,9 @@ def format_grep_results_claude_style(results: list[dict]) -> str:
     # Group by file
     by_file: dict[str, list[dict]] = {}
     for r in results:
-        if r['file'] not in by_file:
-            by_file[r['file']] = []
-        by_file[r['file']].append(r)
+        if r["file"] not in by_file:
+            by_file[r["file"]] = []
+        by_file[r["file"]].append(r)
 
     output = [f"\n{bold('Search results:')}\n"]
 
@@ -327,7 +363,7 @@ def display_diff_claude_style(
     diff_content: str,
     additions: int = 0,
     deletions: int = 0,
-    tool_name: str | None = None
+    tool_name: str | None = None,
 ) -> None:
     """Display a code diff in Claude Code style with color coding.
 
@@ -362,7 +398,7 @@ def display_diff_claude_style(
     action = tool_name if tool_name else "write"
 
     # Show tool call style header with the actual tool name
-    print(f"  ● {bold(action)}({cyan(f'\"{file_path}\"')})")
+    print(f"  ● {bold(action)}({cyan(f'"{file_path}"')})")
 
     # Summary line with color-coded counts
     if additions > 0 or deletions > 0:
@@ -375,11 +411,11 @@ def display_diff_claude_style(
         print(f"    ⎿ {status}")
 
     # Determine if content is a git-style diff or regular code
-    lines = diff_content.split('\n')
-    has_hunk_headers = any(line.startswith('@@') for line in lines)
+    lines = diff_content.split("\n")
+    has_hunk_headers = any(line.startswith("@@") for line in lines)
     has_diff_markers = any(
-        (line.startswith('+') and not line.startswith('+++')) or
-        (line.startswith('-') and not line.startswith('---'))
+        (line.startswith("+") and not line.startswith("+++"))
+        or (line.startswith("-") and not line.startswith("---"))
         for line in lines
     )
 
@@ -391,23 +427,23 @@ def display_diff_claude_style(
         for line in lines:
             if not line:
                 continue
-            if line.startswith('+++') or line.startswith('---'):
+            if line.startswith("+++") or line.startswith("---"):
                 continue
-            elif line.startswith('@@'):
+            elif line.startswith("@@"):
                 print(f"{bold(cyan(line))}")
                 parts = line.split()
                 for part in parts:
-                    if part.startswith('-') and ',' in part:
-                        current_line_num = int(part[1:].split(',')[0])
+                    if part.startswith("-") and "," in part:
+                        current_line_num = int(part[1:].split(",")[0])
 
-            elif line.startswith('+') and not line.startswith('+++'):
+            elif line.startswith("+") and not line.startswith("+++"):
                 if current_line_num is not None:
                     print(f"{green(str(current_line_num))} {diff_addition(line[1:])}")
                     current_line_num += 1
                 else:
                     print(diff_addition(line[1:]))
 
-            elif line.startswith('-') and not line.startswith('---'):
+            elif line.startswith("-") and not line.startswith("---"):
                 if current_line_num is not None:
                     print(f"{red(str(current_line_num))} {diff_deletion(line[1:])}")
                     current_line_num += 1

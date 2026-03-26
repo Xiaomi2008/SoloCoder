@@ -153,3 +153,19 @@ uv.lock
 secrets/
 *.pem
 *.key
+.worktrees/
+
+# Environment variables
+.env
+.env.local
+*.env
+
+# Secrets
+secrets.json
+
+# Streamlit
+streamlit.log
+
+# Logs
+*.log
+logs/
