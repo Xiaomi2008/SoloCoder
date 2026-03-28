@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""SoloCoder Web UI - Streamlit interface for the Coder Agent."""
+"""SoloCoder Web UI - Streamlit interface for the Coder Agent with vision support."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+from io import BytesIO
 from openagent import configure_logging, OpenAIProvider
 from openagent.coder import CoderAgent
 
@@ -64,14 +66,27 @@ def render_chat_history():
         display_chat_message(message["content"], is_user=message["role"] == "user")
 
 
-def handle_agent_response(prompt: str) -> bool:
-    """Process user prompt through agent and return response.
+def handle_agent_response(
+    prompt: str,
+    image_data: str | None = None,
+) -> bool:
+    """Process user prompt through agent with optional image input.
+
+    Args:
+        prompt: Text prompt from user
+        image_data: Optional base64-encoded image data for vision models
 
     Returns:
         True if successful, False if error occurred
     """
     try:
-        response = asyncio.run(st.session_state.agent.run(prompt))
+        # Use multimodal if image provided
+        if image_data:
+            response = asyncio.run(
+                st.session_state.agent.run_multimodal(text=prompt, image_data=image_data)
+            )
+        else:
+            response = asyncio.run(st.session_state.agent.run(prompt))
 
         st.session_state.chat_history.append(
             {"role": "assistant", "content": str(response)}
@@ -165,16 +180,49 @@ def main():
     # User input area
     st.divider()
 
+    # Chat input area with optional image upload
+    st.divider()
+
+    # Image upload for vision analysis
+    uploaded_image = st.file_uploader(
+        "📷 Upload an image (optional, for vision analysis)",
+        type=["png", "jpg", "jpeg"],
+        key="image_uploader",
+        help="Upload an image for Qwen3.5 vision analysis",
+    )
+
     # Chat input
-    if prompt := st.chat_input("Ask SoloCoder to help with code...", key="chat_input"):
-        # Add user message to history
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        display_chat_message(prompt, is_user=True)
+    prompt = st.chat_input("Ask SoloCoder to help with code...", key="chat_input")
+
+    if prompt or (uploaded_image and st.session_state.agent):
+        # Process uploaded image if any
+        image_data: str | None = None
+        if uploaded_image:
+            try:
+                image_bytes = uploaded_image.read()
+                image_data = base64.b64encode(image_bytes).decode("utf-8")
+
+                # Show uploaded image preview
+                st.image(image_bytes, caption="Uploaded image for analysis", use_container_width=True)
+            except Exception as e:
+                st.error(f"Error processing image: {e}")
+                uploaded_image = None  # Reset uploader on error
+
+        # Add user message to history (include image if uploaded)
+        if image_data:
+            st.session_state.chat_history.append({
+                "role": "user",
+                "content": prompt or "[Image uploaded]",
+                "has_image": True,
+            })
+        else:
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+        display_chat_message(prompt or "Image uploaded", is_user=True)
 
         # Process through agent if agent is ready
         if st.session_state.agent:
             with st.spinner("⏳ Thinking..."):
-                success = handle_agent_response(prompt)
+                success = handle_agent_response(prompt, image_data)
 
             if success:
                 display_chat_message(

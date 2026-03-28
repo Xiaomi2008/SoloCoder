@@ -89,9 +89,35 @@ class Session:
                 out.append({"role": msg.role, "content": blocks})
         return out
 
-    def add_user_text(self, text: str) -> Message:
-        """Add a text message from the user."""
-        msg = text_message("user", text)
+    def add_user_multimodal(
+        self, text: str | None = None, image_data: str | None = None
+    ) -> Message:
+        """Add a user message that can contain text, images, or both.
+
+        Args:
+            text: Optional text content
+            image_data: Optional base64-encoded image data
+
+        Returns:
+            Message with text and/or image blocks
+        """
+        blocks: list[ContentBlock] = []
+
+        if text:
+            blocks.append(TextBlock(text=text))
+
+        if image_data:
+            blocks.append(ImageBlock(data=image_data, mime_type="image/png"))
+
+        # If only image provided, wrap in user message
+        if not blocks:
+            return self.add("user", "")
+
+        # If only text, use text_message for consistency
+        if len(blocks) == 1 and isinstance(blocks[0], TextBlock):
+            return self.add("user", text)
+
+        msg = Message(role="user", content=blocks)
         self._messages.append(msg)
         return msg
 

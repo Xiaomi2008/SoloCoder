@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,6 +26,7 @@ from openagent.tools import (
     kill_shell,
     notebook_edit,
     read,
+    screenshot,
     skill,
     todo_list,
     todo_update,
@@ -35,9 +37,13 @@ from openagent.tools import (
 )
 
 
-def build_solocoder_tools() -> list[Callable[..., Any]]:
-    """Build the default SoloCoder tool set."""
-    return [
+def build_solocoder_tools(computer_use: bool = True) -> list[Callable[..., Any]]:
+    """Build the default SoloCoder tool set.
+
+    Args:
+        computer_use: Include computer use tools (screenshot, click, etc.) for GUI automation.
+    """
+    tools: list[Callable[..., Any]] = [
         read,
         write,
         edit,
@@ -58,6 +64,30 @@ def build_solocoder_tools() -> list[Callable[..., Any]]:
         web_search,
         web_fetch,
     ]
+
+    if computer_use:
+        from openagent.tools.computer_use import (
+            click,
+            double_click,
+            get_screen_resolution,
+            key_combination,
+            move_mouse,
+            scroll,
+            wait,
+        )
+
+        tools.extend([
+            screenshot,
+            click,
+            double_click,
+            key_combination,
+            move_mouse,
+            scroll,
+            get_screen_resolution,
+            wait,
+        ])
+
+    return tools
 
 
 class CoderAgent(BaseAgent):
@@ -115,6 +145,40 @@ class CoderAgent(BaseAgent):
         kwargs.setdefault("compact_threshold", self.compact_threshold)
         kwargs.setdefault("disable_compaction", self.disable_compaction)
         return await super().run(user_input, **kwargs)
+
+    async def run_multimodal(
+        self,
+        text: str | None = None,
+        image_path: str | None = None,
+        working_dir: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Run the agent with text and/or image input (vision-capable).
+
+        Args:
+            text: Optional text prompt
+            image_path: Path to an image file to analyze
+            working_dir: Optional working directory override
+
+        Returns:
+            Agent response as string
+        """
+        if working_dir:
+            self._working_dir = working_dir
+        kwargs.setdefault("max_context_tokens", self.max_context_tokens)
+        kwargs.setdefault("compact_threshold", self.compact_threshold)
+        kwargs.setdefault("disable_compaction", self.disable_compaction)
+
+        # Load image if provided
+        image_data: str | None = None
+        if image_path:
+            try:
+                image_bytes = Path(image_path).read_bytes()
+                image_data = base64.b64encode(image_bytes).decode("utf-8")
+            except Exception as e:
+                raise ValueError(f"Failed to read image {image_path}: {e}")
+
+        return await super().run_multimodal(text=text, image_data=image_data, **kwargs)
 
 
 async def create_coder(

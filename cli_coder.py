@@ -500,6 +500,7 @@ async def run_interactive_session(coder) -> None:
     print("Use '/' prefix for quick commands:")
     print(dim("  /list     - List files in current directory"))
     print(dim("  /read     - Preview file contents before editing"))
+    print(dim("  /image    - Upload an image for vision analysis"))
     print(dim("  /todo     - Show task list"))
     print(dim("  /model    - Change LLM model mid-session"))
     print(dim("  /context  - Show current context token usage"))
@@ -565,6 +566,47 @@ async def run_interactive_session(coder) -> None:
 
                     result = todo_list()
                     print(f"\n{green('⎿')} {result}")
+                    continue
+
+                elif cmd == "/image":
+                    """Upload an image for vision analysis (Qwen3.5 multimodal)."""
+                    import base64
+
+                    from openagent.tools.computer_use import screenshot
+
+                    if not arg:
+                        # Take a screenshot and analyze
+                        print(f"\n{green('⎿')} Taking screenshot...")
+                        img_base64 = screenshot(return_base64=True)
+
+                        if img_base64:
+                            # Run multimodal analysis
+                            try:
+                                result = await coder.run_multimodal(
+                                    image_data=img_base64,
+                                    text="Analyze this screenshot and describe what you see.",
+                                )
+                                print(f"\n{green('⎿')} {result}")
+                            except Exception as e:
+                                print(f"\n{red('⎿')} Error analyzing image: {e}")
+                        continue
+
+                    # Load image from file
+                    try:
+                        img_bytes = Path(arg).read_bytes()
+                        img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+
+                        # Run multimodal analysis
+                        try:
+                            result = await coder.run_multimodal(
+                                image_data=img_base64,
+                                text=arg or "Analyze this image.",
+                            )
+                            print(f"\n{green('⎿')} {result}")
+                        except Exception as e:
+                            print(f"\n{red('⎿')} Error analyzing image: {e}")
+                    except Exception as e:
+                        print(f"\n{red('⎿')} Error loading image: {e}")
                     continue
 
                 elif cmd == "/model":
