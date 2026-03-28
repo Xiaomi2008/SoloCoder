@@ -260,6 +260,7 @@ However, for most day-to-day coding tasks—reading files, writing functions, de
 | Shell Management | `bash`, `bash_background`, `bash_output`, `kill_shell` |
 | Task Manager | `todo_write`, `todo_update`, `todo_list` |
 | Web & Search | `web_search`, `web_fetch` (requires optional deps) |
+| Computer Use | `screenshot`, `click`, `type_text`, `key_combination` (macOS GUI automation, requires `computer-use` deps) |
 | Planning | `enter_plan_mode`, `exit_plan_mode` |
 | User Interaction | `ask_user_question` |
 

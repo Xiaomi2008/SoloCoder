@@ -6,6 +6,7 @@ Tools are organized into categories:
 - File Operations: read, write, edit, notebook_edit, glob, grep
 - Shell & Process Management: bash (bash_background, bash_output, kill_shell require agent integration)
 - Web & Search: web_search, web_fetch
+- Computer Use: screenshot, click, type_text, key_combination (macOS GUI automation)
 - Planning & Workflow: enter_plan_mode, exit_plan_mode
 - User Interaction: ask_user_question (requires agent integration)
 
@@ -41,6 +42,17 @@ from .builtin import (
     web_search,
     write,
 )
+from .computer_use import (
+    click,
+    double_click,
+    get_screen_resolution,
+    key_combination,
+    move_mouse,
+    screenshot,
+    scroll,
+    type_text,
+    wait,
+)
 
 __all__ = [
     # File operations (fully implemented)
@@ -58,6 +70,16 @@ __all__ = [
     # Web & search (fully implemented)
     "web_search",
     "web_fetch",
+    # Computer use (macOS GUI automation with Qwen3.5 vision)
+    "screenshot",
+    "click",
+    "double_click",
+    "type_text",
+    "key_combination",
+    "move_mouse",
+    "scroll",
+    "get_screen_resolution",
+    "wait",
     # Agent orchestration (requires agent integration)
     "task",
     # Planning & workflow with task manager
