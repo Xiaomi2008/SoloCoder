@@ -3,10 +3,8 @@
 These tools enable an AI agent to control the computer like a human user
 by capturing screenshots and performing mouse/keyboard actions.
 
-NOTE: The Qwen3.5-35B-A3B model can be multimodal, but the current SoloCoder
-agent framework only sends text to the LLM. Workaround: screenshots are saved
-to files, and the agent can read them back as base64 text using the `read()`
-tool to get the image data for analysis.
+Qwen3.5-35B-A3B and all Qwen3.5 variants have native multimodal (vision)
+capabilities - they can natively analyze images passed as base64 data URIs.
 """
 
 from __future__ import annotations

@@ -5,9 +5,13 @@ Enable SoloCoder to control your Mac using vision-based AI interaction with Qwen
 ## Prerequisites
 
 - **macOS** - All tools are optimized for macOS
-- **Qwen3.5-35B-A3B** (Image-Text-to-Text multimodal model)
+- **Qwen3.5-35B-A3B** (native multimodal model with built-in vision)
 - **LM Studio** running the model with OpenAI-compatible API
 - **pyautogui** for mouse and keyboard control
+
+## Important: All Qwen3.5 Models Have Built-in Vision
+
+Unlike other model families where vision models are separate (e.g., "LLaVA" vs "LLaMA"), **all Qwen3.5 variants have native multimodal (vision) capabilities**. Qwen3.5-35B-A3B, Qwen3.5-27B, and other Qwen3.5 models all have integrated vision - there is no separate "-VL" variant.
 
 ## Installation
 
@@ -22,7 +26,7 @@ pip install -e ".[computer-use]"
 
 ## How Vision Works
 
-The Qwen3.5-35B-A3B model is an **Image-Text-to-Text** multimodal model that can natively understand images. The implementation uses:
+Qwen3.5-35B-A3B has **native multimodal capabilities** - it can natively understand images. The implementation uses:
 
 1. **ImageBlock** - A new content type for base64-encoded images
 2. **OpenAI-compatible format** - `{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`
@@ -142,8 +146,9 @@ screenshot(return_base64=True)
 
 ### Model doesn't understand screenshots
 
-- Verify you're using Qwen3.5-35B-A3B (Image-Text-to-Text) not the text-only variant
+- Verify you're using Qwen3.5-35B-A3B (has native multimodal vision)
 - Check LM Server is running with the correct model loaded
+- Ensure screenshot is captured with `return_base64=True`
 - Try with a simpler prompt first: "Take a screenshot"
 
 ## Technical Details
