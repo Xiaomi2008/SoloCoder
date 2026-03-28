@@ -125,6 +125,14 @@ Type 'quit' or 'exit' to stop the agent.
     )
 
     parser.add_argument(
+        "--image",
+        "-i",
+        default=None,
+        type=str,
+        help="Path to an image to analyze with vision (Qwen3.5 multimodal)",
+    )
+
+    parser.add_argument(
         "--working-dir",
         "-w",
         default=None,
@@ -490,8 +498,15 @@ def display_context_status_bar(coder, turn_counter: int = 0) -> None:
         pass
 
 
-async def run_interactive_session(coder) -> None:
-    """Run the interactive chat session with Claude Code style display."""
+async def run_interactive_session(
+    coder, initial_image: str | None = None
+) -> None:
+    """Run the interactive chat session with Claude Code style display.
+
+    Args:
+        coder: CoderAgent instance
+        initial_image: Optional base64-encoded image to analyze on startup
+    """
     print(f"\n{bold('Coder Agent')} - Chat-based coding assistant")
     print(dim("-" * 40))
     print(f"{dim('Working directory:')} {coder.working_dir}")
@@ -512,6 +527,20 @@ async def run_interactive_session(coder) -> None:
 
     # Display initial context status bar
     display_context_status_bar(coder)
+
+    # Handle initial image input if provided
+    if initial_image:
+        print(f"\n{green('⎿')} Analyzing initial image...")
+        try:
+            result = await coder.run_multimodal(
+                text="Analyze this image and describe what you see.",
+                image_data=initial_image,
+            )
+            print(f"\n{green('⎿')} Analysis result:\n")
+            print(result)
+            print()
+        except Exception as e:
+            print(f"\n{red('⎿')} Error analyzing initial image: {e}")
 
     try:
         turn_counter = 0
@@ -843,7 +872,18 @@ async def main():
     if args.debug_llm:
         print(f"{yellow('Debug logging enabled:')} OpenAgent + provider logs at DEBUG")
 
-    await run_interactive_session(coder)
+    # Handle initial image input if provided
+    initial_image = None
+    if args.image:
+        try:
+            img_bytes = Path(args.image).read_bytes()
+            import base64
+            initial_image = base64.b64encode(img_bytes).decode("utf-8")
+            print(f"\n{green('⎿')} Loading image from: {args.image}")
+        except Exception as e:
+            print(f"\n{red('⎿')} Error loading image: {e}")
+
+    await run_interactive_session(coder, initial_image=initial_image)
 
 
 async def handle_config_command(args: argparse.Namespace) -> None:
