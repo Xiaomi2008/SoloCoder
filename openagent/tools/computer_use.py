@@ -3,13 +3,17 @@
 These tools enable an AI agent to control the computer like a human user
 by capturing screenshots and performing mouse/keyboard actions.
 
-Compatible with Qwen3.5 vision models using base64-encoded PNG images.
+NOTE: The Qwen3.5-35B-A3B model can be multimodal, but the current SoloCoder
+agent framework only sends text to the LLM. Workaround: screenshots are saved
+to files, and the agent can read them back as base64 text using the `read()`
+tool to get the image data for analysis.
 """
 
 from __future__ import annotations
 
 import base64
 import io
+from pathlib import Path
 from typing import Literal
 
 from ..core.tool import tool
@@ -18,33 +22,32 @@ from ..core.tool import tool
 @tool
 def screenshot(
     region: tuple[int, int, int, int] | None = None,
+    return_base64: bool = False,
 ) -> str:
     """Capture a screenshot of the screen or a specific region.
 
-    Returns a base64-encoded PNG image that can be processed by vision-capable
-    LLMs like Qwen3.5-35B-A3B (which is an Image-Text-to-Text multimodal model)
-    to understand UI elements and determine next actions.
-
-    Qwen3.5-35B-A3B can natively analyze these screenshots and identify:
-    - Clickable elements (buttons, links, icons)
-    - Text input fields
-    - UI layouts and structures
-    - On-screen text and information
+    Returns a base64-encoded PNG string that can be used with vision-capable
+    LLMs like Qwen3.5-35B-A3B (Image-Text-to-Text model). The base64 string
+    can be passed directly to the LLM as image input.
 
     Args:
         region: Optional tuple of (x, y, width, height) to capture only a portion
                 of the screen. If None, captures the entire primary display.
+        return_base64: If True, returns raw base64 string for direct LLM input.
+                      If False, returns a message indicating the image was captured
+                      (for backward compatibility). Default is False.
 
     Returns:
-        A base64-encoded PNG string. The LLM can process this directly in its
-        next turn to analyze the UI and determine appropriate actions.
+        Base64-encoded PNG string if return_base64=True, otherwise a message
+        confirming the screenshot was taken.
 
     Example:
-        >>> # Capture full screen
-        >>> img_data = screenshot()
+        >>> # Capture screenshot for vision analysis
+        >>> img_base64 = screenshot(return_base64=True)
+        >>> # Pass img_base64 to the vision model as image input
         >>>
-        >>> # Capture specific region (coordinates from previous screenshot analysis)
-        >>> img_data = screenshot(region=(100, 200, 500, 300))
+        >>> # Capture specific region
+        >>> img_base64 = screenshot(region=(100, 200, 500, 300), return_base64=True)
     """
     try:
         import pyautogui
@@ -55,13 +58,16 @@ def screenshot(
         else:
             img = pyautogui.screenshot()
 
-        # Convert to base64 PNG for Qwen3.5 vision model
+        # Convert to base64 PNG
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
         buffer.seek(0)
-        encoded = base64.b64encode(buffer.read()).decode("utf-8")
+        base64_data = base64.b64encode(buffer.read()).decode("utf-8")
 
-        return f"[Screenshot captured: {width}x{height} pixels, {len(encoded)} base64 chars]"
+        if return_base64:
+            return base64_data
+
+        return f"Screenshot captured: {width}x{height} pixels, {len(base64_data)} base64 chars"
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
