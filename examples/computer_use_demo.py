@@ -41,7 +41,7 @@ async def main():
     print("=" * 60)
 
     # Initialize provider - using LM Studio or local OpenAI-compatible endpoint
-    # Replace with your model name if different
+    # Qwen3.5-35B-A3B is an Image-Text-to-Text multimodal model that can analyze screenshots
     provider = OpenAIProvider(
         model="qwen3.5-35b-a3b",
         base_url="http://localhost:1234/v1",

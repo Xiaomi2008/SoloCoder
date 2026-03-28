@@ -21,25 +21,30 @@ def screenshot(
 ) -> str:
     """Capture a screenshot of the screen or a specific region.
 
-    IMPORTANT: The Qwen3.5-35B-A3B model is text-only and cannot natively
-    understand images. For full computer use capabilities:
+    Returns a base64-encoded PNG image that can be processed by vision-capable
+    LLMs like Qwen3.5-35B-A3B (which is an Image-Text-to-Text multimodal model)
+    to understand UI elements and determine next actions.
 
-    1. Use Qwen3.5-VL variant for native image understanding, OR
-    2. Use a hybrid approach: capture screenshot, then use coordinate-based
-       actions with heuristics (e.g., click at center of screen, then refine)
-
-    For now, this tool captures screenshots that can be saved for later
-    analysis with external tools, or used with vision-capable models.
+    Qwen3.5-35B-A3B can natively analyze these screenshots and identify:
+    - Clickable elements (buttons, links, icons)
+    - Text input fields
+    - UI layouts and structures
+    - On-screen text and information
 
     Args:
         region: Optional tuple of (x, y, width, height) to capture only a portion
                 of the screen. If None, captures the entire primary display.
 
     Returns:
-        A base64-encoded PNG string. Save this and decode externally with:
-            import base64
-            with open("screenshot.png", "wb") as f:
-                f.write(base64.b64decode(encoded_string))
+        A base64-encoded PNG string. The LLM can process this directly in its
+        next turn to analyze the UI and determine appropriate actions.
+
+    Example:
+        >>> # Capture full screen
+        >>> img_data = screenshot()
+        >>>
+        >>> # Capture specific region (coordinates from previous screenshot analysis)
+        >>> img_data = screenshot(region=(100, 200, 500, 300))
     """
     try:
         import pyautogui

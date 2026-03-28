@@ -5,8 +5,18 @@ Enable SoloCoder to control your Mac like a human user using vision-based AI int
 ## Prerequisites
 
 - **macOS** - All tools are optimized for macOS
-- **Qwen3.5-VL** or other vision-capable model - The screenshot returns base64-encoded PNG images that vision models can analyze
+- **Qwen3.5-35B-A3B** or other Image-Text-to-Text multimodal model - This model can natively analyze screenshots
 - **pyautogui** - For mouse and keyboard control
+
+## Why Qwen3.5-35B-A3B Works
+
+The Qwen3.5-35B-A3B model is an **Image-Text-to-Text (multimodal)** model. This means it can:
+1. Receive base64-encoded PNG images as input
+2. Analyze the visual content to understand UI layouts
+3. Identify clickable elements, text fields, buttons, etc.
+4. Return coordinates for appropriate actions
+
+This native vision capability works perfectly with the `screenshot()` tool.
 
 ## Installation
 
