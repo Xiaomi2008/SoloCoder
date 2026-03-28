@@ -264,6 +264,8 @@ However, for most day-to-day coding tasks—reading files, writing functions, de
 | Planning | `enter_plan_mode`, `exit_plan_mode` |
 | User Interaction | `ask_user_question` |
 
+**Note on Computer Use**: The `screenshot()` tool captures base64-encoded PNG images. For vision-based computer control (analyzing screenshots to identify UI elements), use a vision-capable model like **Qwen3.5-VL**. With text-only models like Qwen3.5-35B-A3B, use keyboard shortcuts and predictable workflows. See [docs/computer-use-macos.md](docs/computer-use-macos.md) for details.
+
 ### Provider Support
 
 OpenAgent supports multiple LLM providers, making it easy to switch between cloud and local:
