@@ -19,6 +19,7 @@ from openagent.providers import (
 from openagent.core.retry import get_provider_retryable_exceptions, with_retry
 from openagent.core.types import (
     ContentBlock,
+    ImageBlock,
     Message,
     TextBlock,
     ToolDef,
@@ -71,7 +72,23 @@ class OpenAIConverterMixin(MessageConverterMixin):
                 converted.append({"role": "system", "content": msg.text})
 
             elif msg.role == "user":
-                converted.append({"role": "user", "content": msg.text})
+                entry: dict[str, Any] = {"role": "user"}
+
+                if isinstance(msg.content, str):
+                    entry["content"] = msg.content
+                elif msg.has_images:
+                    # Handle multimodal content with images for Qwen3.5-VL
+                    blocks: list[dict[str, Any]] = []
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            blocks.append({"type": "text", "text": block.text})
+                        elif isinstance(block, ImageBlock):
+                            blocks.append({"type": "image_url", "image_url": {"url": block.url}})
+                    entry["content"] = blocks if blocks else msg.text
+                else:
+                    entry["content"] = msg.text
+
+                converted.append(entry)
 
             elif msg.role == "assistant":
                 entry: dict[str, Any] = {"role": "assistant"}
@@ -228,6 +245,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             api_kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": converted["messages"],
+                "max_tokens": kwargs.pop("max_tokens", 8192),
                 **kwargs,
             }
             if tools:

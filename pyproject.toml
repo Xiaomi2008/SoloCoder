@@ -15,6 +15,8 @@ keywords = [
     "mcp",
     "tool-execution",
     "chatbot",
+    "computer-use",
+    "gui-automation",
 ]
 license = { text = "MIT" }
 classifiers = [
@@ -34,18 +36,27 @@ dependencies = [
     "mcp>=1.0.0",
     "openai>=1.0",
     "anthropic>=0.40",
+    "streamlit>=1.55.0",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
 google = ["google-genai>=1.0"]
 ollama = ["ollama>=0.4"]
-web = ["duckduckgo-search>=6.0", "httpx>=0.27"]
+web = ["duckduckgo-search>=6.0", "httpx>=0.27", "tavily-python>=0.3.0"]
+computer-use = ["pyautogui>=0.9.53", "pillow>=10.0.0", "pyobjc-core>=10.0", "pyobjc-framework-Cocoa>=10.0", "pyobjc-framework-Automator>=10.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 all = [
     "google-genai>=1.0",
     "ollama>=0.4",
     "duckduckgo-search>=6.0",
     "httpx>=0.27",
+    "tavily-python>=0.3.0",
+    "pyautogui>=0.9.53",
+    "pillow>=10.0.0",
+    "pyobjc-core>=10.0",
+    "pyobjc-framework-Cocoa>=10.0",
+    "pyobjc-framework-Automator>=10.0",
 ]
 
 [project.scripts]

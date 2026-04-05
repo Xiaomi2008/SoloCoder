@@ -7,7 +7,14 @@ import pytest
 from openagent import Agent, tool
 from openagent.core import agent as core_agent_module
 from openagent.core.session import Session
-from openagent.core.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from openagent.core.types import (
+    ImageBlock,
+    Message,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
+from openagent.provider.openai import OpenAIConverterMixin
 from openagent.runtime import AgentResult
 
 
@@ -43,6 +50,99 @@ async def test_agent_simple_run(mock_provider, simple_response):
 
     assert result == "Hello!"
     assert len(agent.messages) == 2  # user + assistant
+
+
+async def test_agent_adds_screenshot_tool_result_as_multimodal_user_message() -> None:
+    screenshot_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+    class CapturingProvider:
+        def __init__(self) -> None:
+            self.model = "mock-model"
+            self.api_key = None
+            self.calls: list[list[Message]] = []
+            self._call_count = 0
+
+        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+            self.calls.append({"messages": list(messages), "kwargs": dict(kwargs)})
+            if self._call_count == 0:
+                self._call_count += 1
+                return Message(
+                    role="assistant",
+                    content=[
+                        ToolUseBlock(
+                            id="call_screenshot",
+                            name="screenshot",
+                            arguments={"return_base64": True},
+                        )
+                    ],
+                )
+            return Message(role="assistant", content="done")
+
+    @tool
+    def screenshot(return_base64: bool = False) -> str:
+        assert return_base64 is True
+        return screenshot_base64
+
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, tools=[screenshot])
+
+    result = await agent.run("Look at the screen")
+
+    assert result == "done"
+    assert len(provider.calls) == 2
+    second_call_messages = provider.calls[1]["messages"]
+    image_messages = [
+        msg for msg in second_call_messages if msg.role == "user" and msg.has_images
+    ]
+    assert len(image_messages) == 1
+    image_blocks = [
+        block for block in image_messages[0].content if isinstance(block, ImageBlock)
+    ]
+    text_blocks = [
+        block for block in image_messages[0].content if isinstance(block, TextBlock)
+    ]
+    assert len(image_blocks) == 1
+    assert len(text_blocks) == 1
+    assert image_blocks[0].mime_type == "image/jpeg"
+    assert image_blocks[0].data == screenshot_base64
+    assert "Use screenshot image coordinates only" in text_blocks[0].text
+    assert "valid image coordinate range" in text_blocks[0].text
+    assert provider.calls[1]["kwargs"]["max_tokens"] == 2048
+
+
+def test_openai_converter_preserves_png_image_mime_type() -> None:
+    session = Session(system_prompt="You are helpful.")
+    session.add_user_multimodal(
+        text="Describe this screenshot",
+        image_data="ZmFrZQ==",
+    )
+
+    converted = OpenAIConverterMixin().convert_messages(session.messages)
+    user_message = converted["messages"][-1]
+    image_blocks = [
+        block for block in user_message["content"] if block["type"] == "image_url"
+    ]
+
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_openai_converter_preserves_explicit_jpeg_image_mime_type() -> None:
+    session = Session(system_prompt="You are helpful.")
+    session.add_user_multimodal(
+        text="Describe this screenshot",
+        image_data="ZmFrZQ==",
+        image_mime_type="image/jpeg",
+    )
+
+    converted = OpenAIConverterMixin().convert_messages(session.messages)
+    user_message = converted["messages"][-1]
+    image_blocks = [
+        block for block in user_message["content"] if block["type"] == "image_url"
+    ]
+
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
 async def test_agent_simple_run_bridges_to_runtime_agent(mock_provider, monkeypatch):

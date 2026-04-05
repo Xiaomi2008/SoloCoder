@@ -9,6 +9,30 @@ A capable autonomous coding agent running entirely locally—powered by Qwen3.5-
 
 ---
 
+## Quick Start
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/your-repo/SoloCoder.git
+cd SoloCoder
+
+# 2. Install dependencies (using uv recommended)
+uv sync
+
+# Or using pip
+pip install -e ".[all]"
+
+# 3. Set up LM Studio (see Setup section below)
+
+# 4. Run the CLI agent
+python cli_coder.py --model qwen3.5-35b-a3b --base-url http://localhost:1234/v1
+
+# 5. Or run the Streamlit web UI
+streamlit run server.py
+```
+
+---
+
 ## Overview
 
 SoloCoder demonstrates that **powerful autonomous coding agents don't require cloud APIs**. By leveraging modern local LLM inference through LM Studio, you can run a fully functional coding assistant on a single consumer GPU—specifically optimized for machines like the RTX 5090.
@@ -20,118 +44,6 @@ The backbone model is **Qwen3.5-35B-A3B**, served locally via LM Studio's OpenAI
 - **Cost control**: Zero per-token costs after hardware investment
 - **Offline capability**: Work without internet connectivity
 - **Customizable models**: Swap in any compatible local model as needed
-
----
-
-## Why This Matters
-
-### The Cloud Dependency Problem
-
-Most AI coding assistants today rely on cloud-hosted models (GPT-4, Claude, etc.). While convenient, this approach has significant drawbacks:
-
-| Issue | Cloud Models | Local SoloCoder |
-|-------|--------------|-----------------|
-| **Privacy** | Code sent to external servers | Entirely local execution |
-| **Cost** | Per-token pricing accumulates | One-time hardware cost |
-| **Latency** | Network round-trips required | Direct GPU inference |
-| **Availability** | Dependent on internet/API uptime | Works offline, always available |
-| **Customization** | Fixed model capabilities | Choose any compatible model |
-
-### The Local-First Alternative
-
-Modern consumer GPUs have reached a tipping point. An RTX 5090 (or similar high-end GPU) can comfortably run 35B parameter models with quantized inference, delivering response times suitable for interactive coding assistance—all while keeping your codebase entirely local.
-
-SoloCoder proves this architecture works in practice: it's a fully functional coding agent that reads files, writes code, executes shell commands, searches codebases, and manages complex multi-turn development tasks—without ever calling an external API.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    SoloCoder CLI                            │
-│  (Interactive coding agent with Claude Code-style UI)       │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     OpenAgent                               │
-│         Lightweight async-first agent framework             │
-│  ┌─────────────┬──────────────┬─────────────────────────┐   │
-│  │ Agent Core  │  Tool System │    Session Management   │   │
-│  └─────────────┴──────────────┴─────────────────────────┘   │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│              LM Studio (Local OpenAI API)                   │
-│           Qwen3.5-35B-A3B served locally                    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Core Components
-
-| Component | Purpose |
-|-----------|---------|
-| **OpenAgent** | Async-first agent framework with `openagent.model`, `openagent.runtime`, provider integrations, and session persistence |
-| **SoloCoder app** | `openagent.apps.solocoder` composes the coding workflow, tool bundle, and CLI-facing agent |
-| **LM Studio** | Local LLM server providing OpenAI-compatible API endpoint |
-| **Qwen3.5-35B-A3B** | Backbone model serving as the "brain" of the coding agent |
-
-### Python Namespaces
-
-- `openagent.model`: canonical message and tool block types
-- `openagent.runtime`: runtime agent, result objects, and runtime events
-- `openagent.providers`: shared provider stream event types; `openagent.provider` remains the compatibility path for provider implementations
-- `openagent.infrastructure`: MCP and shell-adjacent infrastructure helpers
-- `openagent.apps.solocoder`: SoloCoder-specific agent composition; top-level `openagent` imports still re-export common entry points
-
-### Workflow
-
-1. User types a coding request in the CLI interface
-2. Coder Agent processes the request using its tool system (file read/write, shell commands, grep search)
-3. The OpenAgent framework formats messages and sends them to the local LM Studio endpoint
-4. Qwen3.5-35B-A3B generates a response with tool calls or code changes
-5. Results are displayed in Claude Code-style formatting
-
----
-
-## Features
-
-### Agent Capabilities
-
-- **File Operations**: Read, write, edit files seamlessly
-- **Code Search**: Find patterns across your project with regex grep
-- **Shell Execution**: Run bash commands for testing and building
-- **Task Tracking**: Automatically break down complex tasks into manageable steps
-- **Multi-turn Conversations**: Maintain context across extended interactions
-
-### Interactive CLI Features
-
-- **Claude Code-style display**: Clean, readable output with syntax highlighting
-- **Quick commands**: `/list`, `/read`, `/todo`, `/model`, `/clear` for common operations
-- **Direct shell access**: `! <command>` prefix for immediate terminal execution
-- **Turn tracking**: Visual indicator of remaining conversation budget
-
-### Built-in Tools (OpenAgent)
-
-| Category | Tools |
-|----------|-------|
-| File Operations | `read`, `write`, `edit`, `glob`, `grep`, `notebook_edit` |
-| Shell Management | `bash`, `bash_background`, `bash_output`, `kill_shell` |
-| Task Manager | `todo_write`, `todo_update`, `todo_list` |
-| Web & Search | `web_search`, `web_fetch` (requires optional deps) |
-| Planning | `enter_plan_mode`, `exit_plan_mode` |
-| User Interaction | `ask_user_question` |
-
-### Provider Support
-
-OpenAgent supports multiple LLM providers, making it easy to switch between cloud and local:
-
-- **OpenAIProvider**: GPT models (with custom base_url for LM Studio)
-- **AnthropicProvider**: Claude models
-- **GoogleProvider**: Gemini models
-- **OllamaProvider**: Local Ollama instances
 
 ---
 
@@ -176,11 +88,11 @@ pip install -e ".[all]"
 ### Step 3: Run SoloCoder with LM Studio
 
 ```bash
-# Quick start with default settings pointing to LM Studio
-python cli_coder.py --model qwen3.5-35b-a3b --base-url http://localhost:1234/v1
+# CLI version
+python cli_coder.py --model qwen3.5-35b-a3b --base-url http://localhost:1234/v1 --working-dir /path/to/project
 
-# Or set the model name you loaded in LM Studio exactly
-python cli_coder.py -m your-model-name-here -k "" --base-url http://localhost:1234/v1
+# Web UI version
+streamlit run server.py
 ```
 
 **Note**: When using local servers like LM Studio, API keys are typically not required. You can pass an empty string or omit the `--api-key` flag.
@@ -241,9 +153,7 @@ Prefix with `!` for immediate terminal execution:
 
 ---
 
-## Configuration
-
-### Command Line Options
+## Command Line Options
 
 ```bash
 python cli_coder.py [OPTIONS]
@@ -256,6 +166,10 @@ Options:
   --base-url              OpenAI-compatible API URL (e.g., http://localhost:1234/v1)
 ```
 
+---
+
+## Configuration
+
 ### Environment Variables
 
 | Variable | Purpose |
@@ -264,6 +178,36 @@ Options:
 | `ANTHROPIC_API_KEY` | API key for Anthropic provider |
 | `GOOGLE_API_KEY` | API key for Google provider |
 | `AGENT_PROJECT_ROOT` | Security confinement root (set automatically) |
+
+### Create `.env` from Example
+
+```bash
+cp .env.example .env
+# Edit .env with your configuration
+```
+
+Note: The `.env.example` file is provided for reference and should not be committed. Create your own `.env` file with actual values.
+
+---
+
+## Web UI
+
+SoloCoder includes a Streamlit-based web interface for a more interactive experience:
+
+```bash
+# Run the web UI
+streamlit run server.py
+
+# Or specify port
+streamlit run server.py --server.port 8502
+```
+
+The web UI provides:
+- Chat-based interface for agent interaction
+- Model selection dropdown
+- API key input
+- Turn counter and session management
+- Clean, modern UI with status indicators
 
 ---
 
@@ -298,26 +242,38 @@ However, for most day-to-day coding tasks—reading files, writing functions, de
 
 ---
 
-## Future Work
+## Features
 
-### Planned Enhancements
+### Agent Capabilities
 
-- [ ] **Model quantization presets**: Pre-configured settings for different GPU VRAM capacities
-- [ ] **Multi-model support**: Seamlessly switch between models based on task complexity
-- [ ] **GPU memory monitoring**: Real-time VRAM usage display in CLI
-- [ ] **Batch inference**: Process multiple requests more efficiently
-- [ ] **Fine-tuning pipeline**: Custom fine-tuning for project-specific patterns
-- [ ] **RAG integration**: Vector search over codebase for better context retrieval
+- **File Operations**: Read, write, edit files seamlessly
+- **Code Search**: Find patterns across your project with regex grep
+- **Shell Execution**: Run bash commands for testing and building
+- **Task Tracking**: Automatically break down complex tasks into manageable steps
+- **Multi-turn Conversations**: Maintain context across extended interactions
 
-### Community Contributions Welcome
+### Built-in Tools (OpenAgent)
 
-SoloCoder is designed to be extensible. Consider contributing:
+| Category | Tools |
+|----------|-------|
+| File Operations | `read`, `write`, `edit`, `glob`, `grep`, `notebook_edit` |
+| Shell Management | `bash`, `bash_background`, `bash_output`, `kill_shell` |
+| Task Manager | `todo_write`, `todo_update`, `todo_list` |
+| Web & Search | `web_search`, `web_fetch` (requires optional deps) |
+| Computer Use | `screenshot`, `click`, `type_text`, `key_combination` (macOS GUI automation, requires `computer-use` deps) |
+| Planning | `enter_plan_mode`, `exit_plan_mode` |
+| User Interaction | `ask_user_question` |
 
-- New tool implementations
-- Additional provider integrations
-- UI improvements and themes
-- Documentation enhancements
-- Performance optimizations for specific GPU architectures
+**Computer Use with Qwen3.5**: Qwen3.5-35B-A3B is a multimodal (Image-Text-to-Text) model that can natively analyze screenshots. The computer use tools work out of the box - the agent can see screenshots and determine where to click based on visual analysis.
+
+### Provider Support
+
+OpenAgent supports multiple LLM providers, making it easy to switch between cloud and local:
+
+- **OpenAIProvider**: GPT models (with custom base_url for LM Studio)
+- **AnthropicProvider**: Claude models
+- **GoogleProvider**: Gemini models
+- **OllamaProvider**: Local Ollama instances
 
 ---
 
@@ -326,6 +282,7 @@ SoloCoder is designed to be extensible. Consider contributing:
 ```
 SoloCoder/
 ├── cli_coder.py              # Main CLI entry point with interactive session
+├── server.py                 # Streamlit web UI entry point
 ├── openagent/                # Agent framework package
 │   ├── __init__.py          # Public API exports
 │   ├── apps/                # Application packages (including SoloCoder)
@@ -350,7 +307,48 @@ SoloCoder/
 │   ├── coder.py             # SoloCoder compatibility shim
 │   └── mcp.py               # MCP compatibility shim
 ├── tests/                    # Test suite
-└── examples/                 # Usage examples
+├── examples/                 # Usage examples
+├── .env.example              # Environment variables template
+├── .streamlit/              # Streamlit configuration
+└── pyproject.toml           # Package configuration
+```
+
+---
+
+## Future Work
+
+### Planned Enhancements
+
+- [ ] Model quantization presets: Pre-configured settings for different GPU VRAM capacities
+- [ ] Multi-model support: Seamlessly switch between models based on task complexity
+- [ ] GPU memory monitoring: Real-time VRAM usage display in CLI
+- [ ] Batch inference: Process multiple requests more efficiently
+- [ ] Fine-tuning pipeline: Custom fine-tuning for project-specific patterns
+- [ ] RAG integration: Vector search over codebase for better context retrieval
+
+### Community Contributions Welcome
+
+SoloCoder is designed to be extensible. Consider contributing:
+
+- New tool implementations
+- Additional provider integrations
+- UI improvements and themes
+- Documentation enhancements
+- Performance optimizations for specific GPU architectures
+
+---
+
+## Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test file
+pytest tests/test_agent.py
+
+# Run async tests
+pytest tests/test_agent.py::test_agent_run
 ```
 
 ---

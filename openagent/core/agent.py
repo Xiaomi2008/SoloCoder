@@ -12,6 +12,8 @@ from .display import (
     green,
     red,
     white,
+    diff_addition,
+    diff_deletion,
     display_tool_call_claude_style,
     display_tool_result_claude_style,
     format_diff_output,
@@ -23,7 +25,7 @@ from .display import (
 
 def display_write_result(file_path: str, result_content: str) -> None:
     """Display write operation result with file info."""
-    print(f"  ● {bold('write')}({cyan(f'"{file_path}"')})")
+    print(f"  ➜ {bold('write')}({cyan(f'"{file_path}"')})")
 
     # Parse the success message to show bytes written
     if "Successfully wrote" in result_content:
@@ -52,7 +54,7 @@ def display_write_result(file_path: str, result_content: str) -> None:
 
 def display_edit_result(file_path: str, result_content: str) -> None:
     """Display edit operation result with changed lines highlighted."""
-    print(f"  ● {bold('edit')}({cyan(f'"{file_path}"')})")
+    print(f"  ➜ {bold('edit')}({cyan(f'"{file_path}"')})")
 
     # Check if this is a unified diff format
     has_diff_format = "@@" in result_content and any(
@@ -102,6 +104,70 @@ def display_edit_result(file_path: str, result_content: str) -> None:
             print(f"    {dim(line)}")
 
 
+def display_edit_result_with_lines(file_path: str, result_content: str) -> None:
+    """Display edit operation result with line numbers like Claude Code."""
+    print(f"  ➜ {bold('edit')}({cyan(f'"{file_path}"')})")
+
+    lines = result_content.split("\n")
+    additions = 0
+    deletions = 0
+    current_line_num: int | None = None
+
+    # Count additions and deletions
+    for line in lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+
+    # Show summary
+    if additions > 0 or deletions > 0:
+        parts = []
+        if additions > 0:
+            parts.append(green(f"Added {additions} line(s)"))
+        if deletions > 0:
+            parts.append(red(f"Removed {deletions} line(s)"))
+        print(f"    ⎿ {', '.join(parts)}")
+
+    print()
+
+    # Display diff with line numbers
+    for line in lines:
+        if not line or "Successfully" in line:
+            continue
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        elif line.startswith("@@"):
+            print(f"{bold(cyan(line))}")
+            # Extract starting line number from hunk header
+            parts = line.split()
+            for part in parts:
+                if part.startswith("-") and "," in part:
+                    current_line_num = int(part[1:].split(",")[0])
+                    break
+
+        elif line.startswith("+") and not line.startswith("+++"):
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {green(num_str.ljust(4))} {diff_addition(line[1:])}")
+
+        elif line.startswith("-") and not line.startswith("---"):
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {red(num_str.ljust(4))} {diff_deletion(line[1:])}")
+
+        else:
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {dim(num_str.ljust(4))} {dim(line)}")
+
+    if additions > 0 or deletions > 0:
+        print()
+
+
 from .logging import AgentLogger
 from .session import Session
 from .skill_manager import (
@@ -112,7 +178,7 @@ from .skill_manager import (
 )
 from .task_manager import TaskManager, get_task_manager
 from .tool import ToolRegistry, tool
-from .types import Message
+from .types import ImageBlock, Message, ToolResultBlock, text_message
 from openagent.runtime.agent import Agent as RuntimeAgent
 
 # BaseProvider is likely in parent package or sibling 'provider' package
@@ -126,6 +192,8 @@ class Agent:
         "Your previous response was empty. Continue the task and reply with either "
         "a non-empty assistant message or valid tool calls."
     )
+    SCREENSHOT_TOOL_IMAGE_MIME_TYPE = "image/jpeg"
+    SCREENSHOT_FOLLOWUP_MAX_TOKENS = 2048
 
     def __init__(
         self,
@@ -208,9 +276,84 @@ class Agent:
         result = await self._loop(**kwargs)
         return result
 
+    async def run_multimodal(
+        self,
+        text: str | None = None,
+        image_data: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Run the agent with multimodal input (text and/or images).
+
+        For agents with tools, this adds the image to the session and runs the normal loop.
+
+        Args:
+            text: Optional text prompt
+            image_data: Optional base64-encoded image data
+
+        Returns:
+            The agent's response text
+        """
+        self._logger.run_start(text or "Image analysis")
+
+        # Add multimodal input to session
+        if image_data:
+            self.session.add_user_multimodal(text=text, image_data=image_data)
+        elif text:
+            self.session.add("user", text)
+        else:
+            self.session.add("user", "Analyze this image.")
+
+        result = await self._loop(**kwargs)
+        return result
+
     @staticmethod
     def _is_empty_final_response(message: Message) -> bool:
         return not message.has_tool_calls and not message.text.strip()
+
+    def _add_tool_result_followup_messages(
+        self, results: list[ToolResultBlock]
+    ) -> bool:
+        added_screenshot_followup = False
+        for result in results:
+            if result.is_error or result.tool_name != "screenshot":
+                continue
+            if not result.content or result.content.startswith("Error"):
+                continue
+
+            screenshot_info_text = ""
+            try:
+                from openagent.tools.computer_use import get_screenshot_info
+
+                screenshot_info = get_screenshot_info()
+                if not screenshot_info.startswith("No screenshot"):
+                    screenshot_info_text = f" The valid image coordinate range is described here: {screenshot_info}"
+            except Exception:
+                screenshot_info_text = ""
+
+            self.session.add_user_multimodal(
+                text=(
+                    "Latest screenshot from the screenshot tool. "
+                    "Use screenshot image coordinates only. "
+                    "If unsure, call get_screenshot_info() for the valid image size and scale."
+                    f"{screenshot_info_text}"
+                ),
+                image_data=result.content,
+                image_mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE,
+            )
+            added_screenshot_followup = True
+
+        return added_screenshot_followup
+
+    def _provider_kwargs_for_turn(
+        self, base_kwargs: dict[str, Any], screenshot_followup_added: bool
+    ) -> dict[str, Any]:
+        provider_kwargs = dict(base_kwargs)
+        if screenshot_followup_added:
+            provider_kwargs["max_tokens"] = min(
+                provider_kwargs.get("max_tokens", 8192),
+                self.SCREENSHOT_FOLLOWUP_MAX_TOKENS,
+            )
+        return provider_kwargs
 
     async def _loop(self, **kwargs: Any) -> str:
         tool_defs = (
@@ -231,6 +374,8 @@ class Agent:
             "disable_compaction", getattr(self, "disable_compaction", False)
         )
 
+        screenshot_followup_added = False
+
         while completed_turns < self.max_turns or awaiting_final_response:
             turn_number = min(completed_turns + 1, self.max_turns)
             self._logger.turn_start(turn_number, self.max_turns)
@@ -245,12 +390,59 @@ class Agent:
                 )
                 self._logger.info(f"Compacted context: {summary[:100]}...")
 
+            # Display thinking indicator
+            print("\x1b[2K\x1b[G\x1b[2m⠋ Thinking...\x1b[0m", end="", flush=True)
+
+            provider_kwargs = self._provider_kwargs_for_turn(
+                kwargs, screenshot_followup_added
+            )
+
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
                 system_prompt=self.session.system_prompt,
-                **kwargs,
+                **provider_kwargs,
             )
+
+            # Clear thinking indicator
+            print("\x1b[2K\x1b[G", end="", flush=True)
+
+            # Show compact context usage indicator
+            try:
+                current_tokens = self.session.token_count
+                max_tokens = kwargs.get("max_context_tokens", 128000)
+                threshold = kwargs.get("compact_threshold", 0.8)
+                percentage = (
+                    (current_tokens / max_tokens) * 100 if max_tokens > 0 else 0
+                )
+
+                if percentage >= 90:
+                    bar_color = red
+                elif percentage >= 80:
+                    bar_color = yellow
+                elif percentage >= threshold * 100:
+                    bar_color = cyan
+                else:
+                    bar_color = green
+
+                bar_width = 40
+                filled_chars = int(bar_width * percentage / 100)
+                bar = "█" * min(filled_chars, bar_width) + "░" * max(
+                    bar_width - filled_chars, 0
+                )
+
+                usage_text = f"{current_tokens:,}"
+                if percentage > 70:
+                    percent_text = cyan(f"{percentage:.0f}% ")
+                    print(
+                        f"  {dim('Context: ')}{bar_color(usage_text)} / {bar_color(str(max_tokens)[:5] + 'k')}  {percent_text}"
+                    )
+                else:
+                    print(
+                        f"  {dim('Context: ')}{bar_color(usage_text)} / {bar_color(str(max_tokens)[:5] + 'k')}"
+                    )
+            except Exception:
+                pass
 
             if self._is_empty_final_response(response):
                 self._logger._logger.warning(
@@ -323,14 +515,17 @@ class Agent:
                         # For write operations, show success message with file info
                         if tc.name == "write":
                             display_write_result(rel_path, content)
-                        # For edit operations, try to extract and show the changed lines
+                        # For edit operations, extract line counts and show diff with line numbers
                         elif tc.name == "edit":
-                            display_edit_result(rel_path, content)
+                            display_edit_result_with_lines(rel_path, content)
 
                     else:
                         display_tool_result_claude_style(result.is_error, content)
 
             self.session.add_tool_results(list(results))
+            screenshot_followup_added = self._add_tool_result_followup_messages(
+                list(results)
+            )
             awaiting_final_response = True
 
         self._logger.max_turns_reached()
