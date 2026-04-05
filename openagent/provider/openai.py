@@ -245,6 +245,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             api_kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": converted["messages"],
+                "max_tokens": kwargs.pop("max_tokens", 8192),
                 **kwargs,
             }
             if tools:

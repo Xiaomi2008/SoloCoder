@@ -90,13 +90,17 @@ class Session:
         return out
 
     def add_user_multimodal(
-        self, text: str | None = None, image_data: str | None = None
+        self,
+        text: str | None = None,
+        image_data: str | None = None,
+        image_mime_type: str = "image/png",
     ) -> Message:
         """Add a user message that can contain text, images, or both.
 
         Args:
             text: Optional text content
             image_data: Optional base64-encoded image data
+            image_mime_type: MIME type for the image block
 
         Returns:
             Message with text and/or image blocks
@@ -107,7 +111,7 @@ class Session:
             blocks.append(TextBlock(text=text))
 
         if image_data:
-            blocks.append(ImageBlock(data=image_data, mime_type="image/png"))
+            blocks.append(ImageBlock(data=image_data, mime_type=image_mime_type))
 
         # If only image provided, wrap in user message
         if not blocks:
@@ -133,7 +137,9 @@ class Session:
         self._messages.append(msg)
         return msg
 
-    def add_text(self, role: Literal["user", "assistant", "system"], text: str) -> Message:
+    def add_text(
+        self, role: Literal["user", "assistant", "system"], text: str
+    ) -> Message:
         """Add a text message with a specific role."""
         msg = text_message(role, text)
         self._messages.append(msg)

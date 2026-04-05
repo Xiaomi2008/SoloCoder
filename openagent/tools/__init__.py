@@ -46,6 +46,7 @@ from .computer_use import (
     click,
     double_click,
     get_screen_resolution,
+    get_screenshot_info,
     key_combination,
     move_mouse,
     screenshot,
@@ -79,6 +80,7 @@ __all__ = [
     "move_mouse",
     "scroll",
     "get_screen_resolution",
+    "get_screenshot_info",
     "wait",
     # Agent orchestration (requires agent integration)
     "task",

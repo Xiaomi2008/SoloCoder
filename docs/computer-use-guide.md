@@ -11,7 +11,7 @@ Enable SoloCoder to control your Mac like a human user using vision-based AI int
 ## Why Qwen3.5-35B-A3B Works
 
 The Qwen3.5-35B-A3B model is an **Image-Text-to-Text (multimodal)** model. This means it can:
-1. Receive base64-encoded PNG images as input
+1. Receive base64-encoded JPEG images as input
 2. Analyze the visual content to understand UI layouts
 3. Identify clickable elements, text fields, buttons, etc.
 4. Return coordinates for appropriate actions
@@ -50,13 +50,13 @@ streamlit run server.py
 
 | Tool | Description |
 |------|-------------|
-| `screenshot()` | Capture full screen or region as base64 PNG |
+| `screenshot()` | Capture full screen or region as base64 JPEG |
 | `screenshot(region=(x,y,w,h))` | Capture specific screen region |
-| `click(x, y, button="left")` | Click at screen coordinates |
-| `double_click(x, y)` | Double-click at screen coordinates |
+| `click(x, y, button="left")` | Click at screenshot image coordinates |
+| `double_click(x, y)` | Double-click at screenshot image coordinates |
 | `type_text(text)` | Type text into focused element |
 | `key_combination(keys)` | Press keyboard shortcuts (e.g., "cmd+c") |
-| `move_mouse(x, y)` | Move cursor to coordinates |
+| `move_mouse(x, y)` | Move cursor to screenshot image coordinates |
 | `scroll(x, y, clicks)` | Scroll at location |
 | `get_screen_resolution()` | Get current screen dimensions |
 | `wait(seconds)` | Wait for UI to update |
@@ -75,7 +75,7 @@ streamlit run server.py
 
 ### Image Format for Qwen3.5
 
-The `screenshot()` tool returns a base64-encoded PNG string. For Qwen3.5-VL, the agent should format this as an image block:
+The `screenshot()` tool returns a base64-encoded JPEG string. For Qwen3.5-VL, the agent should format this as an image block:
 
 ```python
 # Example of how the agent should use the screenshot result
@@ -90,7 +90,7 @@ image_block = {
     "type": "image",
     "source": {
         "type": "base64",
-        "media_type": "image/png",
+        "media_type": "image/jpeg",
         "data": base64_img
     }
 }

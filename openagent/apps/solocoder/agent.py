@@ -150,6 +150,7 @@ class CoderAgent(BaseAgent):
         self,
         text: str | None = None,
         image_path: str | None = None,
+        image_data: str | None = None,
         working_dir: str | None = None,
         **kwargs: Any,
     ) -> str:
@@ -158,6 +159,7 @@ class CoderAgent(BaseAgent):
         Args:
             text: Optional text prompt
             image_path: Path to an image file to analyze
+            image_data: Optional base64-encoded image data
             working_dir: Optional working directory override
 
         Returns:
@@ -170,7 +172,6 @@ class CoderAgent(BaseAgent):
         kwargs.setdefault("disable_compaction", self.disable_compaction)
 
         # Load image if provided
-        image_data: str | None = None
         if image_path:
             try:
                 image_bytes = Path(image_path).read_bytes()

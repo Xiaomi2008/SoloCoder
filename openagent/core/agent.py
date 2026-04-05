@@ -178,7 +178,7 @@ from .skill_manager import (
 )
 from .task_manager import TaskManager, get_task_manager
 from .tool import ToolRegistry, tool
-from .types import Message
+from .types import ImageBlock, Message, ToolResultBlock, text_message
 from openagent.runtime.agent import Agent as RuntimeAgent
 
 # BaseProvider is likely in parent package or sibling 'provider' package
@@ -192,6 +192,8 @@ class Agent:
         "Your previous response was empty. Continue the task and reply with either "
         "a non-empty assistant message or valid tool calls."
     )
+    SCREENSHOT_TOOL_IMAGE_MIME_TYPE = "image/jpeg"
+    SCREENSHOT_FOLLOWUP_MAX_TOKENS = 2048
 
     def __init__(
         self,
@@ -274,9 +276,84 @@ class Agent:
         result = await self._loop(**kwargs)
         return result
 
+    async def run_multimodal(
+        self,
+        text: str | None = None,
+        image_data: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Run the agent with multimodal input (text and/or images).
+
+        For agents with tools, this adds the image to the session and runs the normal loop.
+
+        Args:
+            text: Optional text prompt
+            image_data: Optional base64-encoded image data
+
+        Returns:
+            The agent's response text
+        """
+        self._logger.run_start(text or "Image analysis")
+
+        # Add multimodal input to session
+        if image_data:
+            self.session.add_user_multimodal(text=text, image_data=image_data)
+        elif text:
+            self.session.add("user", text)
+        else:
+            self.session.add("user", "Analyze this image.")
+
+        result = await self._loop(**kwargs)
+        return result
+
     @staticmethod
     def _is_empty_final_response(message: Message) -> bool:
         return not message.has_tool_calls and not message.text.strip()
+
+    def _add_tool_result_followup_messages(
+        self, results: list[ToolResultBlock]
+    ) -> bool:
+        added_screenshot_followup = False
+        for result in results:
+            if result.is_error or result.tool_name != "screenshot":
+                continue
+            if not result.content or result.content.startswith("Error"):
+                continue
+
+            screenshot_info_text = ""
+            try:
+                from openagent.tools.computer_use import get_screenshot_info
+
+                screenshot_info = get_screenshot_info()
+                if not screenshot_info.startswith("No screenshot"):
+                    screenshot_info_text = f" The valid image coordinate range is described here: {screenshot_info}"
+            except Exception:
+                screenshot_info_text = ""
+
+            self.session.add_user_multimodal(
+                text=(
+                    "Latest screenshot from the screenshot tool. "
+                    "Use screenshot image coordinates only. "
+                    "If unsure, call get_screenshot_info() for the valid image size and scale."
+                    f"{screenshot_info_text}"
+                ),
+                image_data=result.content,
+                image_mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE,
+            )
+            added_screenshot_followup = True
+
+        return added_screenshot_followup
+
+    def _provider_kwargs_for_turn(
+        self, base_kwargs: dict[str, Any], screenshot_followup_added: bool
+    ) -> dict[str, Any]:
+        provider_kwargs = dict(base_kwargs)
+        if screenshot_followup_added:
+            provider_kwargs["max_tokens"] = min(
+                provider_kwargs.get("max_tokens", 8192),
+                self.SCREENSHOT_FOLLOWUP_MAX_TOKENS,
+            )
+        return provider_kwargs
 
     async def _loop(self, **kwargs: Any) -> str:
         tool_defs = (
@@ -297,6 +374,8 @@ class Agent:
             "disable_compaction", getattr(self, "disable_compaction", False)
         )
 
+        screenshot_followup_added = False
+
         while completed_turns < self.max_turns or awaiting_final_response:
             turn_number = min(completed_turns + 1, self.max_turns)
             self._logger.turn_start(turn_number, self.max_turns)
@@ -314,11 +393,15 @@ class Agent:
             # Display thinking indicator
             print("\x1b[2K\x1b[G\x1b[2m⠋ Thinking...\x1b[0m", end="", flush=True)
 
+            provider_kwargs = self._provider_kwargs_for_turn(
+                kwargs, screenshot_followup_added
+            )
+
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
                 system_prompt=self.session.system_prompt,
-                **kwargs,
+                **provider_kwargs,
             )
 
             # Clear thinking indicator
@@ -440,6 +523,9 @@ class Agent:
                         display_tool_result_claude_style(result.is_error, content)
 
             self.session.add_tool_results(list(results))
+            screenshot_followup_added = self._add_tool_result_followup_messages(
+                list(results)
+            )
             awaiting_final_response = True
 
         self._logger.max_turns_reached()
