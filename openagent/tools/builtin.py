@@ -832,6 +832,102 @@ def ask_user_question(
     return result
 
 
+@tool
+def submit_feedback(
+    rating: int,
+    comment: str = "",
+) -> str:
+    """Submit feedback about the agent's performance.
+
+    This helps the agent learn from user feedback and improve over time.
+    Feedback is only collected if learning is enabled in the agent.
+
+    Args:
+        rating: Rating from 1-5 (1=very poor, 2=poor, 3=average, 4=good, 5=excellent)
+        comment: Optional detailed feedback about what went well or poorly
+
+    Returns:
+        Confirmation message
+    """
+    if not 1 <= rating <= 5:
+        return "Error: Rating must be between 1 and 5."
+
+    # Try to get the current agent and submit feedback
+    try:
+        from ..core.agent import Agent
+        import sys
+
+        # Check if we're running in an interactive session with learning enabled
+        frame = sys._getframe(1)
+        while frame:
+            if hasattr(frame.f_locals.get('self'), '_feedback_manager'):
+                agent = frame.f_locals['self']
+                if hasattr(agent, 'add_feedback'):
+                    agent.add_feedback(rating=rating, comment=comment)
+                    return f"Thank you for your feedback! Rating: {rating}/5{' | Comment: ' + comment if comment else ''}"
+            frame = frame.f_back
+
+        # Fallback: learning may not be enabled or we're not in an agent context
+        return f"Feedback recorded (learning disabled): Rating: {rating}/5{' | Comment: ' + comment if comment else ''}. Enable learning to help the agent improve."
+    except Exception as e:
+        return f"Could not submit feedback: {e}"
+
+
+@tool
+def get_learning_stats() -> str:
+    """Get statistics about what the agent has learned.
+
+    Shows tool usage patterns, success rates, and feedback summary if learning is enabled.
+
+    Returns:
+        Formatted learning statistics or message if learning is disabled
+    """
+    try:
+        from ..core.agent import Agent
+        import sys
+
+        # Check if we're running in an interactive session with learning enabled
+        frame = sys._getframe(1)
+        while frame:
+            if hasattr(frame.f_locals.get('self'), '_tool_tracker'):
+                agent = frame.f_locals['self']
+                if hasattr(agent, 'get_learning_stats'):
+                    stats = agent.get_learning_stats()
+                    return format_learning_stats(stats)
+            frame = frame.f_back
+
+        return "Learning is not enabled. Enable it with enable_learning=True when creating the agent."
+    except Exception as e:
+        return f"Could not get learning stats: {e}"
+
+
+def format_learning_stats(stats: dict) -> str:
+    """Format learning statistics for display."""
+    if not stats.get("learning_enabled"):
+        return "Learning is not enabled."
+
+    output = ["### Learning Statistics"]
+
+    # Tool usage stats
+    tool_usage = stats.get("tool_usage", {})
+    if tool_usage:
+        output.append("\n**Tool Usage:**")
+        for tool_name, tool_stats in sorted(tool_usage.items(), key=lambda x: -x[1].get("total_uses", 0)):
+            success_rate = tool_stats.get("success_rate", 0)
+            total_uses = tool_stats.get("total_uses", 0)
+            bar = "█" * int(success_rate * 10) + "░" * (10 - int(success_rate * 10))
+            output.append(f"  {tool_name}: [{bar}] {success_rate:.0%} ({total_uses} uses)")
+
+    # Feedback summary
+    feedback = stats.get("feedback_summary")
+    if feedback:
+        output.append("\n**Feedback:**")
+        output.append(f"  Total ratings: {feedback.get('total', 0)}")
+        output.append(f"  Average rating: {feedback.get('average', 0):.1f}/5")
+
+    return "\n".join(output)
+
+
 # ============================================================================
 # Extensibility Tools
 # ============================================================================
@@ -1166,6 +1262,9 @@ __all__ = [
     "todo_list",
     # User interaction
     "ask_user_question",
+    "submit_feedback",
+    # Learning
+    "get_learning_stats",
     # Extensibility
     "skill",
     "slash_command",

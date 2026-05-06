@@ -125,6 +125,8 @@ class Agent:
         skill_manager: SkillManager | None = None,
         mcp_client: Any | None = None,  # MCP client for tool discovery
         max_messages: int | None = None,  # Max messages before compression kicks in
+        enable_learning: bool = False,  # Enable online learning features
+        learning_storage_path: str | None = None,  # Path to store learning data
     ) -> None:
         self.provider = provider
         self.session = Session(system_prompt=system_prompt, max_messages=max_messages)
@@ -137,6 +139,34 @@ class Agent:
         self.task_manager = task_manager or get_task_manager()
         self.skill_manager = skill_manager or get_skill_manager()
         self.command_registry = get_command_registry()
+
+        # Initialize learning components if enabled
+        self._enable_learning = enable_learning
+        self._learning_storage_path = learning_storage_path
+        if enable_learning:
+            from .learning import (
+                ToolUsageTracker, FeedbackManager, SessionAnalyzer, AdaptivePrompt
+            )
+            self._tool_tracker = ToolUsageTracker(
+                storage_path=f"{learning_storage_path}/tool_usage.json" if learning_storage_path else None
+            )
+            self._feedback_manager = FeedbackManager(
+                storage_path=f"{learning_storage_path}/feedback.json" if learning_storage_path else None
+            )
+            self._session_analyzer = SessionAnalyzer(
+                storage_path=f"{learning_storage_path}/outcomes.json" if learning_storage_path else None
+            )
+            self._adaptive_prompt = AdaptivePrompt(
+                base_prompt=system_prompt,
+                tool_tracker=self._tool_tracker,
+                feedback_manager=self._feedback_manager,
+                session_analyzer=self._session_analyzer,
+            )
+        else:
+            self._tool_tracker = None
+            self._feedback_manager = None
+            self._session_analyzer = None
+            self._adaptive_prompt = None
 
         if tools:
             for fn in tools:
@@ -180,6 +210,12 @@ class Agent:
 
     async def _loop(self, **kwargs: Any) -> str:
         tool_defs = self.tool_registry.definitions if len(self.tool_registry) > 0 else None
+
+        # Apply adaptive prompt if learning is enabled
+        system_prompt = self.session.system_prompt
+        if self._enable_learning and self._adaptive_prompt:
+            system_prompt = self._adaptive_prompt.adapt()
+
         response: Message | None = None
 
         for turn in range(self.max_turns):
@@ -188,7 +224,7 @@ class Agent:
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
-                system_prompt=self.session.system_prompt,
+                system_prompt=system_prompt,
                 **kwargs,
             )
             self.session.add_message(response)
@@ -197,6 +233,9 @@ class Agent:
             self._logger.turn_end(turn + 1, has_tools)
 
             if not has_tools:
+                # Analyze session outcome if learning is enabled
+                if self._enable_learning and self._session_analyzer:
+                    await self._analyze_session_outcome()
                 self._logger.run_end(turn + 1)
                 return response.text
 
@@ -208,6 +247,16 @@ class Agent:
                 self.tool_registry.execute(tc) for tc in response.tool_calls
             ]
             results = await asyncio.gather(*tool_tasks)
+
+            # Track tool usage if learning is enabled
+            if self._enable_learning and self._tool_tracker:
+                for result, tc in zip(results, response.tool_calls):
+                    self._tool_tracker.record(
+                        tool_name=tc.name,
+                        success=not result.is_error,
+                        error_message=result.content if result.is_error else None,
+                        task_context=self._extract_task_context(),
+                    )
 
             # Log results in Claude Code style with diff highlighting for code changes
             for result, tc in zip(results, response.tool_calls):
@@ -246,6 +295,90 @@ class Agent:
             self.session.add_tool_results(list(results))
 
         self._logger.max_turns_reached()
+        # Analyze session outcome if learning is enabled (even on max turns)
+        if self._enable_learning and self._session_analyzer:
+            await self._analyze_session_outcome()
         if response is None:
             raise RuntimeError("Agent loop completed without receiving any response")
         return response.text
+
+    def _extract_task_context(self) -> str:
+        """Extract brief task context from the most recent user message."""
+        for msg in reversed(self.session.messages):
+            if msg.role == "user" and isinstance(msg.content, str):
+                # Return first 100 chars as context
+                return msg.content[:100]
+        return ""
+
+    async def _analyze_session_outcome(self) -> None:
+        """Analyze the current session outcome for learning."""
+        if not self._session_analyzer:
+            return
+
+        # Extract task description from first user message
+        task_description = ""
+        for msg in self.session.messages:
+            if msg.role == "user" and isinstance(msg.content, str):
+                task_description = msg.content[:200]
+                break
+
+        if task_description:
+            self._session_analyzer.analyze_session(
+                session=self.session,
+                task_description=task_description,
+            )
+
+    def add_feedback(self, rating: int, comment: str = "") -> None:
+        """Add user feedback for the current session.
+
+        Args:
+            rating: Rating from 1-5 (1=very poor, 5=excellent)
+            comment: Optional user comment
+        """
+        if not self._enable_learning or not self._feedback_manager:
+            return
+
+        # Extract task description
+        task_description = ""
+        for msg in self.session.messages:
+            if msg.role == "user" and isinstance(msg.content, str):
+                task_description = msg.content[:200]
+                break
+
+        import uuid
+        session_id = f"{uuid.uuid4().hex[:8]}"
+        self._feedback_manager.add_feedback(
+            session_id=session_id,
+            rating=rating,
+            comment=comment,
+            task_description=task_description,
+        )
+
+    def get_learning_stats(self) -> dict[str, Any]:
+        """Get learning statistics for the agent.
+
+        Returns:
+            Dictionary with tool usage stats and feedback summary
+        """
+        if not self._enable_learning:
+            return {"learning_enabled": False}
+
+        stats = {
+            "learning_enabled": True,
+            "tool_usage": {},
+            "feedback_summary": None,
+        }
+
+        if self._tool_tracker:
+            # Get stats for each tool
+            all_tools = set()
+            for record in self._tool_tracker._records:
+                all_tools.add(record.tool_name)
+
+            for tool_name in all_tools:
+                stats["tool_usage"][tool_name] = self._tool_tracker.get_stats(tool_name)
+
+        if self._feedback_manager:
+            stats["feedback_summary"] = self._feedback_manager.get_feedback_summary()
+
+        return stats

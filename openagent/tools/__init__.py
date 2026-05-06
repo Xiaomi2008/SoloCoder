@@ -26,6 +26,7 @@ from .builtin import (
     edit,
     enter_plan_mode,
     exit_plan_mode,
+    get_learning_stats,
     git_commit,
     git_diff,
     git_log,
@@ -37,6 +38,7 @@ from .builtin import (
     read,
     slash_command,
     skill,
+    submit_feedback,
     task,
     todo_list,
     todo_update,
@@ -80,4 +82,7 @@ __all__ = [
     # Extensibility (requires agent integration)
     "skill",
     "slash_command",
+    # Learning tools (requires enable_learning=True)
+    "submit_feedback",
+    "get_learning_stats",
 ]

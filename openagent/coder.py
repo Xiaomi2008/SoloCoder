@@ -67,14 +67,28 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
         bash_manager: BashManager | None = None,
         task_manager: TaskManager | None = None,
         skill_manager: SkillManager | None = None,
+        enable_learning: bool = False,
+        learning_storage_path: str | None = None,
     ) -> None:
-        """Initialize the CoderAgent with all built-in tools."""
+        """Initialize the CoderAgent with all built-in tools.
+
+        Args:
+            provider: LLM provider instance (defaults to OpenAI if not provided)
+            system_prompt: Custom system prompt for the coder agent
+            max_turns: Maximum conversation turns before stopping
+            working_dir: Working directory for file operations and shell commands
+            bash_manager: Optional custom BashManager instance
+            task_manager: Optional custom TaskManager instance
+            skill_manager: Optional custom SkillManager instance
+            enable_learning: If True, enables online learning features (tool usage tracking, feedback collection)
+            learning_storage_path: Path to store learning data (JSON files). If None, learning is in-memory only.
+        """
         from .tools import (
             read, write, edit, glob, grep, notebook_edit,
             bash, bash_background, bash_output, kill_shell,
             todo_write, todo_update, todo_list,
             enter_plan_mode, exit_plan_mode, ask_user_question,
-            web_search, web_fetch
+            web_search, web_fetch, submit_feedback, get_learning_stats
         )
 
         # Use default provider if not provided
@@ -84,6 +98,9 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
         # Set system prompt
         if system_prompt is None:
             system_prompt = self.DEFAULT_SYSTEM_PROMPT
+
+        # Add learning tools to the list if learning is enabled
+        learning_tools = [submit_feedback, get_learning_stats] if enable_learning else []
 
         # Initialize with all built-in tools
         super().__init__(
@@ -96,11 +113,13 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
                 enter_plan_mode, exit_plan_mode,  # Planning mode
                 ask_user_question,  # User interaction
                 web_search, web_fetch,  # Web tools
-            ],
+            ] + learning_tools,
             max_turns=max_turns,
             bash_manager=bash_manager or get_bash_manager(),
             task_manager=task_manager or get_task_manager(),
             skill_manager=skill_manager or get_skill_manager(),
+            enable_learning=enable_learning,
+            learning_storage_path=learning_storage_path,
         )
 
         self._working_dir = working_dir or str(Path.cwd())
