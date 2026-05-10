@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import logging
 import os
 import sys
 from pathlib import Path
@@ -30,28 +29,12 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from openagent import (
-    bold,
-    dim,
-    blue,
-    green,
-    yellow,
-    red,
-    cyan,
-    magenta,
-    white,
-    user_input,
-    code,
-    diff_addition,
-    diff_deletion,
-    format_diff_output,
-    display_code_block,
-    display_diff_claude_style,
-    display_tool_call_claude_style,
-    display_tool_result_claude_style,
-    truncate_text,
-    format_file_list,
-    format_grep_results_claude_style,
-    display_claude_code_block,
+    bold, dim, blue, green, yellow, red, cyan, magenta, white,
+    code, diff_addition, diff_deletion, format_diff_output,
+    display_code_block, display_diff_claude_style,
+    display_tool_call_claude_style, display_tool_result_claude_style,
+    truncate_text, format_file_list, format_grep_results_claude_style,
+    display_claude_code_block
 )
 
 
@@ -76,83 +59,45 @@ Features:
   - Interactive chat interface
 
 Type 'quit' or 'exit' to stop the agent.
-        """,
+        """
     )
 
     parser.add_argument(
-        "--model",
-        "-m",
+        "--model", "-m",
         default="gpt-4o",
-        help="LLM model to use (default: gpt-4o, try claude-sonnet-4 for Anthropic)",
+        help="LLM model to use (default: gpt-4o, try claude-sonnet-4 for Anthropic)"
     )
 
     parser.add_argument(
-        "--working-dir",
-        "-w",
+        "--working-dir", "-w",
         default=None,
         type=str,
-        help="Working directory for file operations and shell commands",
+        help="Working directory for file operations and shell commands"
     )
 
     parser.add_argument(
-        "--max-turns",
-        "-t",
+        "--max-turns", "-t",
         type=int,
-        default=100,
-        help="Maximum conversation turns before stopping (default: 100)",
+        default=20,
+        help="Maximum conversation turns before stopping (default: 20)"
     )
 
     parser.add_argument(
-        "--api-key",
-        "-k",
+        "--api-key", "-k",
         default=None,
-        help="API key for the provider (or set environment variable). Not required when using --base-url with local servers.",
+        help="API key for the provider (or set environment variable). Not required when using --base-url with local servers."
     )
 
     parser.add_argument(
         "--base-url",
         default=None,
-        help="Base URL for OpenAI-compatible API (e.g., http://localhost:1234/v1). When set, API key is optional for local servers.",
-    )
-
-    # Context compaction settings
-    parser.add_argument(
-        "--max-context-tokens",
-        type=int,
-        default=128000,
-        help="Maximum context window size in tokens (default: 128000)",
-    )
-
-    parser.add_argument(
-        "--compact-threshold",
-        type=float,
-        default=0.8,
-        help="Trigger compaction at this percentage of max_context_tokens (default: 0.8 = 80%%)",
-    )
-
-    parser.add_argument(
-        "--disable-compaction",
-        action="store_true",
-        help="Disable automatic context compaction",
-    )
-
-    parser.add_argument(
-        "--log-level",
-        default="warning",
-        choices=["debug", "info", "warning", "error", "critical"],
-        help="OpenAgent log level (default: warning)",
-    )
-
-    parser.add_argument(
-        "--debug-llm",
-        action="store_true",
-        help="Shortcut for --log-level debug to inspect raw LM Studio/OpenAI-compatible responses",
+        help="Base URL for OpenAI-compatible API (e.g., http://localhost:1234/v1). When set, API key is optional for local servers."
     )
 
     return parser.parse_args()
 
 
-def detect_provider(model: str, base_url: str | None = None) -> tuple[str, str]:
+def detect_provider(model: str, base_url: str | None = None) -> tuple[str, type]:
     """Detect which provider to use based on model name and base URL.
 
     Returns:
@@ -221,83 +166,68 @@ async def run_interactive_session(coder) -> None:
     print(dim("  /read     - Preview file contents before editing"))
     print(dim("  /todo     - Show task list"))
     print(dim("  /model    - Change LLM model mid-session"))
-    print(dim("  /context  - Show current context token usage"))
     print(dim("  /clear    - Clear conversation history"))
-    print(dim("  /compact  - Manually compact context to save tokens"))
     print("\nUse '!' prefix for direct terminal commands:")
     print(dim("  ! ls      - List files (direct bash execution)"))
     print(dim("  ! pwd     - Print working directory"))
 
     try:
         turn_counter = 0  # Track turns for this session
+        # Create a single persistent bash session for /list and ! commands
+        cli_bash_session = await coder.bash_manager.start_session()
 
         while True:
             # Calculate remaining turns budget (simplified display)
-            # Use distinctive color combination for user prompts to distinguish from Coder responses
-            # Note: Input text itself uses terminal default, so we make the prompt very distinctive
-            # Using a visual separator line to clearly mark user input area
+            prompt_text = f"\n{bold('You')} "
             if turn_counter > 0:
-                print(f"\n{user_input(cyan('You'))} {dim(f'[{turn_counter}/{coder.max_turns}] ')}")
-            else:
-                print(f"\n{user_input(cyan('You'))}")
+                prompt_text += dim(f"[{turn_counter}/{coder.max_turns}] ")
+            user_input = input(prompt_text).strip()
 
-            # Print a separator line to visually mark the user input area
-            # This makes it clear where user input begins, even though typed text uses terminal default color
-            print(dim("─" * 40))
-            typed_input = input().strip()
-
-            if not typed_input:
+            if not user_input:
                 continue
 
             # Handle quick commands with "/" prefix
-            if typed_input.startswith("/"):
-                parts = typed_input.split(maxsplit=1)
+            if user_input.startswith("/"):
+                parts = user_input.split(maxsplit=1)
                 cmd = parts[0].lower()
                 arg = parts[1] if len(parts) > 1 else ""
 
                 if cmd in ("/list", "/ls"):
-                    from openagent.tools import bash
-
                     result = await coder.bash_manager.execute_command(
-                        (await coder.bash_manager.start_session()).split("-")[0],
-                        f"ls -la {arg}" if arg else "ls -la",
+                        cli_bash_session,
+                        f"ls -la {arg}" if arg else "ls -la"
                     )
-                    print(f"\n{green('Coder: ')}{result}")
-                    continue
+                    print(f"\n{bold('Coder: ')}{result}")
 
                 elif cmd == "/read":
                     """Preview file contents using the read tool."""
                     if not arg:
-                        print("\n" + green("Coder: ") + "Usage: /read <filepath>")
+                        print("\n" + bold("Coder: ") + "Usage: /read <filepath>")
                         continue
 
                     from openagent.tools import read
-
                     try:
                         result = read(arg)  # read() is synchronous, no await needed
                         display_code_block(f"File: {arg}", result)
                     except Exception as e:
                         print(f"\n{red('Coder: ')}Error reading file: {e}")
-                    continue
 
                 elif cmd == "/todo":
                     from openagent.tools import todo_list
-
                     result = todo_list()
                     print(f"\n{result}")
-                    continue
 
                 elif cmd == "/model":
                     """Change LLM model mid-session."""
                     if not arg:
                         # Show current model info
                         provider = coder.provider
-                        print(f"\n{green('Coder: ')}Current model: {provider.model}")
+                        print(f"\n{bold('Coder: ')}Current model: {provider.model}")
                         print(f"Provider: {type(provider).__name__}")
                         continue
 
                     new_model = arg.strip()
-                    base_url = getattr(coder.provider, "base_url", None)
+                    base_url = getattr(coder.provider, 'base_url', None)
 
                     # Detect provider for new model
                     _, provider_class_name = detect_provider(new_model, base_url)
@@ -311,38 +241,25 @@ async def run_interactive_session(coder) -> None:
                     }
 
                     if provider_class_name not in class_mapping:
-                        print(
-                            f"\n{red('Coder: ')}Unknown provider type for model: {new_model}"
-                        )
+                        print(f"\n{red('Coder: ')}Unknown provider type for model: {new_model}")
                         continue
 
                     provider_name, module_name = class_mapping[provider_class_name]
 
                     # Import and create new provider
                     try:
-                        ProviderClass: type[Any] | None = None
-
                         if module_name == "openai":
                             from openagent.provider.openai import OpenAIProvider
-
                             ProviderClass = OpenAIProvider
                         elif module_name == "anthropic":
                             from openagent.provider.anthropic import AnthropicProvider
-
                             ProviderClass = AnthropicProvider
                         elif module_name == "google":
                             from openagent.provider.google import GoogleProvider
-
                             ProviderClass = GoogleProvider
                         elif module_name == "ollama":
                             from openagent.provider.ollama import OllamaProvider
-
                             ProviderClass = OllamaProvider
-
-                        if ProviderClass is None:
-                            raise RuntimeError(
-                                f"Could not load provider class for module: {module_name}"
-                            )
 
                         # Get API key if needed
                         api_key_env = get_api_key_env_var(provider_name)
@@ -353,181 +270,138 @@ async def run_interactive_session(coder) -> None:
                             new_provider_kwargs["base_url"] = base_url
 
                         coder.provider = ProviderClass(**new_provider_kwargs)
-                        print(
-                            f"\n{green('Coder: ')}Switched to {provider_name} model: {new_model}"
-                        )
+                        print(f"\n{green('Coder: ')}Switched to {provider_name} model: {new_model}")
                     except Exception as e:
                         print(f"\n{red('Coder: ')}Error switching model: {e}")
-                    continue
-
-                elif cmd == "/context":
-                    """Show current context token usage."""
-                    try:
-                        current_tokens = coder.session.token_count
-                        max_tokens = getattr(coder, "max_context_tokens", 128000)
-                        threshold = getattr(coder, "compact_threshold", 0.8)
-                        threshold_tokens = int(max_tokens * threshold)
-
-                        print(f"\n{green('Coder: ')}Current context usage")
-                        print(f"Tokens: {current_tokens:,} / {max_tokens:,}")
-                        print(
-                            f"Auto-compact at: {threshold_tokens:,} ({threshold:.0%})"
-                        )
-                    except Exception as e:
-                        print(f"\n{red('Coder: ')}Error calculating context usage: {e}")
-                    continue
-
-                elif cmd == "/compact":
-                    """Manually compact conversation context."""
-                    try:
-                        # Get compaction settings from coder if available
-                        max_tokens = getattr(coder, "max_context_tokens", 128000)
-                        threshold = getattr(coder, "compact_threshold", 0.8)
-
-                        summary = await coder.session.compact_context(
-                            provider=coder.provider,
-                            keep_recent=5,
-                            summary_type="detailed",
-                        )
-                        print(f"\n{green('Coder: ')}Context compacted!")
-                        print(dim("Summary preview:"))
-                        print(
-                            dim(
-                                summary[:300] + "..." if len(summary) > 300 else summary
-                            )
-                        )
-                    except Exception as e:
-                        print(f"\n{red('Coder: ')}Error during compaction: {e}")
-                    continue
 
                 elif cmd in ("/clear", "/reset"):
                     coder.session.clear()
                     turn_counter = 0
-                    print("\n" + green("Coder: ") + "Conversation history cleared.")
-                    continue
+                    print("\n" + bold("Coder: ") + "Conversation history cleared.")
 
                 elif cmd in ("/quit", "/exit"):
                     print("Goodbye!")
                     break
 
                 else:
-                    print(
-                        f"Unknown command: {cmd}. Use /list, /read, /todo, /model, or /clear"
-                    )
+                    print(f"Unknown command: {cmd}. Use /list, /read, /todo, /model, or /clear")
                     continue
 
             # Handle terminal commands with "!" prefix (direct bash execution)
-            if typed_input.startswith("!"):
-                cmd = typed_input[1:].strip()
+            if user_input.startswith("!"):
+                cmd = user_input[1:].strip()
                 if not cmd:
-                    print("\n" + green("Coder: ") + "Usage: ! <command>")
+                    print("\n" + bold("Coder: ") + "Usage: ! <command>")
                     continue
-
-                from openagent.tools import bash
 
                 try:
                     result = await coder.bash_manager.execute_command(
-                        (await coder.bash_manager.start_session()).split("-")[0], cmd
+                        cli_bash_session,
+                        cmd
                     )
-                    print(f"\n{green('Coder: ')}{result}")
+                    print(f"\n{bold('Coder: ')}{result}")
                 except Exception as e:
                     print(f"\n{red('Coder: ')}Error executing command: {e}")
                 continue
 
             # Handle quit/exit commands
-            if typed_input.lower() in ("quit", "exit"):
+            if user_input.lower() in ("quit", "exit"):
                 print("Goodbye!")
                 break
 
-            # Run the agent and increment turn counter
-            result = await coder.run(typed_input)
+        # Run the agent with streaming output
+            import sys
+            print(f"\n{bold('Coder: ')}", end="", flush=True)
+            result = await coder.run(user_input, on_chunk=lambda c: sys.stdout.write(c) or sys.stdout.flush())
             turn_counter += 1
-            print(f"\n{green('Coder: ')}{result}")
+            print()  # newline after streaming finishes
 
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
+    finally:
+        # Clean up the CLI bash session
+        try:
+            await coder.bash_manager.kill_session(cli_bash_session)
+        except Exception:
+            pass
 
 
 async def main():
     """Main entry point for the CLI."""
+    from openagent.core.config import Config
+
+    # Load config: file defaults → env vars → CLI overrides
+    file_config = Config.from_file()
+    config = file_config.apply_env()
+
     args = setup_argparse()
 
-    from openagent import configure_logging
-
-    log_level_name = "debug" if args.debug_llm else args.log_level
-    configure_logging(level=getattr(logging, log_level_name.upper()))
+    # CLI args override config (skip falsy CLI values like defaults)
+    config = config.override(
+        model=args.model if args.model != "gpt-4o" else None,
+        api_key=args.api_key,
+        base_url=args.base_url,
+        max_turns=args.max_turns if args.max_turns != 20 else None,
+        working_dir=args.working_dir,
+    )
 
     # Set project root environment variable for security confinement
     import os
-
-    working_dir = Path(args.working_dir).resolve() if args.working_dir else Path.cwd()
-    os.environ["AGENT_PROJECT_ROOT"] = str(working_dir)
+    working_dir = Path(config.working_dir).resolve() if config.working_dir else Path.cwd()
+    os.environ['AGENT_PROJECT_ROOT'] = str(working_dir)
 
     from openagent.coder import CoderAgent
 
     # Detect provider based on model name and base URL
-    provider_name, provider_class_name = detect_provider(args.model, args.base_url)
+    provider_name, provider_class_name = detect_provider(config.model, config.base_url or None)
 
     # Import the appropriate provider class dynamically
     if provider_class_name == "OpenAIProvider":
         from openagent.provider.openai import OpenAIProvider
-
         ProviderClass = OpenAIProvider
     elif provider_class_name == "AnthropicProvider":
         from openagent.provider.anthropic import AnthropicProvider
-
         ProviderClass = AnthropicProvider
     elif provider_class_name == "GoogleProvider":
         from openagent.provider.google import GoogleProvider
-
         ProviderClass = GoogleProvider
     elif provider_class_name == "OllamaProvider":
         from openagent.provider.ollama import OllamaProvider
-
         ProviderClass = OllamaProvider
     else:
         # Default to OpenAI
         from openagent.provider.openai import OpenAIProvider
-
         ProviderClass = OpenAIProvider
 
-    # Get API key - command line takes precedence, then env var
-    api_key = args.api_key
+    # Get API key - CLI > config file > env var
+    api_key = config.api_key
     if not api_key:
         env_var = get_api_key_env_var(provider_name)
         if env_var:
-            import os
-
             api_key = os.environ.get(env_var)
             if api_key:
-                print(f"Using {provider_name} provider (model: {args.model})")
+                print(f"Using {provider_name} provider (model: {config.model})")
 
     # Build provider kwargs
     provider_kwargs: dict[str, Any] = {
-        "model": args.model,
-        "api_key": api_key or None,  # Will use env var if not provided
+        "model": config.model,
+        "api_key": api_key or None,
     }
 
-    # Add base_url if specified (for OpenAI-compatible APIs)
-    if args.base_url:
-        provider_kwargs["base_url"] = args.base_url
+    if config.base_url:
+        provider_kwargs["base_url"] = config.base_url
 
-    # Create provider with optional API key override
     provider = ProviderClass(**provider_kwargs)
 
-    # Create the coder agent with compaction settings
+    # Build auto_save path
+    auto_save_path = config.auto_save or None
+
     coder = CoderAgent(
         provider=provider,
-        max_turns=args.max_turns,
-        working_dir=args.working_dir,
-        max_context_tokens=args.max_context_tokens,
-        compact_threshold=args.compact_threshold,
-        disable_compaction=args.disable_compaction,
+        max_turns=config.max_turns,
+        working_dir=config.working_dir or str(working_dir),
+        auto_save=auto_save_path,
     )
-
-    # Run interactive session
-    if args.debug_llm:
-        print(f"{yellow('Debug logging enabled:')} OpenAgent + provider logs at DEBUG")
 
     await run_interactive_session(coder)
 

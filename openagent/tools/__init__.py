@@ -20,20 +20,27 @@ Usage:
 
 from .builtin import (
     ask_user_question,
+    awk,
     bash,
     bash_background,
     bash_output,
     edit,
     enter_plan_mode,
     exit_plan_mode,
+    get_learning_stats,
+    git_commit,
+    git_diff,
+    git_log,
+    git_status,
     glob,
     grep,
+    http_request,
     kill_shell,
     notebook_edit,
     read,
-    slash_command,
     skill,
-    task,
+    slash_command,
+    submit_feedback,
     todo_list,
     todo_update,
     todo_write,
@@ -58,8 +65,14 @@ __all__ = [
     # Web & search (fully implemented)
     "web_search",
     "web_fetch",
-    # Agent orchestration (requires agent integration)
-    "task",
+    "http_request",
+    # Git integration (fully implemented)
+    "git_status",
+    "git_diff",
+    "git_commit",
+    "git_log",
+    # Text processing
+    "awk",
     # Planning & workflow with task manager
     "todo_write",
     "todo_update",
@@ -71,4 +84,7 @@ __all__ = [
     # Extensibility (requires agent integration)
     "skill",
     "slash_command",
+    # Learning tools (requires enable_learning=True)
+    "submit_feedback",
+    "get_learning_stats",
 ]

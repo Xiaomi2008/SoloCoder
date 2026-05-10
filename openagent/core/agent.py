@@ -7,38 +7,33 @@ from typing import Any, Callable
 from .bash_manager import BashManager, get_bash_manager
 from .display import (
     bold,
-    dim,
     cyan,
-    green,
-    red,
-    white,
+    dim,
     display_tool_call_claude_style,
     display_tool_result_claude_style,
-    format_diff_output,
-    display_code_block,
-    display_diff_claude_style,
-    truncate_text,
+    green,
+    red,
 )
 
 
 def display_write_result(file_path: str, result_content: str) -> None:
     """Display write operation result with file info."""
-    print(f"  ● {bold('write')}({cyan(f'"{file_path}"')})")
+    print(f"  ● {bold('write')}({cyan(f'\"{file_path}\"')})")
 
     # Parse the success message to show bytes written
-    if "Successfully wrote" in result_content:
+    if 'Successfully wrote' in result_content:
         parts = result_content.split()
         for i, part in enumerate(parts):
-            if part == "wrote":
+            if part == 'wrote':
                 bytes_written = parts[i + 1]
                 print(f"    ⎿ {green(bytes_written)} to {cyan(file_path)}")
                 break
 
     # Extract and show the actual content that was written (skip the success message)
-    lines = result_content.split("\n")
+    lines = result_content.split('\n')
     content_start = False
     for line in lines:
-        if "Successfully wrote" in line:
+        if 'Successfully wrote' in line:
             continue
         if line.strip():  # Non-empty line
             if not content_start:
@@ -52,34 +47,34 @@ def display_write_result(file_path: str, result_content: str) -> None:
 
 def display_edit_result(file_path: str, result_content: str) -> None:
     """Display edit operation result with changed lines highlighted."""
-    print(f"  ● {bold('edit')}({cyan(f'"{file_path}"')})")
+    print(f"  ● {bold('edit')}({cyan(f'\"{file_path}\"')})")
 
     # Check if this is a unified diff format
-    has_diff_format = "@@" in result_content and any(
-        line.startswith("+") or line.startswith("-")
-        for line in result_content.split("\n")[1:]
+    has_diff_format = '@@' in result_content and any(
+        line.startswith('+') or line.startswith('-')
+        for line in result_content.split('\n')[1:]
     )
 
     if has_diff_format:
         # Parse the success message first
-        if "Successfully made" in result_content:
+        if 'Successfully made' in result_content:
             parts = result_content.split()
             for i, part in enumerate(parts):
-                if part == "made":
+                if part == 'made':
                     count = parts[i + 1]
                     print(f"    ⎿ {green(count)} replacement(s) made")
                     break
 
         # Show the unified diff with color coding
-        lines = result_content.split("\n")
+        lines = result_content.split('\n')
         for line in lines:
-            if not line or "Successfully" in line:
+            if not line or 'Successfully' in line:
                 continue
-            if line.startswith("@@"):
+            if line.startswith('@@'):
                 print(f"  {bold(cyan(line))}")
-            elif line.startswith("+") and not line.startswith("+++"):
+            elif line.startswith('+') and not line.startswith('+++'):
                 print(f"    {green(line[1:])}")
-            elif line.startswith("-") and not line.startswith("---"):
+            elif line.startswith('-') and not line.startswith('---'):
                 print(f"    {red(line[1:])}")
             else:
                 print(f"    {dim(line)}")
@@ -87,46 +82,39 @@ def display_edit_result(file_path: str, result_content: str) -> None:
         return
 
     # Fallback for non-diff format results - show full content without truncation
-    if "Successfully made" in result_content:
+    if 'Successfully made' in result_content:
         parts = result_content.split()
         for i, part in enumerate(parts):
-            if part == "made":
+            if part == 'made':
                 count = parts[i + 1]
                 print(f"    ⎿ {green(count)} replacement(s) made")
                 break
 
     # Show full content without truncation
-    lines = result_content.split("\n")
+    lines = result_content.split('\n')
     for line in lines:
         if line.strip():
             print(f"    {dim(line)}")
 
-
-from .logging import AgentLogger
-from .session import Session
-from .skill_manager import (
-    SkillManager,
-    SlashCommandRegistry,
-    get_command_registry,
-    get_skill_manager,
-)
-from .task_manager import TaskManager, get_task_manager
-from .tool import ToolRegistry, tool
-from .types import Message
-from openagent.runtime.agent import Agent as RuntimeAgent
 
 # BaseProvider is likely in parent package or sibling 'provider' package
 # Since we are in core/, provider/ is '../provider/'
 # But 'openagent.provider' is absolute import, which is fine and clearer.
 from openagent.provider.base import BaseProvider
 
+from .logging import AgentLogger
+from .session import Session
+from .skill_manager import (
+    SkillManager,
+    get_command_registry,
+    get_skill_manager,
+)
+from .task_manager import TaskManager, get_task_manager
+from .tool import ToolRegistry, tool
+from .types import Message
+
 
 class Agent:
-    EMPTY_RESPONSE_RETRY_MESSAGE = (
-        "Your previous response was empty. Continue the task and reply with either "
-        "a non-empty assistant message or valid tool calls."
-    )
-
     def __init__(
         self,
         provider: BaseProvider,
@@ -138,18 +126,54 @@ class Agent:
         task_manager: TaskManager | None = None,
         skill_manager: SkillManager | None = None,
         mcp_client: Any | None = None,  # MCP client for tool discovery
+        max_messages: int | None = None,  # Max messages before compression kicks in
+        enable_learning: bool = False,  # Enable online learning features
+        learning_storage_path: str | None = None,  # Path to store learning data
+        auto_save: str | None = None,  # Path to auto-save session after each turn
     ) -> None:
         self.provider = provider
-        self.session = Session(system_prompt=system_prompt)
+        self.session = Session(system_prompt=system_prompt, max_messages=max_messages)
         self.max_turns = max_turns
         self.tool_registry = ToolRegistry()
         self._logger = AgentLogger(agent_id)
+        self._auto_save_path = auto_save
 
         # Initialize managers (use provided or create new instances)
         self.bash_manager = bash_manager or get_bash_manager()
         self.task_manager = task_manager or get_task_manager()
         self.skill_manager = skill_manager or get_skill_manager()
         self.command_registry = get_command_registry()
+
+        # Initialize learning components if enabled
+        self._enable_learning = enable_learning
+        self._learning_storage_path = learning_storage_path
+        if enable_learning:
+            from .learning import (
+                AdaptivePrompt,
+                FeedbackManager,
+                SessionAnalyzer,
+                ToolUsageTracker,
+            )
+            self._tool_tracker = ToolUsageTracker(
+                storage_path=f"{learning_storage_path}/tool_usage.json" if learning_storage_path else None
+            )
+            self._feedback_manager = FeedbackManager(
+                storage_path=f"{learning_storage_path}/feedback.json" if learning_storage_path else None
+            )
+            self._session_analyzer = SessionAnalyzer(
+                storage_path=f"{learning_storage_path}/outcomes.json" if learning_storage_path else None
+            )
+            self._adaptive_prompt = AdaptivePrompt(
+                base_prompt=system_prompt,
+                tool_tracker=self._tool_tracker,
+                feedback_manager=self._feedback_manager,
+                session_analyzer=self._session_analyzer,
+            )
+        else:
+            self._tool_tracker = None
+            self._feedback_manager = None
+            self._session_analyzer = None
+            self._adaptive_prompt = None
 
         if tools:
             for fn in tools:
@@ -158,26 +182,36 @@ class Agent:
                 self.tool_registry.register(fn)
 
         # Integrate MCP client if provided - discover and register MCP tools
+        # Deferred to first run() call so __init__ never blocks on MCP startup
         self._mcp_client = mcp_client
-        if mcp_client is not None:
-            asyncio.run(self._integrate_mcp_tools())
+        self._mcp_integrated = False
 
-    async def _integrate_mcp_tools(self) -> None:
-        """Discover and integrate MCP tools from the client."""
+    async def _integrate_mcp_tools(self, timeout: float = 10.0) -> None:
+        """Discover and integrate MCP tools from the client.
+
+        Args:
+            timeout: Maximum seconds to wait for MCP connection (default 10s).
+        """
         try:
-            # Ensure the client is connected
-            if hasattr(self._mcp_client, "__aenter__"):
-                await self._mcp_client.__aenter__()
+            async def _connect_and_discover() -> None:
+                # Ensure the client is connected
+                if hasattr(self._mcp_client, '__aenter__'):
+                    await self._mcp_client.__aenter__()
 
-            # Get MCP tools
-            mcp_tools = await self._mcp_client.get_tools()
+                # Get MCP tools
+                mcp_tools = await self._mcp_client.get_tools()
 
-            # Register each MCP tool
-            for tool_fn in mcp_tools:
-                if hasattr(tool_fn, "_tool_name"):
-                    self.tool_registry.register(tool_fn)
-                    self._logger.info(f"Registered MCP tool: {tool_fn._tool_name}")
+                # Register each MCP tool
+                for tool_fn in mcp_tools:
+                    if hasattr(tool_fn, "_tool_name"):
+                        self.tool_registry.register(tool_fn)
+                        self._logger.info(f"Registered MCP tool: {tool_fn._tool_name}")
 
+            await asyncio.wait_for(_connect_and_discover(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                f"MCP integration timed out after {timeout}s, continuing without MCP tools"
+            )
         except Exception as e:
             self._logger.error(f"Failed to integrate MCP tools: {e}")
 
@@ -185,111 +219,114 @@ class Agent:
     def messages(self) -> list[Message]:
         return self.session.messages
 
-    async def run(self, user_input: str, **kwargs: Any) -> str:
+    async def run(
+        self,
+        user_input: str,
+        on_chunk: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Run the agent with user input.
+
+        Args:
+            user_input: The user's request or question
+            on_chunk: Optional callback invoked for each streamed text chunk.
+                      When provided, the provider's stream() method is used
+                      for live output while chat() provides the authoritative
+                      response for tool-call detection.
+            **kwargs: Additional arguments passed to the provider
+        """
         self._logger.run_start(user_input)
-        if len(self.tool_registry) == 0:
-            runtime_agent = RuntimeAgent(
-                provider=self.provider,
-                system_prompt=self.session.system_prompt,
-            )
-            runtime_agent.session = self.session
-            try:
-                result = await runtime_agent.run(user_input, **kwargs)
-            except RuntimeError as exc:
-                self.session = runtime_agent.session
-                if "empty responses repeatedly" in str(exc):
-                    return str(exc)
-                raise
-
-            self.session = runtime_agent.session
-            return result.output_text
-
         self.session.add("user", user_input)
-        result = await self._loop(**kwargs)
+        result = await self._loop(on_chunk=on_chunk, **kwargs)
         return result
 
-    @staticmethod
-    def _is_empty_final_response(message: Message) -> bool:
-        return not message.has_tool_calls and not message.text.strip()
+    async def _loop(
+        self,
+        on_chunk: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        tool_defs = self.tool_registry.definitions if len(self.tool_registry) > 0 else None
 
-    async def _loop(self, **kwargs: Any) -> str:
-        tool_defs = (
-            self.tool_registry.definitions if len(self.tool_registry) > 0 else None
-        )
+        # Defer MCP integration to first run, so __init__ never blocks
+        if self._mcp_client and not self._mcp_integrated:
+            self._mcp_integrated = True
+            await self._integrate_mcp_tools()
+
+        # Re-fetch tool_defs in case MCP added tools
+        tool_defs = self.tool_registry.definitions if len(self.tool_registry) > 0 else None
+
+        # Apply adaptive prompt if learning is enabled
+        system_prompt = self.session.system_prompt
+        if self._enable_learning and self._adaptive_prompt:
+            system_prompt = self._adaptive_prompt.adapt()
+
         response: Message | None = None
-        completed_turns = 0
-        empty_response_retries = 0
-        max_empty_response_retries = kwargs.pop("max_empty_response_retries", 3)
-        awaiting_final_response = False
 
-        # Get compaction settings from kwargs or use defaults
-        max_context_tokens = kwargs.pop("max_context_tokens", 128000)
-        compact_threshold = kwargs.pop("compact_threshold", 0.8)
+        for turn in range(self.max_turns):
+            self._logger.turn_start(turn + 1, self.max_turns)
 
-        # Check if compaction is disabled (via agent instance attribute or kwarg)
-        disable_compaction = kwargs.pop(
-            "disable_compaction", getattr(self, "disable_compaction", False)
-        )
+            # When on_chunk is provided, stream text in parallel for live display
+            async def stream_to_callback():
+                try:
+                    async for chunk in self.provider.stream(
+                        messages=self.session.messages,
+                        tools=tool_defs,
+                        system_prompt=system_prompt,
+                        **kwargs,
+                    ):
+                        if chunk:
+                            on_chunk(chunk)
+                except Exception:
+                    pass  # chat() is the authoritative call; streaming is best-effort
 
-        while completed_turns < self.max_turns or awaiting_final_response:
-            turn_number = min(completed_turns + 1, self.max_turns)
-            self._logger.turn_start(turn_number, self.max_turns)
-
-            # Check if context compaction is needed before sending request (unless disabled)
-            if not disable_compaction and self.session.check_compaction_needed(
-                max_tokens=max_context_tokens, threshold=compact_threshold
-            ):
-                self._logger.info("Context approaching limit, compacting...")
-                summary = await self.session.compact_context(
-                    provider=self.provider, keep_recent=5, summary_type="detailed"
-                )
-                self._logger.info(f"Compacted context: {summary[:100]}...")
+            if on_chunk:
+                stream_task = asyncio.create_task(stream_to_callback())
 
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
-                system_prompt=self.session.system_prompt,
+                system_prompt=system_prompt,
                 **kwargs,
             )
 
-            if self._is_empty_final_response(response):
-                self._logger._logger.warning(
-                    "Provider returned an empty assistant response; requesting a retry."
-                )
-                empty_response_retries += 1
-                if empty_response_retries > max_empty_response_retries:
-                    return (
-                        "The model returned empty responses repeatedly before finishing "
-                        "the task. Try again, switch models, or lower tool complexity."
-                    )
+            if on_chunk:
+                stream_task.cancel()
+                try:
+                    await stream_task
+                except asyncio.CancelledError:
+                    pass
 
-                if (
-                    not self.session.messages
-                    or self.session.messages[-1].text
-                    != self.EMPTY_RESPONSE_RETRY_MESSAGE
-                ):
-                    self.session.add("system", self.EMPTY_RESPONSE_RETRY_MESSAGE)
-                continue
-
-            empty_response_retries = 0
             self.session.add_message(response)
-            if not awaiting_final_response:
-                completed_turns += 1
-            awaiting_final_response = False
 
             has_tools = response.has_tool_calls
-            self._logger.turn_end(turn_number, has_tools)
+            self._logger.turn_end(turn + 1, has_tools)
 
             if not has_tools:
-                self._logger.run_end(completed_turns)
+                # Analyze session outcome if learning is enabled
+                if self._enable_learning and self._session_analyzer:
+                    await self._analyze_session_outcome()
+                self._logger.run_end(turn + 1)
+                self._auto_save()
                 return response.text
 
             # Log and execute tool calls in Claude Code style
             for tc in response.tool_calls:
                 display_tool_call_claude_style(tc.name, tc.arguments)
 
-            tool_tasks = [self.tool_registry.execute(tc) for tc in response.tool_calls]
+            tool_tasks = [
+                self.tool_registry.execute(tc) for tc in response.tool_calls
+            ]
             results = await asyncio.gather(*tool_tasks)
+
+            # Track tool usage if learning is enabled
+            if self._enable_learning and self._tool_tracker:
+                for result, tc in zip(results, response.tool_calls):
+                    self._tool_tracker.record(
+                        tool_name=tc.name,
+                        success=not result.is_error,
+                        error_message=result.content if result.is_error else None,
+                        task_context=self._extract_task_context(),
+                    )
 
             # Log results in Claude Code style with diff highlighting for code changes
             for result, tc in zip(results, response.tool_calls):
@@ -299,19 +336,14 @@ class Agent:
                     content = result.content
 
                     # Check if this is a write/edit operation that should show diff formatting
-                    is_write_operation = tc.name in ("write", "edit")
+                    is_write_operation = tc.name in ('write', 'edit')
 
                     if is_write_operation:
                         # Get file path from tool arguments and make it relative
-                        full_path = str(
-                            tc.arguments.get(
-                                "file", tc.arguments.get("path", "unknown")
-                            )
-                        )
+                        full_path = str(tc.arguments.get('file', tc.arguments.get('path', 'unknown')))
 
                         try:
                             import os
-
                             cwd = os.getcwd()
                             if full_path.startswith(cwd):
                                 rel_path = os.path.relpath(full_path, cwd)
@@ -321,29 +353,111 @@ class Agent:
                             rel_path = full_path
 
                         # For write operations, show success message with file info
-                        if tc.name == "write":
+                        if tc.name == 'write':
                             display_write_result(rel_path, content)
                         # For edit operations, try to extract and show the changed lines
-                        elif tc.name == "edit":
+                        elif tc.name == 'edit':
                             display_edit_result(rel_path, content)
 
                     else:
                         display_tool_result_claude_style(result.is_error, content)
 
             self.session.add_tool_results(list(results))
-            awaiting_final_response = True
+            self._auto_save()
 
         self._logger.max_turns_reached()
+        # Analyze session outcome if learning is enabled (even on max turns)
+        if self._enable_learning and self._session_analyzer:
+            await self._analyze_session_outcome()
         if response is None:
             raise RuntimeError("Agent loop completed without receiving any response")
-        if awaiting_final_response:
-            return (
-                "The model kept requesting more tool work after the turn limit was reached. "
-                "Try again, increase `--max-turns`, or switch to a more reliable model."
-            )
-        if self._is_empty_final_response(response):
-            return (
-                "The model stopped with an empty response before finishing the task. "
-                "Try again or switch to a more reliable model."
-            )
         return response.text
+
+    def _extract_task_context(self) -> str:
+        """Extract brief task context from the most recent user message."""
+        for msg in reversed(self.session.messages):
+            if msg.role == "user" and isinstance(msg.content, str):
+                # Return first 100 chars as context
+                return msg.content[:100]
+        return ""
+
+    def _auto_save(self) -> None:
+        """Save session to disk if auto_save path is configured."""
+        if self._auto_save_path:
+            try:
+                self.session.save(self._auto_save_path)
+            except Exception as e:
+                self._logger.warning(f"Failed to auto-save session: {e}")
+
+    async def _analyze_session_outcome(self) -> None:
+        """Analyze the current session outcome for learning."""
+        if not self._session_analyzer:
+            return
+
+        # Extract task description from first user message
+        task_description = ""
+        for msg in self.session.messages:
+            if msg.role == "user" and isinstance(msg.content, str):
+                task_description = msg.content[:200]
+                break
+
+        if task_description:
+            self._session_analyzer.analyze_session(
+                session=self.session,
+                task_description=task_description,
+            )
+
+    def add_feedback(self, rating: int, comment: str = "") -> None:
+        """Add user feedback for the current session.
+
+        Args:
+            rating: Rating from 1-5 (1=very poor, 5=excellent)
+            comment: Optional user comment
+        """
+        if not self._enable_learning or not self._feedback_manager:
+            return
+
+        # Extract task description
+        task_description = ""
+        for msg in self.session.messages:
+            if msg.role == "user" and isinstance(msg.content, str):
+                task_description = msg.content[:200]
+                break
+
+        import uuid
+        session_id = f"{uuid.uuid4().hex[:8]}"
+        self._feedback_manager.add_feedback(
+            session_id=session_id,
+            rating=rating,
+            comment=comment,
+            task_description=task_description,
+        )
+
+    def get_learning_stats(self) -> dict[str, Any]:
+        """Get learning statistics for the agent.
+
+        Returns:
+            Dictionary with tool usage stats and feedback summary
+        """
+        if not self._enable_learning:
+            return {"learning_enabled": False}
+
+        stats = {
+            "learning_enabled": True,
+            "tool_usage": {},
+            "feedback_summary": None,
+        }
+
+        if self._tool_tracker:
+            # Get stats for each tool
+            all_tools = set()
+            for record in self._tool_tracker._records:
+                all_tools.add(record.tool_name)
+
+            for tool_name in all_tools:
+                stats["tool_usage"][tool_name] = self._tool_tracker.get_stats(tool_name)
+
+        if self._feedback_manager:
+            stats["feedback_summary"] = self._feedback_manager.get_feedback_summary()
+
+        return stats

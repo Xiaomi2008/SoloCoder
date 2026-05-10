@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from typing import Any, Callable, get_type_hints
 from dataclasses import dataclass
+from typing import Any, Callable, get_type_hints
 
+from .retry import with_retry
 from .types import ToolDef, ToolResultBlock, ToolUseBlock
 
 PYTHON_TYPE_TO_JSON: dict[type, str] = {
@@ -26,8 +27,6 @@ def _build_parameters_schema(func: Callable[..., Any]) -> dict[str, Any]:
 
     for name, param in sig.parameters.items():
         if name == "self":
-            continue
-        if name == "context":
             continue
         hint = hints.get(name, str)
         json_type = PYTHON_TYPE_TO_JSON.get(hint, "string")
@@ -52,11 +51,38 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    retry: bool = False,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
 ) -> Any:
+    """Decorator to register a function as a tool.
+
+    Args:
+        func: The function to decorate (if not using keyword args only)
+        name: Optional custom name for the tool
+        description: Optional custom description for the tool
+        retry: If True, apply automatic retry logic with exponential backoff
+        max_retries: Maximum retry attempts (default: 3)
+        base_delay: Initial delay in seconds for retries (default: 1.0)
+
+    Returns:
+        Decorated function with tool metadata
+
+    Example:
+        @tool(retry=True, max_retries=5)
+        def read_file(path: str) -> str:
+            \"\"\"Read a file with automatic retry on transient failures.\"\"\"
+            ...
+    """
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         fn._tool_name = name or fn.__name__  # type: ignore[attr-defined]
         fn._tool_description = description or fn.__doc__ or ""  # type: ignore[attr-defined]
         fn._tool_parameters = _build_parameters_schema(fn)  # type: ignore[attr-defined]
+
+        # Apply retry decorator if requested
+        if retry:
+            fn = with_retry(max_retries=max_retries, base_delay=base_delay)(fn)  # type: ignore[assignment]
+
         return fn
 
     if func is not None:
@@ -70,38 +96,6 @@ class ToolEntry:
     description: str
     parameters: dict[str, Any]
     func: Callable[..., Any]
-
-
-async def _execute_tool_entry(
-    entry: ToolEntry,
-    tool_call: ToolUseBlock,
-    context: Any | None = None,
-) -> ToolResultBlock:
-    try:
-        func = entry.func
-        arguments = dict(tool_call.arguments)
-
-        if context is not None and "context" in inspect.signature(func).parameters:
-            arguments["context"] = context
-
-        if asyncio.iscoroutinefunction(func):
-            result = await func(**arguments)
-        else:
-            result = func(**arguments)
-
-        content = result if isinstance(result, str) else json.dumps(result)
-        return ToolResultBlock(
-            tool_use_id=tool_call.id,
-            tool_name=entry.name,
-            content=content,
-        )
-    except Exception as e:
-        return ToolResultBlock(
-            tool_use_id=tool_call.id,
-            tool_name=entry.name,
-            content=f"Error: {e}",
-            is_error=True,
-        )
 
 
 class ToolRegistry:
@@ -139,9 +133,6 @@ class ToolRegistry:
         entry = self._tools.get(name)
         return entry.func if entry else None
 
-    def resolve(self, name: str) -> ToolEntry | None:
-        return self._tools.get(name)
-
     @property
     def definitions(self) -> list[ToolDef]:
         return [
@@ -153,20 +144,34 @@ class ToolRegistry:
             for entry in self._tools.values()
         ]
 
-    async def execute(
-        self,
-        tool_call: ToolUseBlock,
-        context: Any | None = None,
-    ) -> ToolResultBlock:
-        entry = self.resolve(tool_call.name)
+    async def execute(self, tool_call: ToolUseBlock) -> ToolResultBlock:
+        entry = self._tools.get(tool_call.name)
         if entry is None:
             return ToolResultBlock(
                 tool_use_id=tool_call.id,
-                tool_name=tool_call.name,
                 content=f"Error: tool '{tool_call.name}' not found",
                 is_error=True,
             )
-        return await _execute_tool_entry(entry, tool_call, context)
+        try:
+            func = entry.func
+
+            if asyncio.iscoroutinefunction(func):
+                result = await func(**tool_call.arguments)
+            else:
+                result = func(**tool_call.arguments)
+
+            content = result if isinstance(result, str) else json.dumps(result)
+            return ToolResultBlock(
+                tool_use_id=tool_call.id,
+                content=content,
+            )
+        except Exception as e:
+            # If retry was configured but exhausted, the exception will propagate here
+            return ToolResultBlock(
+                tool_use_id=tool_call.id,
+                content=f"Error: {e}",
+                is_error=True,
+            )
 
     def __len__(self) -> int:
         return len(self._tools)

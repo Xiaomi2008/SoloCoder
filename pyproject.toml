@@ -73,3 +73,11 @@ Documentation = "https://github.com/anthropics/openagent#readme"
 Issues = "https://github.com/anthropics/openagent/issues"
 Changelog = "https://github.com/anthropics/openagent/releases"
 
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E722"]

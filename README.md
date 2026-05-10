@@ -1,8 +1,6 @@
-# SoloCoder: Local AI Coding Agent
+# SoloCoder
 
-**Build Claude Code-like coding agents with fully local LLMs on a single GPU.**
-
-A capable autonomous coding agent running entirely locally—powered by Qwen3.5-35B-A3B via LM Studio, without relying on cloud-hosted flagship models.
+**A local CLI coding assistant powered by Qwen3.5-35B via LM Studio.**
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -11,231 +9,129 @@ A capable autonomous coding agent running entirely locally—powered by Qwen3.5-
 
 ## Overview
 
-SoloCoder demonstrates that **powerful autonomous coding agents don't require cloud APIs**. By leveraging modern local LLM inference through LM Studio, you can run a fully functional coding assistant on a single consumer GPU—specifically optimized for machines like the RTX 5090.
+SoloCoder is a Claude Code-style CLI assistant that runs entirely locally on consumer hardware (RTX 5090). It uses **OpenAgent**, an async-first agent framework, with Qwen3.5-35B served through LM Studio—no cloud APIs required.
 
-The backbone model is **Qwen3.5-35B-A3B**, served locally via LM Studio's OpenAI-compatible API. This setup provides:
-
-- **Full privacy**: Your code never leaves your machine
-- **Complete ownership**: No vendor lock-in, no usage quotas
-- **Cost control**: Zero per-token costs after hardware investment
-- **Offline capability**: Work without internet connectivity
-- **Customizable models**: Swap in any compatible local model as needed
-
----
-
-## Why This Matters
-
-### The Cloud Dependency Problem
-
-Most AI coding assistants today rely on cloud-hosted models (GPT-4, Claude, etc.). While convenient, this approach has significant drawbacks:
-
-| Issue | Cloud Models | Local SoloCoder |
-|-------|--------------|-----------------|
-| **Privacy** | Code sent to external servers | Entirely local execution |
-| **Cost** | Per-token pricing accumulates | One-time hardware cost |
-| **Latency** | Network round-trips required | Direct GPU inference |
-| **Availability** | Dependent on internet/API uptime | Works offline, always available |
-| **Customization** | Fixed model capabilities | Choose any compatible model |
-
-### The Local-First Alternative
-
-Modern consumer GPUs have reached a tipping point. An RTX 5090 (or similar high-end GPU) can comfortably run 35B parameter models with quantized inference, delivering response times suitable for interactive coding assistance—all while keeping your codebase entirely local.
-
-SoloCoder proves this architecture works in practice: it's a fully functional coding agent that reads files, writes code, executes shell commands, searches codebases, and manages complex multi-turn development tasks—without ever calling an external API.
+**Benefits:**
+- **Privacy**: Your codebase never leaves your machine
+- **Cost**: Zero per-token costs after hardware investment
+- **Offline**: Works without internet connectivity
+- **Ownership**: No vendor lock-in or usage quotas
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    SoloCoder CLI                            │
-│  (Interactive coding agent with Claude Code-style UI)       │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     OpenAgent                               │
-│         Lightweight async-first agent framework             │
-│  ┌─────────────┬──────────────┬─────────────────────────┐   │
-│  │ Agent Core  │  Tool System │    Session Management   │   │
-│  └─────────────┴──────────────┴─────────────────────────┘   │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│              LM Studio (Local OpenAI API)                   │
-│           Qwen3.5-35B-A3B served locally                    │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────┐
+│    SoloCoder CLI (Interactive)      │
+└──────────────┬──────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────┐
+│        OpenAgent Framework          │
+│  Agent Core | Tools | Sessions      │
+└──────────────┬──────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────┐
+│   LM Studio (Local API)             │
+│    Qwen3.5-35B-A3B                  │
+└─────────────────────────────────────┘
 ```
 
-### Core Components
-
+**Components:**
 | Component | Purpose |
 |-----------|---------|
-| **OpenAgent** | Async-first agent framework with `openagent.model`, `openagent.runtime`, provider integrations, and session persistence |
-| **SoloCoder app** | `openagent.apps.solocoder` composes the coding workflow, tool bundle, and CLI-facing agent |
-| **LM Studio** | Local LLM server providing OpenAI-compatible API endpoint |
-| **Qwen3.5-35B-A3B** | Backbone model serving as the "brain" of the coding agent |
-
-### Python Namespaces
-
-- `openagent.model`: canonical message and tool block types
-- `openagent.runtime`: runtime agent, result objects, and runtime events
-- `openagent.providers`: shared provider stream event types; `openagent.provider` remains the compatibility path for provider implementations
-- `openagent.infrastructure`: MCP and shell-adjacent infrastructure helpers
-- `openagent.apps.solocoder`: SoloCoder-specific agent composition; top-level `openagent` imports still re-export common entry points
-
-### Workflow
-
-1. User types a coding request in the CLI interface
-2. Coder Agent processes the request using its tool system (file read/write, shell commands, grep search)
-3. The OpenAgent framework formats messages and sends them to the local LM Studio endpoint
-4. Qwen3.5-35B-A3B generates a response with tool calls or code changes
-5. Results are displayed in Claude Code-style formatting
+| **OpenAgent** | Async-first agent framework with pluggable providers, tool registry, session persistence |
+| **Coder Agent** | Specialized coding agent with file operations, shell execution, task tracking |
+| **LM Studio** | Local LLM server providing OpenAI-compatible API |
+| **Qwen3.5-35B-A3B** | Local model serving as the agent's "brain" |
 
 ---
 
 ## Features
 
 ### Agent Capabilities
+- File operations (read, write, edit, glob, grep)
+- Shell execution for testing/building
+- Task tracking and breakdown
+- Multi-turn conversations with context
 
-- **File Operations**: Read, write, edit files seamlessly
-- **Code Search**: Find patterns across your project with regex grep
-- **Shell Execution**: Run bash commands for testing and building
-- **Task Tracking**: Automatically break down complex tasks into manageable steps
-- **Multi-turn Conversations**: Maintain context across extended interactions
+### Interactive CLI
+- Quick commands: `/list`, `/read`, `/todo`, `/model`, `/clear`
+- Direct shell access via `! <command>`
+- Turn counter for conversation budget
 
-### Interactive CLI Features
-
-- **Claude Code-style display**: Clean, readable output with syntax highlighting
-- **Quick commands**: `/list`, `/read`, `/todo`, `/model`, `/clear` for common operations
-- **Direct shell access**: `! <command>` prefix for immediate terminal execution
-- **Turn tracking**: Visual indicator of remaining conversation budget
-
-### Built-in Tools (OpenAgent)
-
-| Category | Tools |
-|----------|-------|
-| File Operations | `read`, `write`, `edit`, `glob`, `grep`, `notebook_edit` |
-| Shell Management | `bash`, `bash_background`, `bash_output`, `kill_shell` |
-| Task Manager | `todo_write`, `todo_update`, `todo_list` |
-| Web & Search | `web_search`, `web_fetch` (requires optional deps) |
-| Planning | `enter_plan_mode`, `exit_plan_mode` |
-| User Interaction | `ask_user_question` |
-
-### Provider Support
-
-OpenAgent supports multiple LLM providers, making it easy to switch between cloud and local:
-
-- **OpenAIProvider**: GPT models (with custom base_url for LM Studio)
-- **AnthropicProvider**: Claude models
-- **GoogleProvider**: Gemini models
-- **OllamaProvider**: Local Ollama instances
+### Provider Support (OpenAgent)
+- OpenAIProvider (GPT, LM Studio)
+- AnthropicProvider (Claude)
+- GoogleProvider (Gemini)
+- OllamaProvider (local models)
 
 ---
 
 ## Setup
 
 ### Prerequisites
-
 - Python 3.11+
-- An RTX 5090 (or comparable GPU with ~24GB VRAM) for running Qwen3.5-35B-A3B
-- Git (for cloning the repository)
+- GPU with ~24GB VRAM (RTX 5090 recommended for 35B models)
 
-### Step 1: Clone and Install Dependencies
+### Installation
 
 ```bash
 git clone https://github.com/your-repo/SoloCoder.git
 cd SoloCoder
-
-# Using uv (recommended)
-uv sync
-
-# Or using pip
-pip install -e ".[all]"
+uv sync  # or: pip install -e ".[all]"
 ```
 
-### Step 2: Set Up LM Studio
+### LM Studio Setup
 
-1. **Download and install [LM Studio](https://lmstudio.ai/)**
+1. Download and install [LM Studio](https://lmstudio.ai/)
+2. Pull `Qwen3.5-35B-A3B` (or similar variant)
+3. Start server with context length ≥64K (typically `http://localhost:1234/v1`)
 
-2. **Pull the Qwen3.5-35B-A3B model**:
-   - Open LM Studio
-   - Go to the search tab (magnifying glass icon)
-   - Search for `Qwen3.5-35B-A3B` or similar variant
-   - Download a quantized version (Q4_K_M or Q5_K_M recommended for balance of speed/quality)
-
-3. **Start the local server**:
-   - Go to the server tab (power plug icon)
-   - Select your downloaded model
-   - Choose a GPU layer count (max out if you have VRAM, otherwise ~20-28 layers for 35B models on 24GB)
-   - Click "Start Server"
-   - Note the local URL (typically `http://localhost:1234/v1`)
-
-### Step 3: Run SoloCoder with LM Studio
+### Run
 
 ```bash
-# Quick start with default settings pointing to LM Studio
-python cli_coder.py --model qwen3.5-35b-a3b --base-url http://localhost:1234/v1
-
-# Or set the model name you loaded in LM Studio exactly
-python cli_coder.py -m your-model-name-here -k "" --base-url http://localhost:1234/v1
+python cli_coder.py --model qwen3.5-35b-a3b \
+    --base-url http://localhost:1234/v1 \
+    -w /path/to/project
 ```
 
-**Note**: When using local servers like LM Studio, API keys are typically not required. You can pass an empty string or omit the `--api-key` flag.
-
-### Alternative: Using Ollama
-
-If you prefer Ollama over LM Studio:
-
+**Alternative with Ollama:**
 ```bash
-# Install Ollama from https://ollama.com
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull a model (e.g., Qwen2.5-32B as an alternative)
 ollama pull qwen2.5:32b
-
-# Run SoloCoder with Ollama provider
-python cli_coder.py --model qwen2.5:32 --working-dir /path/to/project
+python cli_coder.py --model qwen2.5:32 --working-dir .
 ```
 
 ---
 
-## Usage Examples
+## Usage
 
-### Basic Interactive Session
-
+### Interactive Session
 ```bash
-cd /path/to/your/project
 python cli_coder.py -w . --base-url http://localhost:1234/v1
 ```
 
-Then interact naturally:
+Then type requests like:
+- "Create a new Python file with a hello world function"
+- "Add error handling to the API endpoint in main.py"
+- "Search for all TODO comments and create a task list"
 
-> "Create a new Python file with a hello world function"
-
-> "Add error handling to the API endpoint in main.py"
-
-> "Search for all TODO comments and create a task list"
-
-### Quick Commands (in CLI)
-
+### Quick Commands
 | Command | Description |
 |---------|-------------|
-| `/list` or `/ls` | List files in current directory |
-| `/read <file>` | Preview file contents before editing |
+| `/list` or `/ls` | List files |
+| `/read <file>` | Preview file contents |
 | `/todo` | Show task list |
-| `/model` | Change LLM model mid-session |
-| `/clear` | Clear conversation history |
+| `/model` | Change LLM model |
+| `/clear` | Clear history |
 
-### Direct Shell Commands
-
-Prefix with `!` for immediate terminal execution:
-
+### Direct Shell
+Prefix with `!` for immediate execution:
 ```
 ! ls -la          # List files
-! python main.py  # Run a script
+! python main.py  # Run script
 ! git status      # Check git state
 ```
 
@@ -244,80 +140,22 @@ Prefix with `!` for immediate terminal execution:
 ## Configuration
 
 ### Command Line Options
-
 ```bash
 python cli_coder.py [OPTIONS]
 
-Options:
-  --model, -m MODEL       LLM model name (default: gpt-4o)
-  --working-dir, -w DIR   Working directory for file operations
-  --max-turns, -t N       Max conversation turns before stopping (default: 20)
-  --api-key, -k KEY       API key (optional for local servers)
-  --base-url              OpenAI-compatible API URL (e.g., http://localhost:1234/v1)
+--model, -m MODEL       LLM model name (default: gpt-4o)
+--working-dir, -w DIR   Working directory for file operations
+--max-turns, -t N       Max conversation turns (default: 20)
+--api-key, -k KEY       API key (optional for local servers)
+--base-url              OpenAI-compatible API URL
 ```
 
 ### Environment Variables
-
 | Variable | Purpose |
 |----------|---------|
-| `OPENAI_API_KEY` | API key for OpenAI provider |
-| `ANTHROPIC_API_KEY` | API key for Anthropic provider |
-| `GOOGLE_API_KEY` | API key for Google provider |
-| `AGENT_PROJECT_ROOT` | Security confinement root (set automatically) |
-
----
-
-## Limitations
-
-### Hardware Requirements
-
-Running 35B parameter models locally requires significant GPU resources:
-
-| Model Size | Recommended VRAM | Minimum VRAM |
-|------------|------------------|--------------|
-| 7B | 8GB | 6GB |
-| 14B | 12GB | 8GB |
-| 35B | 24GB (RTX 5090) | 16GB (slower, more quantization) |
-
-**Note**: Using lower VRAM will require heavier quantization, which may reduce model quality.
-
-### Performance Considerations
-
-- **Response time**: Local inference is slower than cloud APIs. Expect 2-10 seconds per token depending on GPU and model size
-- **Context window**: Limited by available RAM when running large context windows
-- **Concurrent tasks**: Running other GPU-intensive applications will impact performance
-
-### Model Capabilities
-
-While Qwen3.5-35B-A3B is highly capable, it may not match the raw capability of flagship cloud models (GPT-4o, Claude 3.5 Sonnet) on:
-- Extremely complex reasoning tasks
-- Very long context understanding (8K+ tokens)
-- Specialized domain knowledge requiring massive training data
-
-However, for most day-to-day coding tasks—reading files, writing functions, debugging errors, refactoring code—a well-tuned local 35B model provides excellent results.
-
----
-
-## Future Work
-
-### Planned Enhancements
-
-- [ ] **Model quantization presets**: Pre-configured settings for different GPU VRAM capacities
-- [ ] **Multi-model support**: Seamlessly switch between models based on task complexity
-- [ ] **GPU memory monitoring**: Real-time VRAM usage display in CLI
-- [ ] **Batch inference**: Process multiple requests more efficiently
-- [ ] **Fine-tuning pipeline**: Custom fine-tuning for project-specific patterns
-- [ ] **RAG integration**: Vector search over codebase for better context retrieval
-
-### Community Contributions Welcome
-
-SoloCoder is designed to be extensible. Consider contributing:
-
-- New tool implementations
-- Additional provider integrations
-- UI improvements and themes
-- Documentation enhancements
-- Performance optimizations for specific GPU architectures
+| `OPENAI_API_KEY` | OpenAI provider |
+| `ANTHROPIC_API_KEY` | Anthropic provider |
+| `GOOGLE_API_KEY` | Google provider |
 
 ---
 
@@ -327,53 +165,47 @@ SoloCoder is designed to be extensible. Consider contributing:
 SoloCoder/
 ├── cli_coder.py              # Main CLI entry point with interactive session
 ├── openagent/                # Agent framework package
-│   ├── __init__.py          # Public API exports
-│   ├── apps/                # Application packages (including SoloCoder)
-│   ├── infrastructure/      # MCP and shell infrastructure helpers
-│   ├── model/               # Canonical message and tool block exports
-│   ├── runtime/             # Runtime agent, context, and event surfaces
-│   ├── core/                # Legacy/internal framework components
-│   │   ├── agent.py         # Agent class — main orchestrator
-│   │   ├── types.py         # Canonical types (Message, ToolUseBlock, etc.)
-│   │   ├── tool.py          # @tool decorator and registry
-│   │   ├── session.py       # Session management and persistence
-│   │   ├── logging.py       # Logging configuration
-│   │   └── retry.py         # Retry logic with exponential backoff
-│   ├── provider/            # Provider implementations and compatibility imports
-│   ├── providers/           # Shared provider event types
-│   │   ├── base.py          # BaseProvider ABC
-│   │   ├── openai.py        # OpenAI-compatible API support
-│   │   ├── anthropic.py     # Anthropic/Claude support
-│   │   ├── google.py        # Google/Gemini support
-│   │   └── ollama.py        # Ollama local models support
-│   ├── tools/               # Built-in tool implementations
-│   ├── coder.py             # SoloCoder compatibility shim
-│   └── mcp.py               # MCP compatibility shim
+│   ├── __init__.py           # Public API exports
+│   ├── coder.py              # CoderAgent - specialized coding agent
+│   ├── core/                 # Core components
+│   │   ├── agent.py          # Agent class - main orchestrator
+│   │   ├── types.py          # Canonical types (Message, ToolUseBlock, etc.)
+│   │   ├── tool.py           # @tool decorator and registry
+│   │   ├── session.py        # Session management and persistence
+│   │   ├── logging.py        # Logging configuration
+│   │   ├── retry.py          # Retry logic with exponential backoff
+│   │   ├── display.py        # Output formatting and display
+│   │   ├── bash_manager.py   # Shell command execution manager
+│   │   ├── task_manager.py   # Task tracking and management
+│   │   └── skill_manager.py  # Skill/command system
+│   ├── provider/             # LLM providers
+│   │   ├── base.py           # BaseProvider ABC
+│   │   ├── converter.py      # Message conversion utilities
+│   │   ├── openai.py         # OpenAI-compatible API support
+│   │   ├── anthropic.py      # Anthropic/Claude support
+│   │   ├── google.py         # Google/Gemini support
+│   │   └── ollama.py         # Ollama local models support
+│   ├── tools/                # Built-in tools
+│   │   ├── __init__.py       # Tool exports
+│   │   └── builtin.py        # File, shell, search tool implementations
+│   └── mcp.py                # MCP client integration
 ├── tests/                    # Test suite
-└── examples/                 # Usage examples
+│   ├── test_agent.py         # Agent core tests
+│   ├── test_builtin_tools.py # Built-in tools tests
+│   ├── test_session.py       # Session persistence tests
+│   └── ...                   # Additional test files
+├── examples/                 # Usage examples
+│   ├── coder_example.py      # CoderAgent usage example
+│   ├── example.py            # Basic agent example
+│   └── ...                   # More examples
+├── dev_docs/                 # Development documentation
+│   └── architecture.md       # Architecture details
+├── CLAUDE.md                 # Project guidelines for Claude
+└── README.md                 # This file
 ```
 
 ---
 
 ## License
 
-MIT License — feel free to use, modify, and distribute for personal or commercial projects.
-
----
-
-## Acknowledgments
-
-- **OpenAgent**: The underlying agent framework that powers SoloCoder's capabilities
-- **LM Studio**: Excellent local LLM server with OpenAI-compatible API
-- **Qwen Team**: For releasing high-quality open weights models
-- **Claude Code**: Inspiration for the interactive CLI design and output formatting
-
----
-
-## Demo
-
-[![SoloCoder Demo](https://img.youtube.com/vi/iTODVW8L22c/maxresdefault.jpg)](https://www.youtube.com/watch?v=iTODVW8L22c)
-
-▶️ *Click the image above to watch the demo*
-
-**Built with ❤️ for the local-first AI movement.**
+MIT License — feel free to use and modify.

@@ -23,7 +23,6 @@ class ToolUseBlock:
 class ToolResultBlock:
     tool_use_id: str
     content: str
-    tool_name: str | None = None
     is_error: bool = False
     type: Literal["tool_result"] = "tool_result"
 
