@@ -6,7 +6,8 @@ import pytest
 
 from openagent import tool
 from openagent.core.tool import ToolRegistry, _build_parameters_schema
-from openagent.core.types import ToolUseBlock
+from openagent.runtime.context import RuntimeContext
+from openagent.core.types import ToolResultBlock, ToolUseBlock
 
 
 def test_tool_decorator_basic():
@@ -49,6 +50,16 @@ def test_build_parameters_schema():
     assert schema["required"] == ["name", "count"]
 
 
+def test_build_parameters_schema_excludes_runtime_context_parameter():
+    def func(context: RuntimeContext, name: str) -> str:
+        return name
+
+    schema = _build_parameters_schema(func)
+
+    assert "context" not in schema["properties"]
+    assert schema["required"] == ["name"]
+
+
 def test_registry_register():
     """Test tool registry registration."""
     registry = ToolRegistry()
@@ -80,6 +91,21 @@ def test_registry_definitions():
     assert defs[0].description == "Fetch data."
 
 
+def test_registry_definitions_exclude_runtime_context_parameter():
+    registry = ToolRegistry()
+
+    @tool
+    def get_data(context: RuntimeContext, query: str) -> str:
+        """Fetch data."""
+        return f"{context.project_name}:{query}"
+
+    registry.register(get_data)
+    defs = registry.definitions
+
+    assert defs[0].parameters["properties"] == {"query": {"type": "string"}}
+    assert defs[0].parameters["required"] == ["query"]
+
+
 async def test_registry_execute():
     """Test tool execution."""
     registry = ToolRegistry()
@@ -95,6 +121,30 @@ async def test_registry_execute():
 
     assert result.content == "5"
     assert not result.is_error
+
+
+async def test_registry_execute_supports_runtime_context_compatibility_path():
+    registry = ToolRegistry()
+
+    @tool
+    def describe_project(context: RuntimeContext, suffix: str) -> str:
+        return f"{context.project_name}{suffix}"
+
+    registry.register(describe_project)
+
+    call = ToolUseBlock(
+        id="123", name="describe_project", arguments={"suffix": " runtime"}
+    )
+    result = await registry.execute(
+        call,
+        RuntimeContext(project_name="bootstrap-project"),
+    )
+
+    assert result == ToolResultBlock(
+        tool_use_id="123",
+        content="bootstrap-project runtime",
+        tool_name="describe_project",
+    )
 
 
 async def test_registry_execute_not_found():

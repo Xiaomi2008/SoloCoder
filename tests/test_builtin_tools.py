@@ -11,7 +11,15 @@ from pathlib import Path
 import pytest
 
 from openagent.tools.builtin import (
-    bash, edit, glob, grep, notebook_edit, read, web_fetch, web_search, write,
+    bash,
+    edit,
+    glob,
+    grep,
+    notebook_edit,
+    read,
+    web_fetch,
+    web_search,
+    write,
 )
 
 
@@ -19,7 +27,7 @@ class TestReadTool:
     """Tests for the read tool."""
 
     def test_read_existing_file(self):
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
             f.write("line1\nline2\nline3")
             path = f.name
 
@@ -32,7 +40,7 @@ class TestReadTool:
             Path(path).unlink()
 
     def test_read_with_line_range(self):
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
             f.write("line1\nline2\nline3\nline4\nline5")
             path = f.name
 
@@ -65,7 +73,9 @@ class TestWriteTool:
     def test_write_creates_parents(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             nested_path = Path(tmpdir) / "a" / "b" / "c" / "test.txt"
-            result = write(str(nested_path), "content", create_parents=True)  # No await!
+            result = write(
+                str(nested_path), "content", create_parents=True
+            )  # No await!
             assert "Successfully wrote" in result
             assert nested_path.exists()
 
@@ -74,7 +84,7 @@ class TestEditTool:
     """Tests for the edit tool."""
 
     def test_edit_file(self):
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
             f.write("Hello World\nHello Python")
             path = f.name
 
@@ -87,7 +97,7 @@ class TestEditTool:
             Path(path).unlink()
 
     def test_edit_no_match(self):
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
             f.write("Hello World")
             path = f.name
 
@@ -110,6 +120,18 @@ class TestGlobTool:
 
             result = glob("*.py", path=tmpdir)  # No await!
             assert "test.py" in result or "main.py" in result
+
+    def test_glob_recursive_pattern(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested = Path(tmpdir) / "src" / "pkg"
+            nested.mkdir(parents=True)
+            (nested / "test.py").touch()
+            (Path(tmpdir) / "README.md").touch()
+
+            result = glob("**/*.py", path=tmpdir)
+
+            assert "test.py" in result
+            assert "Error searching for files" not in result
 
 
 class TestGrepTool:
@@ -138,18 +160,20 @@ class TestNotebookEditTool:
             "nbformat_minor": 5,
         }
 
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.ipynb') as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".ipynb") as f:
             json.dump(nb_content, f)
             path = f.name
 
         try:
-            result = notebook_edit(path, cell_index=0, new_source="print('world')")  # No await!
+            result = notebook_edit(
+                path, cell_index=0, new_source="print('world')"
+            )  # No await!
             assert "Successfully updated" in result
 
             # Verify the change
             with open(path) as f:
                 nb = json.load(f)
-            assert nb['cells'][0]['source'] == ["print('world')"]
+            assert nb["cells"][0]["source"] == ["print('world')"]
         finally:
             Path(path).unlink()
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -10,6 +12,13 @@ import pytest
 
 from openagent import Session
 from openagent.core.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from openagent.provider.base import BaseProvider
+
+
+class DummyProvider(BaseProvider):
+    async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+        assert all(isinstance(message, Message) for message in messages)
+        return Message(role="assistant", content="Compacted summary")
 
 
 def test_session_init():
@@ -53,6 +62,25 @@ def test_session_clear():
     assert len(session) == 2
     session.clear()
     assert len(session) == 0
+
+
+def test_session_replace_history_replaces_messages_with_summary():
+    """Replacing history should swap the authoritative session store."""
+    session = Session(system_prompt="Test prompt")
+    session.add("user", "Old request")
+    session.add("assistant", "Old response")
+
+    replacement = [
+        Message(role="system", content="Conversation summary:\n\nCompacted history"),
+        Message(role="user", content="Latest request"),
+    ]
+
+    session.replace_history(replacement)
+    replacement.append(Message(role="assistant", content="Should not leak in"))
+
+    assert [message.role for message in session.messages] == ["system", "user"]
+    assert session.messages[0].content == "Conversation summary:\n\nCompacted history"
+    assert session.messages[1].content == "Latest request"
 
 
 def test_session_to_list():
@@ -131,9 +159,11 @@ def test_session_save_load_complex():
     session.add_message(msg)
 
     # Add tool result
-    session.add_tool_results([
-        ToolResultBlock(tool_use_id="abc", content="Found it", is_error=False),
-    ])
+    session.add_tool_results(
+        [
+            ToolResultBlock(tool_use_id="abc", content="Found it", is_error=False),
+        ]
+    )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         path = f.name

@@ -14,6 +14,8 @@ from openagent.core.types import (
     text_message,
     tool_result_message,
 )
+from openagent.model import Message as PublicMessage
+from openagent.model import ToolUseBlock as PublicToolUseBlock
 
 
 def test_text_message():
@@ -27,10 +29,12 @@ def test_text_message():
 
 def test_assistant_message():
     """Test assistant message with content blocks."""
-    msg = assistant_message([
-        TextBlock(text="Here's the answer"),
-        ToolUseBlock(id="123", name="search", arguments={"q": "test"}),
-    ])
+    msg = assistant_message(
+        [
+            TextBlock(text="Here's the answer"),
+            ToolUseBlock(id="123", name="search", arguments={"q": "test"}),
+        ]
+    )
 
     assert msg.role == "assistant"
     assert len(msg.content) == 2
@@ -106,10 +110,12 @@ def test_tool_result_block():
 
 def test_tool_result_message():
     """Test tool result message creation."""
-    msg = tool_result_message([
-        ToolResultBlock(tool_use_id="1", content="Result 1"),
-        ToolResultBlock(tool_use_id="2", content="Result 2", is_error=True),
-    ])
+    msg = tool_result_message(
+        [
+            ToolResultBlock(tool_use_id="1", content="Result 1"),
+            ToolResultBlock(tool_use_id="2", content="Result 2", is_error=True),
+        ]
+    )
 
     assert msg.role == "tool_result"
     assert len(msg.tool_results) == 2
@@ -129,3 +135,9 @@ def test_tool_def():
 
     assert tool_def.name == "search"
     assert "query" in tool_def.parameters["properties"]
+
+
+def test_openagent_model_exports_canonical_types():
+    """Test openagent.model exposes the canonical type objects."""
+    assert PublicMessage is Message
+    assert PublicToolUseBlock is ToolUseBlock

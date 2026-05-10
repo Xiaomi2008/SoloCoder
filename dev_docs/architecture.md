@@ -54,8 +54,13 @@ OpenAgent is a lightweight, async-first agent framework with pluggable LLM provi
 ```
 openagent/
 ├── __init__.py                  # Public API exports
-├── coder.py                     # CoderAgent specialized class
-├── mcp.py                       # MCP client integration
+├── apps/                        # Application packages
+│   └── solocoder/               # SoloCoder app composition
+├── infrastructure/              # MCP and shell infrastructure helpers
+├── model/                       # Canonical message and tool block exports
+├── runtime/                     # Runtime agent, context, and event surfaces
+├── coder.py                     # SoloCoder compatibility shim
+├── mcp.py                       # MCP compatibility shim
 ├── core/                        # Core framework components
 │   ├── agent.py                 # Agent class — main orchestrator
 │   ├── types.py                 # Canonical types: Message, ToolUseBlock, etc.
@@ -67,18 +72,28 @@ openagent/
 │   ├── bash_manager.py          # Background bash session management
 │   ├── task_manager.py          # TODO/task tracking system
 │   └── skill_manager.py         # Skills and slash command registry
-├── provider/                    # LLM provider implementations
+├── provider/                    # Provider implementations and compatibility imports
 │   ├── base.py                  # BaseProvider ABC
 │   ├── anthropic.py             # Anthropic/Claude support
 │   ├── openai.py                # OpenAI/GPT support
 │   ├── google.py                # Google/Gemini support
 │   ├── ollama.py                # Ollama/local models support
 │   └── converter.py             # Response format converters
+├── providers/                   # Shared provider event types
 ├── tools/                       # Built-in tool implementations
 │   ├── __init__.py              # Tool exports
 │   └── builtin.py               # All built-in tools
 └── example*.py                  # Usage examples
 ```
+
+### Public Namespaces
+
+- `openagent.model` is the canonical import surface for message and tool block types.
+- `openagent.runtime` exposes the runtime agent, runtime context, and runtime event/result types.
+- `openagent.providers` currently hosts shared provider stream event types.
+- `openagent.provider` remains the compatibility import path for provider implementations.
+- `openagent.infrastructure` exposes MCP and shell-adjacent infrastructure helpers.
+- `openagent.apps.solocoder` contains the SoloCoder app composition. Top-level `openagent`, `openagent.coder`, and `openagent.mcp` still provide compatibility re-exports where needed.
 
 ---
 
@@ -503,7 +518,7 @@ OpenAgent supports MCP for external tool discovery:
 
 ```python
 from openagent import Agent, OpenAIProvider
-from openagent.mcp import McpClient
+from openagent.infrastructure import McpClient
 
 async with McpClient("npx", ["@modelcontextprotocol/server-filesystem", "/path"]) as mcp:
     agent = Agent(
@@ -518,9 +533,11 @@ async with McpClient("npx", ["@modelcontextprotocol/server-filesystem", "/path"]
 
 ### CoderAgent Specialization
 
-`CoderAgent` extends `Agent` with pre-configured tools for coding tasks:
+`CoderAgent` lives in `openagent.apps.solocoder` and extends `Agent` with pre-configured tools for coding tasks:
 
 ```python
+from openagent.apps.solocoder import create_coder
+
 coder = await create_coder(model="gpt-4o")
 result = await coder.run("Create a new Python file")
 ```

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -17,8 +19,36 @@ from openagent.provider.base import BaseProvider
 from openagent.provider.converter import MessageConverterMixin
 
 
+logger = logging.getLogger("openagent.provider.openai")
+
+
 class OpenAIConverterMixin(MessageConverterMixin):
     """Converts between canonical message format and OpenAI's chat format."""
+
+    def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
+        """Hook for provider-specific response anomaly logging."""
+
+    @staticmethod
+    def _safe_response_payload(response: Any) -> str:
+        try:
+            if hasattr(response, "model_dump"):
+                payload = response.model_dump(exclude_none=True)
+            elif hasattr(response, "dict"):
+                payload = response.dict()
+            else:
+                payload = repr(response)
+
+            text = (
+                payload
+                if isinstance(payload, str)
+                else json.dumps(payload, default=str)
+            )
+        except Exception:
+            text = repr(response)
+
+        if len(text) > 4000:
+            return text[:4000] + "... [truncated]"
+        return text
 
     def convert_messages(
         self, messages: list[Message], system_prompt: str = ""
@@ -40,7 +70,9 @@ class OpenAIConverterMixin(MessageConverterMixin):
                 if isinstance(msg.content, str):
                     entry["content"] = msg.content
                 else:
-                    text_parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
+                    text_parts = [
+                        b.text for b in msg.content if isinstance(b, TextBlock)
+                    ]
                     entry["content"] = "\n".join(text_parts) if text_parts else None
                     tool_calls = [
                         {
@@ -62,11 +94,13 @@ class OpenAIConverterMixin(MessageConverterMixin):
                 if isinstance(msg.content, list):
                     for block in msg.content:
                         if isinstance(block, ToolResultBlock):
-                            converted.append({
-                                "role": "tool",
-                                "tool_call_id": block.tool_use_id,
-                                "content": block.content,
-                            })
+                            converted.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": block.tool_use_id,
+                                    "content": block.content,
+                                }
+                            )
 
         return {"messages": converted}
 
@@ -80,11 +114,32 @@ class OpenAIConverterMixin(MessageConverterMixin):
 
         if message.tool_calls:
             for tc in message.tool_calls:
-                blocks.append(ToolUseBlock(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
-                ))
+                try:
+                    arguments = json.loads(tc.function.arguments)
+                except Exception as exc:
+                    self._log_response_issue(
+                        "invalid_tool_arguments",
+                        response,
+                        tool_name=getattr(tc.function, "name", None),
+                        arguments=getattr(tc.function, "arguments", None),
+                        error=str(exc),
+                    )
+                    raise
+
+                blocks.append(
+                    ToolUseBlock(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=arguments,
+                    )
+                )
+
+        if not blocks:
+            self._log_response_issue(
+                "empty_assistant_message",
+                response,
+                finish_reason=getattr(choice, "finish_reason", None),
+            )
 
         if len(blocks) == 1 and isinstance(blocks[0], TextBlock):
             return Message(role="assistant", content=blocks[0].text)
@@ -127,10 +182,19 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             effective_api_key = ""  # Empty string tells OpenAI client no auth required
 
         self._client = AsyncOpenAI(
-            api_key=effective_api_key,
-            base_url=base_url or None,
-            **kwargs
+            api_key=effective_api_key, base_url=base_url or None, **kwargs
         )
+        self.base_url = base_url
+
+    def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
+        metadata = {
+            "issue": issue,
+            "model": self.model,
+            "base_url": self.base_url,
+            **details,
+        }
+        logger.warning("OpenAI-compatible response anomaly: %s", metadata)
+        logger.debug("Raw response payload: %s", self._safe_response_payload(response))
 
     async def chat(
         self,
@@ -171,8 +235,8 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         tools: list[ToolDef] | None = None,
         system_prompt: str = "",
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """Stream text chunks from OpenAI."""
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        """Stream provider events from OpenAI text responses."""
         converted = self.convert_messages(messages, system_prompt)
         api_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -183,7 +247,83 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         if tools:
             api_kwargs["tools"] = self.convert_tools(tools)
 
-        stream = await self._client.chat.completions.create(**api_kwargs)
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        fallback_message_id = f"msg_{uuid.uuid4().hex[:24]}"
+        message_id: str | None = None
+        started = False
+        tool_call_buffers: dict[int, dict[str, Any]] = {}
+
+        try:
+            stream = await self._client.chat.completions.create(**api_kwargs)
+            async for chunk in stream:
+                if message_id is None:
+                    chunk_id = getattr(chunk, "id", None)
+                    message_id = chunk_id or fallback_message_id
+
+                if not started:
+                    started = True
+                    yield ProviderMessageStarted(message_id=message_id)
+
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield ProviderTextDelta(
+                        message_id=message_id,
+                        delta=chunk.choices[0].delta.content,
+                    )
+
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    for tool_call_delta in getattr(delta, "tool_calls", None) or []:
+                        index = getattr(tool_call_delta, "index", 0)
+                        buffer = tool_call_buffers.setdefault(
+                            index,
+                            {
+                                "id": "",
+                                "name": "",
+                                "arguments": "",
+                                "emitted": False,
+                            },
+                        )
+
+                        tool_call_id = getattr(tool_call_delta, "id", None)
+                        if tool_call_id:
+                            buffer["id"] = tool_call_id
+
+                        function = getattr(tool_call_delta, "function", None)
+                        function_name = getattr(function, "name", None)
+                        if function_name:
+                            buffer["name"] += function_name
+
+                        function_arguments = getattr(function, "arguments", None)
+                        if function_arguments:
+                            buffer["arguments"] += function_arguments
+
+                        if (
+                            not buffer["emitted"]
+                            and buffer["id"]
+                            and buffer["name"]
+                            and buffer["arguments"]
+                        ):
+                            try:
+                                arguments = json.loads(buffer["arguments"])
+                            except json.JSONDecodeError:
+                                continue
+
+                            buffer["emitted"] = True
+                            yield ProviderToolCall(
+                                message_id=message_id,
+                                id=buffer["id"],
+                                name=buffer["name"],
+                                arguments=arguments,
+                            )
+        except Exception as exc:
+            message_id = message_id or fallback_message_id
+            if not started:
+                started = True
+                yield ProviderMessageStarted(message_id=message_id)
+            yield ProviderError(message_id=message_id, error=str(exc))
+            return
+
+        if message_id is None:
+            message_id = fallback_message_id
+            yield ProviderMessageStarted(message_id=message_id)
+
+        yield ProviderMessageCompleted(message_id=message_id)

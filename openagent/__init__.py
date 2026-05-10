@@ -1,4 +1,4 @@
-from openagent.coder import CoderAgent, create_coder
+from openagent.apps.solocoder import CoderAgent, create_coder
 from openagent.core.agent import Agent
 from openagent.core.display import (
     blue,
@@ -26,7 +26,7 @@ from openagent.core.display import (
 from openagent.core.logging import AgentLogger, configure_logging, logger
 from openagent.core.session import Session
 from openagent.core.tool import ToolRegistry, tool
-from openagent.core.types import (
+from openagent.model import (
     ContentBlock,
     Message,
     TextBlock,
@@ -58,6 +58,23 @@ __all__ = [
     "AgentLogger",
     "configure_logging",
     "logger",
+    # Runtime events
+    "AgentResult",
+    "ContextCompactionCompleted",
+    "ContextCompactionFailed",
+    "ContextCompactionStarted",
+    "MessageCompleted",
+    "MessageDelta",
+    "MessageFailed",
+    "MessageStarted",
+    "RunCancelled",
+    "RunCompleted",
+    "RunFailed",
+    "RunStarted",
+    "RuntimeEvent",
+    "ToolCallCompleted",
+    "ToolCallFailed",
+    "ToolCallStarted",
     # Types
     "ContentBlock",
     "Message",
@@ -87,6 +104,7 @@ __all__ = [
     "display_tool_call_claude_style",
     "display_tool_result_claude_style",
     "truncate_text",
+    "user_input",
     "format_file_list",
     "format_grep_results_claude_style",
     "display_claude_code_block",
