@@ -8,12 +8,19 @@ import os
 import re
 import subprocess
 import sys
-import uuid
 from pathlib import Path
-from typing import Any, Callable
 from urllib.parse import urlparse
 
 from ..core.tool import tool
+
+
+def _is_path_safe(file_path: Path, project_root: str) -> bool:
+    """Check if path is within project root, safe against prefix bypass."""
+    try:
+        file_path.resolve().is_relative_to(Path(project_root).resolve())
+        return True
+    except ValueError:
+        return False
 
 
 # ============================================================================
@@ -39,9 +46,8 @@ def read(
     file_path = Path(path).resolve()
 
     # Security check: ensure path is within allowed directory if set
-    import os
     project_root = os.environ.get('AGENT_PROJECT_ROOT')
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
+    if project_root and not _is_path_safe(file_path, project_root):
         return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
 
     if not file_path.exists():
@@ -99,9 +105,8 @@ def write(
     file_path = Path(path).resolve()
 
     # Security check: ensure path is within allowed directory if set
-    import os
     project_root = os.environ.get('AGENT_PROJECT_ROOT')
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
+    if project_root and not _is_path_safe(file_path, project_root):
         return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
 
     if create_parents:
@@ -139,9 +144,8 @@ def edit(
     file_path = Path(path).resolve()
 
     # Security check: ensure path is within allowed directory if set
-    import os
     project_root = os.environ.get('AGENT_PROJECT_ROOT')
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
+    if project_root and not _is_path_safe(file_path, project_root):
         return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
 
     if not file_path.exists():
@@ -172,7 +176,6 @@ def edit(
 
         # Use relative paths in diff headers for cleaner output
         try:
-            import os
             rel_path = os.path.relpath(str(file_path))
         except Exception:
             rel_path = str(file_path)
@@ -218,9 +221,8 @@ def notebook_edit(
     file_path = Path(path).resolve()
 
     # Security check: ensure path is within allowed directory if set
-    import os
     project_root = os.environ.get('AGENT_PROJECT_ROOT')
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
+    if project_root and not _is_path_safe(file_path, project_root):
         return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
 
     if not file_path.exists():
@@ -274,9 +276,8 @@ def glob(pattern: str, path: str | None = None, max_results: int = 100) -> str:
     base = Path(path).resolve() if path else Path.cwd()
 
     # Security check: ensure path is within allowed directory if set
-    import os
     project_root = os.environ.get('AGENT_PROJECT_ROOT')
-    if project_root and not str(base).startswith(os.path.realpath(project_root)):
+    if project_root and not _is_path_safe(Path(base), project_root):
         return f"Error: Access denied. Path '{base}' is outside the project root '{project_root}'."
 
     if not base.exists():
@@ -347,9 +348,8 @@ def grep(
     base = Path(path).resolve() if path else Path.cwd()
 
     # Security check: ensure path is within allowed directory if set
-    import os
     project_root = os.environ.get('AGENT_PROJECT_ROOT')
-    if project_root and not str(base).startswith(os.path.realpath(project_root)):
+    if project_root and not _is_path_safe(Path(base), project_root):
         return f"Error: Access denied. Path '{base}' is outside the project root '{project_root}'."
 
     if not base.exists():
@@ -451,7 +451,7 @@ def bash(
     """
     # For background execution, we'll use a shared dictionary managed by the agent
     if background:
-        return f"Error: Background execution requires special handling. Use bash_background instead."
+        return "Error: Background execution requires special handling. Use bash_background instead."
 
     try:
         # Set up working directory
@@ -460,9 +460,8 @@ def bash(
             return f"Error: Working directory '{working_dir}' does not exist."
 
         # Security check: ensure working_dir is within allowed directory if set
-        import os
         project_root = os.environ.get('AGENT_PROJECT_ROOT')
-        if cwd and project_root and not str(cwd).startswith(os.path.realpath(project_root)):
+        if cwd and project_root and not _is_path_safe(Path(cwd), project_root):
             return f"Error: Access denied. Working directory '{cwd}' is outside the project root '{project_root}'."
 
         # Execute command
@@ -486,7 +485,7 @@ def bash(
 
 
 @tool
-def bash_background(
+async def bash_background(
     command: str,
     working_dir: str | None = None,
 ) -> str:
@@ -503,8 +502,7 @@ def bash_background(
 
     try:
         manager = get_bash_manager()
-        # Run the async function in a new event loop if needed
-        session_id = asyncio.run(manager.start_session(command=command, working_dir=working_dir))
+        session_id = await manager.start_session(command=command, working_dir=working_dir)
         return f"Started bash session '{session_id}' in '{working_dir or '.'}'. Use bash_output to retrieve output."
     except Exception as e:
         return f"Error starting bash session: {e}"
@@ -528,7 +526,6 @@ def bash_output(
 
     try:
         manager = get_bash_manager()
-        # Extract session ID from the result message if needed
         actual_session_id = session_id.strip()
         output = manager.get_output(session_id=actual_session_id, tail_lines=tail_lines)
         return output if output else "(no output)"
@@ -537,7 +534,7 @@ def bash_output(
 
 
 @tool
-def kill_shell(
+async def kill_shell(
     session_id: str,
 ) -> str:
     """Terminate a running background bash shell.
@@ -552,8 +549,7 @@ def kill_shell(
 
     try:
         manager = get_bash_manager()
-        # Run async method synchronously using asyncio.run
-        result = asyncio.run(manager.kill_session(session_id.strip()))
+        result = await manager.kill_session(session_id.strip())
         return result
     except Exception as e:
         return f"Error killing shell: {e}"
@@ -625,12 +621,11 @@ def web_fetch(
         # Try to detect encoding
         content_type = response.headers.get('content-type', '')
         if 'text/html' in content_type:
-            import re as regex_module
             # Remove script and style tags
-            cleaned = regex_module.sub(r'<script.*?</script>', '', response.text, flags=regex_module.IGNORECASE | regex_module.DOTALL)
-            cleaned = regex_module.sub(r'<style.*?</style>', '', cleaned, flags=regex_module.IGNORECASE | regex_module.DOTALL)
+            cleaned = re.sub(r'<script.*?</script>', '', response.text, flags=re.IGNORECASE | re.DOTALL)
+            cleaned = re.sub(r'<style.*?</style>', '', cleaned, flags=re.IGNORECASE | re.DOTALL)
             # Remove HTML tags
-            text = regex_module.sub(r'<[^>]+>', '', cleaned)
+            text = re.sub(r'<[^>]+>', '', cleaned)
             return f"Content from {url}:\n\n{text[:5000]}"  # Limit to 5000 chars
         else:
             return f"Content from {url}:\n\n{response.text[:5000]}"
@@ -643,35 +638,162 @@ def web_fetch(
         return f"Fetch failed: {e}"
 
 
-# ============================================================================
-# Agent Orchestration Tools
-# ============================================================================
-
-@tool
-def task(
-    agent_type: str,
-    description: str,
-    context: str | None = None,
+@tool(retry=True, max_retries=2, base_delay=0.5)
+def http_request(
+    url: str,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: str | None = None,
+    timeout: float = 30.0,
 ) -> str:
-    """Launch specialized sub-agents (subprocesses) for complex multi-step work.
+    """Send an HTTP request and return the response.
+
+    Supports GET, POST, PUT, PATCH, DELETE methods. Body is sent as JSON
+    for POST/PUT/PATCH requests unless a Content-Type header is explicitly set.
 
     Args:
-        agent_type: Type of agent to launch. Options: general-purpose, explore, plan, claude-code-guide, statusline-setup
-        description: Description of the task for the sub-agent
-        context: Optional additional context or parameters for the task
+        url: The URL to send the request to (http:// or https:// only)
+        method: HTTP method (default: GET)
+        headers: Optional dict of headers to include
+        body: Optional request body (sent as JSON for POST/PUT/PATCH by default)
+        timeout: Request timeout in seconds (default: 30)
 
     Returns:
-        Result from the sub-agent execution
+        Response body text with status code and headers summary
     """
-    valid_types = ["general-purpose", "explore", "plan", "claude-code-guide", "statusline-setup"]
-    if agent_type not in valid_types:
-        return f"Error: Invalid agent type '{agent_type}'. Valid types: {', '.join(valid_types)}"
+    try:
+        import httpx
+    except ImportError:
+        return "Error: Please install httpx (pip install httpx)"
 
-    result = f"Would launch {agent_type} agent for: {description}"
-    if context:
-        result += f"\nContext: {context}"
-    result += "\n\nNote: Full sub-agent spawning requires process manager integration."
-    return result
+    method = method.upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"):
+        return f"Error: Unsupported method '{method}'. Use GET, POST, PUT, PATCH, DELETE, or HEAD."
+
+    parsed = _parse_url(url)
+    if parsed is None:
+        return "Error: URL must use http:// or https:// scheme."
+
+    try:
+        _validate_url_for_ssrf(url)
+        follow_redirects = method in ("GET", "HEAD")
+        response = httpx.request(
+            method=method,
+            url=url,
+            headers=headers,
+            content=body if method in ("POST", "PUT", "PATCH") else None,
+            json=None if method not in ("POST", "PUT", "PATCH") or body is None else None,
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+        )
+
+        # Truncate large responses
+        resp_text = response.text[:10000]
+        if len(response.text) > 10000:
+            resp_text += "\n\n... (response truncated, 10000 char limit)"
+
+        headers_summary = "\n".join(
+            f"  {k}: {v}" for k, v in response.headers.items() if k.lower() not in ("set-cookie",)
+        )
+
+        return (
+            f"Status: {response.status_code} {response.reason_phrase}\n"
+            f"Headers:\n{headers_summary}\n\n"
+            f"{resp_text}"
+        )
+
+    except httpx.TimeoutException:
+        return f"Error: Request to {url} timed out after {timeout}s."
+    except httpx.ConnectError as e:
+        return f"Error: Could not connect to {url}: {e}"
+    except httpx.HTTPStatusError as e:
+        return f"Error: HTTP {e.response.status_code} - {e.response.reason_phrase}\n{e.response.text[:2000]}"
+    except Exception as e:
+        return f"Request failed: {e}"
+
+
+def _parse_url(url: str) -> str | None:
+    """Return the URL if scheme is http/https, else None."""
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if not parsed.netloc:
+        return None
+    return url
+
+
+def _validate_url_for_ssrf(url: str) -> None:
+    """Block requests to internal/private IP ranges to prevent SSRF."""
+    import socket
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return
+
+    # Block obvious internal hostnames
+    internal_hostnames = {"localhost", "metadata", "metadata.google.internal", "instance-data"}
+    if hostname.lower() in internal_hostnames:
+        raise SecurityError(f"Request to internal hostname '{hostname}' is blocked.")
+
+    # Resolve and check IP
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        for info in addr_info:
+            ip = info[4][0]
+            if _is_private_ip(ip):
+                raise SecurityError(f"Request to internal IP '{ip}' (resolved from '{hostname}') is blocked.")
+    except SecurityError:
+        raise
+    except Exception:
+        pass  # DNS resolution failure will be caught by httpx
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Check if an IPv4 address is in a private/reserved range."""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return True  # Non-standard, block it
+
+    try:
+        octets = [int(p) for p in parts]
+    except ValueError:
+        return True
+
+    a, b = octets[0], octets[1]
+
+    # 10.0.0.0/8
+    if a == 10:
+        return True
+    # 172.16.0.0/12
+    if a == 172 and 16 <= b <= 31:
+        return True
+    # 192.168.0.0/16
+    if a == 192 and b == 168:
+        return True
+    # 127.0.0.0/8 (loopback)
+    if a == 127:
+        return True
+    # 169.254.0.0/16 (link-local, cloud metadata)
+    if a == 169 and b == 254:
+        return True
+    # 0.0.0.0/8
+    if a == 0:
+        return True
+    # 224.0.0.0/4 (multicast) and 240.0.0.0/4 (reserved)
+    if a >= 224:
+        return True
+
+    return False
+
+
+class SecurityError(Exception):
+    """Raised when a request violates security constraints."""
+    pass
 
 
 # ============================================================================
@@ -854,8 +976,6 @@ def submit_feedback(
 
     # Try to get the current agent and submit feedback
     try:
-        from ..core.agent import Agent
-        import sys
 
         # Check if we're running in an interactive session with learning enabled
         frame = sys._getframe(1)
@@ -883,8 +1003,6 @@ def get_learning_stats() -> str:
         Formatted learning statistics or message if learning is disabled
     """
     try:
-        from ..core.agent import Agent
-        import sys
 
         # Check if we're running in an interactive session with learning enabled
         frame = sys._getframe(1)
@@ -990,7 +1108,6 @@ def git_status() -> str:
         Formatted output showing modified, staged, and untracked files
     """
     try:
-        import subprocess
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
@@ -1057,7 +1174,6 @@ def git_diff(file_path: str | None = None, staged: bool = False) -> str:
         Git diff output with color-coded additions/deletions
     """
     try:
-        import subprocess
         cmd = ["git", "diff"]
         if staged:
             cmd = ["git", "diff", "--staged"]
@@ -1091,7 +1207,6 @@ def git_diff(file_path: str | None = None, staged: bool = False) -> str:
                 # Hunk header - bold cyan
                 formatted.append(f"\033[1;36m{line}\033[0m")
                 # Extract starting line number
-                import re
                 match = re.search(r'-\d+,', line)
                 if match:
                     current_line_num = int(match.group()[1:])
@@ -1141,7 +1256,6 @@ def git_commit(
         Result message with commit hash and summary
     """
     try:
-        import subprocess
 
         cmd = ["git", "commit", "-m", message]
         if amend:
@@ -1166,7 +1280,7 @@ def git_commit(
 
         # Parse output for commit hash
         lines = result.stdout.strip().split('\n')
-        summary_line = next((l for l in lines if '[' in l and ']' in l), None)
+        summary_line = next((line for line in lines if '[' in line and ']' in line), None)
 
         if summary_line:
             return f"Committed:\n  {summary_line}"
@@ -1193,7 +1307,6 @@ def git_log(
         Formatted commit log
     """
     try:
-        import subprocess
 
         cmd = ["git", "log"]
         if oneline:
@@ -1228,6 +1341,260 @@ def git_log(
 
 
 # ============================================================================
+# Text Processing Tools
+# ============================================================================
+
+@tool
+def awk(
+    input_text: str,
+    delimiter: str = "\t",
+    select_columns: list[int] | None = None,
+    filter_column: int | None = None,
+    filter_operator: str | None = None,
+    filter_value: str | None = None,
+    sort_column: int | None = None,
+    sort_reverse: bool = False,
+    unique: bool = False,
+    unique_column: int | None = None,
+    header: bool = True,
+    aggregate_column: int | None = None,
+    aggregate_function: str | None = None,
+    group_by_column: int | None = None,
+) -> str:
+    """Process structured text — select columns, filter rows, sort, deduplicate, and aggregate (awk-like).
+
+    Args:
+        input_text: The tabular text to process (one row per line)
+        delimiter: Field separator (default: tab; use ',' for CSV, '|' for pipe-delimited)
+        select_columns: List of 1-based column indices to keep (e.g., [1, 3])
+        filter_column: 1-based column index to filter on
+        filter_operator: Comparison operator: eq, neq, gt, lt, gte, lte, contains, not_contains
+        filter_value: Value to compare against when filtering
+        sort_column: 1-based column index to sort by
+        sort_reverse: If True, sort descending (default: False = ascending)
+        unique: If True, deduplicate rows (or deduplicate by unique_column if specified)
+        unique_column: 1-based column to deduplicate by (when unique=True)
+        header: If True, treat first line as header and preserve it (default: True)
+        aggregate_column: 1-based column index for numeric aggregation
+        aggregate_function: One of sum, mean, min, max, count
+        group_by_column: 1-based column to group by (used with aggregate_column + aggregate_function)
+
+    Returns:
+        Processed text output
+    """
+    try:
+        lines = [line.rstrip("\n") for line in input_text.split("\n") if line.strip()]
+        if not lines:
+            return "(empty input)"
+
+        header_line = lines[0] if header else None
+        data_lines = lines[1:] if header else lines
+
+        # Parse into rows
+        def split_line(line: str) -> list[str]:
+            return line.split(delimiter)
+
+        header_fields = split_line(header_line) if header_line else None
+        rows = [split_line(line) for line in data_lines]
+
+        # Filter rows
+        if filter_column is not None and filter_operator and filter_value is not None:
+            col_idx = filter_column - 1
+            rows = _filter_rows(rows, col_idx, filter_operator, filter_value)
+
+        # Select columns
+        if select_columns is not None:
+            header_fields = [header_fields[i - 1] for i in select_columns] if header_fields else None
+            rows = [[row[i - 1] for i in select_columns if i - 1 < len(row)] for row in rows]
+
+        # Sort
+        if sort_column is not None:
+            col_idx = sort_column - 1
+            rows = _sort_rows(rows, col_idx, sort_reverse)
+
+        # Deduplicate
+        if unique:
+            col_idx = unique_column - 1 if unique_column is not None else None
+            rows = _unique_rows(rows, col_idx)
+
+        # Aggregate
+        if aggregate_column is not None and aggregate_function:
+            agg_idx = aggregate_column - 1
+            if group_by_column is not None:
+                group_idx = group_by_column - 1
+                result_lines = _aggregate_grouped(rows, group_idx, agg_idx, aggregate_function, header_fields)
+            else:
+                result_str = _aggregate_all(rows, agg_idx, aggregate_function)
+                header_str = header_fields[0] if header_fields else ""
+                result_lines = [[header_str, aggregate_function.upper()], [result_str, ""]]
+
+            return _build_output(result_lines, include_header=True)
+
+        return _build_output(
+            (rows if not (aggregate_column and aggregate_function) else rows),
+            header is True and aggregate_column is None,
+            header_fields,
+        )
+
+    except Exception as e:
+        return f"Error processing text: {e}"
+
+
+def _filter_rows(rows: list[list[str]], col_idx: int, operator: str, value: str) -> list[list[str]]:
+    """Filter rows by comparing a column value."""
+    filtered = []
+    for row in rows:
+        if col_idx >= len(row):
+            continue
+        cell = row[col_idx]
+        try:
+            cell_num = float(cell)
+            val_num = float(value)
+            compare_nums = True
+        except (ValueError, TypeError):
+            cell_num = cell
+            val_num = value
+            compare_nums = False
+
+        match = False
+        if compare_nums:
+            if operator == "eq":
+                match = cell_num == val_num
+            elif operator == "neq":
+                match = cell_num != val_num
+            elif operator == "gt":
+                match = cell_num > val_num
+            elif operator == "lt":
+                match = cell_num < val_num
+            elif operator == "gte":
+                match = cell_num >= val_num
+            elif operator == "lte":
+                match = cell_num <= val_num
+        else:
+            if operator == "eq":
+                match = cell == value
+            elif operator == "neq":
+                match = cell != value
+            elif operator == "contains":
+                match = value in cell
+            elif operator == "not_contains":
+                match = value not in cell
+
+        if match:
+            filtered.append(row)
+
+    return filtered
+
+
+def _sort_rows(rows: list[list[str]], col_idx: int, reverse: bool) -> list[list[str]]:
+    """Sort rows by a column, numeric when possible."""
+    def sort_key(row):
+        if col_idx >= len(row):
+            return (1, "")  # push short rows to the end
+        val = row[col_idx]
+        try:
+            return (0, float(val))
+        except (ValueError, TypeError):
+            return (1, val)
+
+    return sorted(rows, key=sort_key, reverse=reverse)
+
+
+def _unique_rows(rows: list[list[str]], col_idx: int | None) -> list[list[str]]:
+    """Remove duplicate rows (optionally by a single column)."""
+    seen: set[str] = set()
+    unique = []
+    for row in rows:
+        key = row[col_idx] if col_idx is not None and col_idx < len(row) else "\t".join(row)
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
+    return unique
+
+
+def _aggregate_all(rows: list[list[str]], col_idx: int, func: str) -> str:
+    """Compute an aggregation over all values in a column."""
+    values: list[float] = []
+    count = 0
+    for row in rows:
+        if col_idx >= len(row):
+            continue
+        try:
+            values.append(float(row[col_idx]))
+        except (ValueError, TypeError):
+            pass
+        count += 1
+
+    if func == "count":
+        return str(count)
+    if not values:
+        return "0"
+    if func == "sum":
+        return str(sum(values))
+    if func == "mean":
+        return str(sum(values) / len(values))
+    if func == "min":
+        return str(min(values))
+    if func == "max":
+        return str(max(values))
+    return "0"
+
+
+def _aggregate_grouped(
+    rows: list[list[str]], group_idx: int, agg_idx: int, func: str,
+    header_fields: list[str] | None,
+) -> list[list[str]]:
+    """Group rows and aggregate, returning result rows."""
+    groups: dict[str, list[float]] = {}
+    group_order: list[str] = []
+    for row in rows:
+        if group_idx >= len(row) or agg_idx >= len(row):
+            continue
+        key = row[group_idx]
+        try:
+            val = float(row[agg_idx])
+        except (ValueError, TypeError):
+            continue
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(val)
+
+    result = []
+    for key in group_order:
+        vals = groups[key]
+        if func == "count":
+            agg_val = str(len(vals))
+        elif func == "sum":
+            agg_val = str(sum(vals))
+        elif func == "mean":
+            agg_val = str(sum(vals) / len(vals))
+        elif func == "min":
+            agg_val = str(min(vals))
+        elif func == "max":
+            agg_val = str(max(vals))
+        else:
+            agg_val = "0"
+        result.append([key, agg_val])
+
+    return result
+
+
+def _build_output(
+    rows: list[list[str]],
+    include_header: bool,
+    header_fields: list[str] | None = None,
+) -> str:
+    """Build the final output string from rows and optional header."""
+    lines = []
+    if include_header and header_fields:
+        lines.append("\t".join(header_fields))
+    for row in rows:
+        lines.append("\t".join(str(c) for c in row))
+    return "\n".join(lines)
+
+
+# ============================================================================
 # Export all tools
 # ============================================================================
 
@@ -1247,13 +1614,12 @@ __all__ = [
     # Web & search
     "web_search",
     "web_fetch",
+    "http_request",
     # Git integration
     "git_status",
     "git_diff",
     "git_commit",
     "git_log",
-    # Agent orchestration
-    "task",
     # Planning & workflow
     "enter_plan_mode",
     "exit_plan_mode",
@@ -1268,4 +1634,6 @@ __all__ = [
     # Extensibility
     "skill",
     "slash_command",
+    # Text processing
+    "awk",
 ]

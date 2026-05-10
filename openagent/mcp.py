@@ -1,12 +1,13 @@
-import asyncio
+from __future__ import annotations
+
 import sys
 from contextlib import AsyncExitStack
 from typing import Any, Callable
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
-from mcp.types import CallToolResult, TextContent, ImageContent, EmbeddedResource
+from mcp.client.stdio import stdio_client
+from mcp.types import CallToolResult
 
 
 def _fix_windows_cmd(command: str) -> str:
@@ -40,7 +41,7 @@ class McpClient:
             fixed_cmd = _fix_windows_cmd(self.command)
             params = StdioServerParameters(command=fixed_cmd, args=self.args, env=self.env)
             read, write = await self._stack.enter_async_context(stdio_client(params))
-            
+
         self.session = await self._stack.enter_async_context(
             ClientSession(read, write)
         )
@@ -72,9 +73,9 @@ class McpClient:
         async def tool_wrapper(**kwargs: Any) -> str:
             if not self.session:
                 raise RuntimeError("McpClient not connected")
-            
+
             result: CallToolResult = await self.session.call_tool(tool_name, kwargs)
-            
+
             # Combine all text content
             texts = []
             for content in result.content:
@@ -84,7 +85,7 @@ class McpClient:
                     texts.append(f"[Image: {content.mimeType}]")
                 elif content.type == "resource":
                     texts.append(f"[Resource: {content.resource.uri}]")
-            
+
             final_text = "\n".join(texts)
             if result.isError:
                 return f"Error from tool: {final_text}"

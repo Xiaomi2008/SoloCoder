@@ -173,6 +173,8 @@ async def run_interactive_session(coder) -> None:
 
     try:
         turn_counter = 0  # Track turns for this session
+        # Create a single persistent bash session for /list and ! commands
+        cli_bash_session = await coder.bash_manager.start_session()
 
         while True:
             # Calculate remaining turns budget (simplified display)
@@ -191,9 +193,8 @@ async def run_interactive_session(coder) -> None:
                 arg = parts[1] if len(parts) > 1 else ""
 
                 if cmd in ("/list", "/ls"):
-                    from openagent.tools import bash
                     result = await coder.bash_manager.execute_command(
-                        (await coder.bash_manager.start_session()).split("-")[0],
+                        cli_bash_session,
                         f"ls -la {arg}" if arg else "ls -la"
                     )
                     print(f"\n{bold('Coder: ')}{result}")
@@ -293,10 +294,9 @@ async def run_interactive_session(coder) -> None:
                     print("\n" + bold("Coder: ") + "Usage: ! <command>")
                     continue
 
-                from openagent.tools import bash
                 try:
                     result = await coder.bash_manager.execute_command(
-                        (await coder.bash_manager.start_session()).split("-")[0],
+                        cli_bash_session,
                         cmd
                     )
                     print(f"\n{bold('Coder: ')}{result}")
@@ -309,28 +309,51 @@ async def run_interactive_session(coder) -> None:
                 print("Goodbye!")
                 break
 
-            # Run the agent and increment turn counter
-            result = await coder.run(user_input)
+        # Run the agent with streaming output
+            import sys
+            print(f"\n{bold('Coder: ')}", end="", flush=True)
+            result = await coder.run(user_input, on_chunk=lambda c: sys.stdout.write(c) or sys.stdout.flush())
             turn_counter += 1
-            print(f"\n{bold('Coder: ')}{result}")
+            print()  # newline after streaming finishes
 
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
+    finally:
+        # Clean up the CLI bash session
+        try:
+            await coder.bash_manager.kill_session(cli_bash_session)
+        except Exception:
+            pass
 
 
 async def main():
     """Main entry point for the CLI."""
+    from openagent.core.config import Config
+
+    # Load config: file defaults → env vars → CLI overrides
+    file_config = Config.from_file()
+    config = file_config.apply_env()
+
     args = setup_argparse()
+
+    # CLI args override config (skip falsy CLI values like defaults)
+    config = config.override(
+        model=args.model if args.model != "gpt-4o" else None,
+        api_key=args.api_key,
+        base_url=args.base_url,
+        max_turns=args.max_turns if args.max_turns != 20 else None,
+        working_dir=args.working_dir,
+    )
 
     # Set project root environment variable for security confinement
     import os
-    working_dir = Path(args.working_dir).resolve() if args.working_dir else Path.cwd()
+    working_dir = Path(config.working_dir).resolve() if config.working_dir else Path.cwd()
     os.environ['AGENT_PROJECT_ROOT'] = str(working_dir)
 
     from openagent.coder import CoderAgent
 
     # Detect provider based on model name and base URL
-    provider_name, provider_class_name = detect_provider(args.model, args.base_url)
+    provider_name, provider_class_name = detect_provider(config.model, config.base_url or None)
 
     # Import the appropriate provider class dynamically
     if provider_class_name == "OpenAIProvider":
@@ -350,37 +373,36 @@ async def main():
         from openagent.provider.openai import OpenAIProvider
         ProviderClass = OpenAIProvider
 
-    # Get API key - command line takes precedence, then env var
-    api_key = args.api_key
+    # Get API key - CLI > config file > env var
+    api_key = config.api_key
     if not api_key:
         env_var = get_api_key_env_var(provider_name)
         if env_var:
-            import os
             api_key = os.environ.get(env_var)
             if api_key:
-                print(f"Using {provider_name} provider (model: {args.model})")
+                print(f"Using {provider_name} provider (model: {config.model})")
 
     # Build provider kwargs
     provider_kwargs: dict[str, Any] = {
-        "model": args.model,
-        "api_key": api_key or None,  # Will use env var if not provided
+        "model": config.model,
+        "api_key": api_key or None,
     }
 
-    # Add base_url if specified (for OpenAI-compatible APIs)
-    if args.base_url:
-        provider_kwargs["base_url"] = args.base_url
+    if config.base_url:
+        provider_kwargs["base_url"] = config.base_url
 
-    # Create provider with optional API key override
     provider = ProviderClass(**provider_kwargs)
 
-    # Create the coder agent
+    # Build auto_save path
+    auto_save_path = config.auto_save or None
+
     coder = CoderAgent(
         provider=provider,
-        max_turns=args.max_turns,
-        working_dir=args.working_dir,
+        max_turns=config.max_turns,
+        working_dir=config.working_dir or str(working_dir),
+        auto_save=auto_save_path,
     )
 
-    # Run interactive session
     await run_interactive_session(coder)
 
 

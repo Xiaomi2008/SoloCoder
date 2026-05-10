@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from typing import Any, Callable, get_type_hints
 from dataclasses import dataclass
+from typing import Any, Callable, get_type_hints
 
 from .retry import with_retry
 from .types import ToolDef, ToolResultBlock, ToolUseBlock
@@ -121,7 +121,7 @@ class ToolRegistry:
         """Register a Python function as a tool (via @tool decorator or automatic inspection)."""
         if not hasattr(func, "_tool_name"):
             func = tool(func)
-        
+
         self.register_tool(
             name=getattr(func, "_tool_name"),
             description=getattr(func, "_tool_description"),
@@ -155,18 +155,11 @@ class ToolRegistry:
         try:
             func = entry.func
 
-            # Check if the function has retry logic applied via @with_retry decorator
-            # The decorator wraps the function and adds _retry_config attribute
-            has_retry = hasattr(func, '_retry_config') or (
-                hasattr(func, '__wrapped__') and hasattr(func.__wrapped__, '_retry_config')
-            )
-
             if asyncio.iscoroutinefunction(func):
                 result = await func(**tool_call.arguments)
             else:
                 result = func(**tool_call.arguments)
 
-            # Ensure result is a string (or convert to JSON string if not)
             content = result if isinstance(result, str) else json.dumps(result)
             return ToolResultBlock(
                 tool_use_id=tool_call.id,

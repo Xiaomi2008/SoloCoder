@@ -7,11 +7,11 @@ analyzing session outcomes, and adapting system prompts based on learned behavio
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from collections import defaultdict
 
 
 @dataclass
@@ -317,7 +317,7 @@ class SessionAnalyzer:
         Returns:
             SessionOutcome with extracted information
         """
-        from .types import ToolUseBlock, ToolResultBlock
+        from .types import ToolResultBlock, ToolUseBlock
 
         if session_id is None:
             session_id = datetime.now().isoformat()

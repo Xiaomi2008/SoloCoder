@@ -6,10 +6,13 @@ from typing import Any, Callable
 # Changed imports for core modules
 from .bash_manager import BashManager, get_bash_manager
 from .display import (
-    bold, dim, cyan, green, red, white,
-    display_tool_call_claude_style, display_tool_result_claude_style,
-    format_diff_output, display_code_block, display_diff_claude_style,
-    truncate_text
+    bold,
+    cyan,
+    dim,
+    display_tool_call_claude_style,
+    display_tool_result_claude_style,
+    green,
+    red,
 )
 
 
@@ -94,22 +97,21 @@ def display_edit_result(file_path: str, result_content: str) -> None:
             print(f"    {dim(line)}")
 
 
+# BaseProvider is likely in parent package or sibling 'provider' package
+# Since we are in core/, provider/ is '../provider/'
+# But 'openagent.provider' is absolute import, which is fine and clearer.
+from openagent.provider.base import BaseProvider
+
 from .logging import AgentLogger
 from .session import Session
 from .skill_manager import (
     SkillManager,
-    SlashCommandRegistry,
     get_command_registry,
     get_skill_manager,
 )
 from .task_manager import TaskManager, get_task_manager
 from .tool import ToolRegistry, tool
 from .types import Message
-
-# BaseProvider is likely in parent package or sibling 'provider' package
-# Since we are in core/, provider/ is '../provider/'
-# But 'openagent.provider' is absolute import, which is fine and clearer.
-from openagent.provider.base import BaseProvider
 
 
 class Agent:
@@ -127,12 +129,14 @@ class Agent:
         max_messages: int | None = None,  # Max messages before compression kicks in
         enable_learning: bool = False,  # Enable online learning features
         learning_storage_path: str | None = None,  # Path to store learning data
+        auto_save: str | None = None,  # Path to auto-save session after each turn
     ) -> None:
         self.provider = provider
         self.session = Session(system_prompt=system_prompt, max_messages=max_messages)
         self.max_turns = max_turns
         self.tool_registry = ToolRegistry()
         self._logger = AgentLogger(agent_id)
+        self._auto_save_path = auto_save
 
         # Initialize managers (use provided or create new instances)
         self.bash_manager = bash_manager or get_bash_manager()
@@ -145,7 +149,10 @@ class Agent:
         self._learning_storage_path = learning_storage_path
         if enable_learning:
             from .learning import (
-                ToolUsageTracker, FeedbackManager, SessionAnalyzer, AdaptivePrompt
+                AdaptivePrompt,
+                FeedbackManager,
+                SessionAnalyzer,
+                ToolUsageTracker,
             )
             self._tool_tracker = ToolUsageTracker(
                 storage_path=f"{learning_storage_path}/tool_usage.json" if learning_storage_path else None
@@ -175,26 +182,36 @@ class Agent:
                 self.tool_registry.register(fn)
 
         # Integrate MCP client if provided - discover and register MCP tools
+        # Deferred to first run() call so __init__ never blocks on MCP startup
         self._mcp_client = mcp_client
-        if mcp_client is not None:
-            asyncio.run(self._integrate_mcp_tools())
+        self._mcp_integrated = False
 
-    async def _integrate_mcp_tools(self) -> None:
-        """Discover and integrate MCP tools from the client."""
+    async def _integrate_mcp_tools(self, timeout: float = 10.0) -> None:
+        """Discover and integrate MCP tools from the client.
+
+        Args:
+            timeout: Maximum seconds to wait for MCP connection (default 10s).
+        """
         try:
-            # Ensure the client is connected
-            if hasattr(self._mcp_client, '__aenter__'):
-                await self._mcp_client.__aenter__()
+            async def _connect_and_discover() -> None:
+                # Ensure the client is connected
+                if hasattr(self._mcp_client, '__aenter__'):
+                    await self._mcp_client.__aenter__()
 
-            # Get MCP tools
-            mcp_tools = await self._mcp_client.get_tools()
+                # Get MCP tools
+                mcp_tools = await self._mcp_client.get_tools()
 
-            # Register each MCP tool
-            for tool_fn in mcp_tools:
-                if hasattr(tool_fn, "_tool_name"):
-                    self.tool_registry.register(tool_fn)
-                    self._logger.info(f"Registered MCP tool: {tool_fn._tool_name}")
+                # Register each MCP tool
+                for tool_fn in mcp_tools:
+                    if hasattr(tool_fn, "_tool_name"):
+                        self.tool_registry.register(tool_fn)
+                        self._logger.info(f"Registered MCP tool: {tool_fn._tool_name}")
 
+            await asyncio.wait_for(_connect_and_discover(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                f"MCP integration timed out after {timeout}s, continuing without MCP tools"
+            )
         except Exception as e:
             self._logger.error(f"Failed to integrate MCP tools: {e}")
 
@@ -202,13 +219,40 @@ class Agent:
     def messages(self) -> list[Message]:
         return self.session.messages
 
-    async def run(self, user_input: str, **kwargs: Any) -> str:
+    async def run(
+        self,
+        user_input: str,
+        on_chunk: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Run the agent with user input.
+
+        Args:
+            user_input: The user's request or question
+            on_chunk: Optional callback invoked for each streamed text chunk.
+                      When provided, the provider's stream() method is used
+                      for live output while chat() provides the authoritative
+                      response for tool-call detection.
+            **kwargs: Additional arguments passed to the provider
+        """
         self._logger.run_start(user_input)
         self.session.add("user", user_input)
-        result = await self._loop(**kwargs)
+        result = await self._loop(on_chunk=on_chunk, **kwargs)
         return result
 
-    async def _loop(self, **kwargs: Any) -> str:
+    async def _loop(
+        self,
+        on_chunk: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        tool_defs = self.tool_registry.definitions if len(self.tool_registry) > 0 else None
+
+        # Defer MCP integration to first run, so __init__ never blocks
+        if self._mcp_client and not self._mcp_integrated:
+            self._mcp_integrated = True
+            await self._integrate_mcp_tools()
+
+        # Re-fetch tool_defs in case MCP added tools
         tool_defs = self.tool_registry.definitions if len(self.tool_registry) > 0 else None
 
         # Apply adaptive prompt if learning is enabled
@@ -221,12 +265,37 @@ class Agent:
         for turn in range(self.max_turns):
             self._logger.turn_start(turn + 1, self.max_turns)
 
+            # When on_chunk is provided, stream text in parallel for live display
+            async def stream_to_callback():
+                try:
+                    async for chunk in self.provider.stream(
+                        messages=self.session.messages,
+                        tools=tool_defs,
+                        system_prompt=system_prompt,
+                        **kwargs,
+                    ):
+                        if chunk:
+                            on_chunk(chunk)
+                except Exception:
+                    pass  # chat() is the authoritative call; streaming is best-effort
+
+            if on_chunk:
+                stream_task = asyncio.create_task(stream_to_callback())
+
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
                 system_prompt=system_prompt,
                 **kwargs,
             )
+
+            if on_chunk:
+                stream_task.cancel()
+                try:
+                    await stream_task
+                except asyncio.CancelledError:
+                    pass
+
             self.session.add_message(response)
 
             has_tools = response.has_tool_calls
@@ -237,6 +306,7 @@ class Agent:
                 if self._enable_learning and self._session_analyzer:
                     await self._analyze_session_outcome()
                 self._logger.run_end(turn + 1)
+                self._auto_save()
                 return response.text
 
             # Log and execute tool calls in Claude Code style
@@ -293,6 +363,7 @@ class Agent:
                         display_tool_result_claude_style(result.is_error, content)
 
             self.session.add_tool_results(list(results))
+            self._auto_save()
 
         self._logger.max_turns_reached()
         # Analyze session outcome if learning is enabled (even on max turns)
@@ -309,6 +380,14 @@ class Agent:
                 # Return first 100 chars as context
                 return msg.content[:100]
         return ""
+
+    def _auto_save(self) -> None:
+        """Save session to disk if auto_save path is configured."""
+        if self._auto_save_path:
+            try:
+                self.session.save(self._auto_save_path)
+            except Exception as e:
+                self._logger.warning(f"Failed to auto-save session: {e}")
 
     async def _analyze_session_outcome(self) -> None:
         """Analyze the current session outcome for learning."""

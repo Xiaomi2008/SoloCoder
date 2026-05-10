@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from openagent.provider.base import BaseProvider
-from openagent.provider.converter import MessageConverterMixin
 from openagent.core.retry import get_provider_retryable_exceptions, with_retry
 from openagent.core.types import (
     ContentBlock,
@@ -14,6 +12,8 @@ from openagent.core.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from openagent.provider.base import BaseProvider
+from openagent.provider.converter import MessageConverterMixin
 
 
 class GoogleConverterMixin(MessageConverterMixin):

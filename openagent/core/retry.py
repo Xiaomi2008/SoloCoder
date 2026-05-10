@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-import inspect
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
@@ -142,11 +141,11 @@ def get_provider_retryable_exceptions(provider: str) -> tuple[type[Exception], .
 
     try:
         if provider == "openai":
-            from openai import APIConnectionError, RateLimitError, APITimeoutError
+            from openai import APIConnectionError, APITimeoutError, RateLimitError
 
             exceptions.extend([APIConnectionError, RateLimitError, APITimeoutError])
         elif provider == "anthropic":
-            from anthropic import APIConnectionError, RateLimitError, APITimeoutError
+            from anthropic import APIConnectionError, APITimeoutError, RateLimitError
 
             exceptions.extend([APIConnectionError, RateLimitError, APITimeoutError])
         elif provider == "google":

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .core.agent import Agent as BaseAgent
 from .core.bash_manager import BashManager, get_bash_manager
@@ -69,6 +69,7 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
         skill_manager: SkillManager | None = None,
         enable_learning: bool = False,
         learning_storage_path: str | None = None,
+        auto_save: str | None = None,
     ) -> None:
         """Initialize the CoderAgent with all built-in tools.
 
@@ -82,13 +83,35 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             skill_manager: Optional custom SkillManager instance
             enable_learning: If True, enables online learning features (tool usage tracking, feedback collection)
             learning_storage_path: Path to store learning data (JSON files). If None, learning is in-memory only.
+            auto_save: Path to auto-save session JSON after each turn. Enables crash recovery.
         """
         from .tools import (
-            read, write, edit, glob, grep, notebook_edit,
-            bash, bash_background, bash_output, kill_shell,
-            todo_write, todo_update, todo_list,
-            enter_plan_mode, exit_plan_mode, ask_user_question,
-            web_search, web_fetch, submit_feedback, get_learning_stats
+            ask_user_question,
+            awk,
+            bash,
+            bash_background,
+            bash_output,
+            edit,
+            enter_plan_mode,
+            exit_plan_mode,
+            get_learning_stats,
+            git_commit,
+            git_diff,
+            git_log,
+            git_status,
+            glob,
+            grep,
+            http_request,
+            kill_shell,
+            notebook_edit,
+            read,
+            submit_feedback,
+            todo_list,
+            todo_update,
+            todo_write,
+            web_fetch,
+            web_search,
+            write,
         )
 
         # Use default provider if not provided
@@ -112,7 +135,9 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
                 todo_write, todo_update, todo_list,  # Task management
                 enter_plan_mode, exit_plan_mode,  # Planning mode
                 ask_user_question,  # User interaction
-                web_search, web_fetch,  # Web tools
+                web_search, web_fetch, http_request,  # Web tools
+                git_status, git_diff, git_commit, git_log,  # Git integration
+                awk,  # Text processing
             ] + learning_tools,
             max_turns=max_turns,
             bash_manager=bash_manager or get_bash_manager(),
@@ -120,6 +145,7 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             skill_manager=skill_manager or get_skill_manager(),
             enable_learning=enable_learning,
             learning_storage_path=learning_storage_path,
+            auto_save=auto_save,
         )
 
         self._working_dir = working_dir or str(Path.cwd())
