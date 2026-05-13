@@ -55,7 +55,8 @@ def display_write_result(file_path: str, result_content: str) -> None:
 
 def display_edit_result(file_path: str, result_content: str) -> None:
     """Display edit operation result with changed lines highlighted."""
-    print(f"  ➜ {bold('edit')}({cyan(f'"{file_path}"')})")
+    q = '"'
+    print(f"  ➜ {bold('edit')}({cyan(q + file_path + q)})")
 
     # Check if this is a unified diff format
     has_diff_format = "@@" in result_content and any(
@@ -107,7 +108,8 @@ def display_edit_result(file_path: str, result_content: str) -> None:
 
 def display_edit_result_with_lines(file_path: str, result_content: str) -> None:
     """Display edit operation result with line numbers like Claude Code."""
-    print(f"  ➜ {bold('edit')}({cyan(f'"{file_path}"')})")
+    q = '"'
+    print(f"  ➜ {bold('edit')}({cyan(q + file_path + q)})")
 
     lines = result_content.split("\n")
     additions = 0
