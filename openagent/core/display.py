@@ -398,7 +398,8 @@ def display_diff_claude_style(
     action = tool_name if tool_name else "write"
 
     # Show tool call style header with the actual tool name
-    print(f"  ● {bold(action)}({cyan(f'"{file_path}"')})")
+    q = '"'
+    print(f"  ● {bold(action)}({cyan(q + file_path + q)})")
 
     # Summary line with color-coded counts
     if additions > 0 or deletions > 0:
