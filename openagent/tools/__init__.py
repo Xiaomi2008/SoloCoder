@@ -10,6 +10,7 @@ Tools are organized into categories:
 - Computer Use: screenshot, click, type_text, key_combination (macOS GUI automation)
 - Planning & Workflow: enter_plan_mode, exit_plan_mode
 - User Interaction: ask_user_question (requires agent integration)
+- Memory & Learning: recall (auto-registered when auto_learn=True)
 
 Usage:
     from openagent.tools import read, write, edit, glob, grep, web_search, web_search
@@ -34,6 +35,7 @@ from .builtin import (
     kill_shell,
     notebook_edit,
     read,
+    recall,
     sed,
     slash_command,
     skill,
@@ -101,4 +103,6 @@ __all__ = [
     # Extensibility (requires agent integration)
     "skill",
     "slash_command",
+    # Memory & learning
+    "recall",
 ]

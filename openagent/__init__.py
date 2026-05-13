@@ -24,6 +24,38 @@ from openagent.core.display import (
     yellow,
 )
 from openagent.core.logging import AgentLogger, configure_logging, logger
+from openagent.core.memory import (
+    MemoryStore,
+    PatternMemory,
+    PreferenceMemory,
+    FactMemory,
+    get_memory_store,
+)
+from openagent.core.learning_extractor import LearningExtractor
+from openagent.infrastructure import McpClient
+from openagent.runtime import (
+    AgentResult,
+    ContextCompactionCompleted,
+    ContextCompactionFailed,
+    ContextCompactionStarted,
+    MessageCompleted,
+    MessageDelta,
+    MessageFailed,
+    MessageStarted,
+    RunCancelled,
+    RunCompleted,
+    RunFailed,
+    RunStarted,
+    RuntimeEvent,
+    ToolCallCompleted,
+    ToolCallFailed,
+    ToolCallStarted,
+)
+from openagent.provider.anthropic import AnthropicProvider
+from openagent.provider.base import BaseProvider
+from openagent.provider.google import GoogleProvider
+from openagent.provider.ollama import OllamaProvider
+from openagent.provider.openai import OpenAIProvider
 from openagent.core.session import Session
 from openagent.core.tool import ToolRegistry, tool
 from openagent.model import (
@@ -48,6 +80,13 @@ __all__ = [
     "Session",
     "McpClient",
     "ToolRegistry",
+    # Memory and learning
+    "MemoryStore",
+    "PatternMemory",
+    "PreferenceMemory",
+    "FactMemory",
+    "get_memory_store",
+    "LearningExtractor",
     # Providers
     "AnthropicProvider",
     "BaseProvider",

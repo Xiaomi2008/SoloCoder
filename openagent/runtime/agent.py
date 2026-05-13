@@ -102,11 +102,77 @@ class Agent:
         )
         empty_response_attempts = 0
 
-        # Handle multimodal input
+        # Handle text input
         if user_input:
             self.session.add_user_multimodal(text=user_input)
         yield RunStarted(run_id=run_id)
         yield MessageStarted(run_id=run_id, message_id=message_id)
+
+        while True:
+            try:
+                if not disable_compaction and self.session.check_compaction_needed(
+                    max_tokens=max_context_tokens, threshold=compact_threshold
+                ):
+                    await self.session.compact_context(
+                        provider=self.provider,
+                        keep_recent=5,
+                        summary_type="detailed",
+                    )
+
+                response = await self.provider.chat(
+                    messages=self.session.messages,
+                    tools=None,
+                    system_prompt=self.session.system_prompt,
+                    **provider_kwargs,
+                )
+            except asyncio.CancelledError:
+                yield RunCancelled(run_id=run_id, reason="Run cancelled")
+                return
+            except Exception as exc:
+                yield RunFailed(run_id=run_id, error=str(exc))
+                return
+
+            assistant_message = self._assistant_message(response)
+            if assistant_message.text.strip():
+                break
+
+            empty_response_attempts += 1
+            if empty_response_attempts > max_empty_response_retries:
+                yield RunFailed(
+                    run_id=run_id,
+                    error=(
+                        "The model returned empty responses repeatedly before finishing "
+                        "the task. Try again, switch models, or lower tool complexity."
+                    ),
+                )
+                return
+
+            if (
+                not self.session.messages
+                or self.session.messages[-1].text != self.EMPTY_RESPONSE_RETRY_MESSAGE
+            ):
+                self.session.add("system", self.EMPTY_RESPONSE_RETRY_MESSAGE)
+
+        output_text = assistant_message.text
+        self.session.add_message(assistant_message)
+
+        yield MessageDelta(run_id=run_id, message_id=message_id, delta=output_text)
+        yield MessageCompleted(
+            run_id=run_id,
+            message_id=message_id,
+            output_text=output_text,
+        )
+
+        result = AgentResult(
+            run_id=run_id,
+            final_message_id=message_id,
+            output_text=output_text,
+        )
+        yield RunCompleted(
+            run_id=run_id,
+            final_message_id=message_id,
+            result=result,
+        )
 
     async def _run_multimodal_events(
         self,
