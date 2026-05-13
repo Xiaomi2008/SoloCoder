@@ -15,6 +15,7 @@ from openagent.core.types import (
 )
 from openagent.provider.base import BaseProvider
 from openagent.provider.converter import MessageConverterMixin
+from openagent.providers.events import ProviderMessageStarted, ProviderError
 
 
 class GoogleConverterMixin(MessageConverterMixin):

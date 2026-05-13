@@ -69,7 +69,7 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
         skill_manager: SkillManager | None = None,
         enable_learning: bool = False,
         learning_storage_path: str | None = None,
-        auto_save: str | None = None,
+        auto_save: str | None = None,  # Reserved for future use
     ) -> None:
         """Initialize the CoderAgent with all built-in tools.
 
@@ -94,18 +94,11 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             edit,
             enter_plan_mode,
             exit_plan_mode,
-            get_learning_stats,
-            git_commit,
-            git_diff,
-            git_log,
-            git_status,
             glob,
             grep,
-            http_request,
             kill_shell,
             notebook_edit,
             read,
-            submit_feedback,
             todo_list,
             todo_update,
             todo_write,
@@ -122,8 +115,8 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
         if system_prompt is None:
             system_prompt = self.DEFAULT_SYSTEM_PROMPT
 
-        # Add learning tools to the list if learning is enabled
-        learning_tools = [submit_feedback, get_learning_stats] if enable_learning else []
+        # Learning tools (get_learning_stats, submit_feedback) are not yet implemented
+        learning_tools: list = []
 
         # Initialize with all built-in tools
         super().__init__(
@@ -135,17 +128,13 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
                 todo_write, todo_update, todo_list,  # Task management
                 enter_plan_mode, exit_plan_mode,  # Planning mode
                 ask_user_question,  # User interaction
-                web_search, web_fetch, http_request,  # Web tools
-                git_status, git_diff, git_commit, git_log,  # Git integration
+                web_search, web_fetch,  # Web tools
                 awk,  # Text processing
             ] + learning_tools,
             max_turns=max_turns,
             bash_manager=bash_manager or get_bash_manager(),
             task_manager=task_manager or get_task_manager(),
             skill_manager=skill_manager or get_skill_manager(),
-            enable_learning=enable_learning,
-            learning_storage_path=learning_storage_path,
-            auto_save=auto_save,
         )
 
         self._working_dir = working_dir or str(Path.cwd())

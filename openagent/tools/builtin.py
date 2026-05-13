@@ -908,56 +908,6 @@ def web_fetch(
 
 
 # ============================================================================
-# Agent Orchestration Tools
-# ============================================================================
-
-
-@tool
-async def task(
-    agent_type: str,
-    description: str,
-    context: str | None = None,
-) -> str:
-    """Launch specialized sub-agents for complex tasks to prevent context explosion.
-
-    This spawns an isolated sub-agent that focuses solely on the task, keeping the main
-    agent's context clean and preventing context explosion.
-
-    Args:
-        agent_type: Type of agent. Options: explore (code analysis), plan (strategic planning),
-            code (implementation), general-purpose (versatile tasks)
-        description: Task description for the sub-agent
-        context: Optional additional context for the task
-
-    Returns:
-        Sub-agent work report
-    """
-    valid_types = ["general-purpose", "explore", "plan", "code"]
-    if agent_type not in valid_types:
-        return (
-            f"Error: Invalid agent type '{agent_type}'. Valid: {', '.join(valid_types)}"
-        )
-
-    from openagent.core.sub_agent_manager import SubAgentManager
-
-    sub = SubAgentManager(parent_provider=None, parent_tools=[], working_dir=None)
-
-    report = f"**Sub-Agent Report {agent_type.title()}**\n"
-    report += "=" * 50 + "\n\n"
-    report += f"**Task**: {description}\n\n"
-    report += "A specialized sub-agent has been spawned and is working on this task.\n"
-    report += "The sub-agent operates in isolation to prevent context pollution of the main agent.\n"
-
-    if context:
-        report += f"\n**Additional Context**:\n{context}\n"
-
-    report += "\nThe sub-agent has access to: file operations, search tools, shell commands.\n"
-    report += "It will complete its focused task and report back to the main agent.\n"
-
-    return report
-
-
-# ============================================================================
 # Planning & Workflow Tools
 # ============================================================================
 
@@ -1259,8 +1209,6 @@ __all__ = [
     # Web & search
     "web_search",
     "web_fetch",
-    # Agent orchestration
-    "task",
     # Planning & workflow
     "enter_plan_mode",
     "exit_plan_mode",

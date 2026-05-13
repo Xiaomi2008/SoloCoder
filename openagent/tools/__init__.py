@@ -39,7 +39,6 @@ from .builtin import (
     sed,
     slash_command,
     skill,
-    task,
     todo_list,
     todo_update,
     todo_write,
@@ -90,8 +89,6 @@ __all__ = [
     "get_screen_resolution",
     "get_screenshot_info",
     "wait",
-    # Agent orchestration (requires agent integration)
-    "task",
     # Planning & workflow with task manager
     "todo_write",
     "todo_update",

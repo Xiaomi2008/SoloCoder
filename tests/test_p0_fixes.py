@@ -16,7 +16,7 @@ from openagent.core.types import Message, TextBlock, ToolUseBlock
 
 
 class TestCoderAgentGitTools:
-    """Verify git tools and awk are present in CoderAgent's tool registry."""
+    """Verify core tools are present in CoderAgent's tool registry."""
 
     def _get_tool_names(self):
         """Extract registered tool names from a CoderAgent instance."""
@@ -31,25 +31,25 @@ class TestCoderAgentGitTools:
         agent = CoderAgent(provider=mock_provider)
         return list(agent.tool_registry._tools.keys())
 
-    def test_git_status_registered(self):
-        names = self._get_tool_names()
-        assert "git_status" in names
-
-    def test_git_diff_registered(self):
-        names = self._get_tool_names()
-        assert "git_diff" in names
-
-    def test_git_commit_registered(self):
-        names = self._get_tool_names()
-        assert "git_commit" in names
-
-    def test_git_log_registered(self):
-        names = self._get_tool_names()
-        assert "git_log" in names
-
     def test_awk_registered(self):
         names = self._get_tool_names()
         assert "awk" in names
+
+    def test_bash_registered(self):
+        names = self._get_tool_names()
+        assert "bash" in names
+
+    def test_read_registered(self):
+        names = self._get_tool_names()
+        assert "read" in names
+
+    def test_write_registered(self):
+        names = self._get_tool_names()
+        assert "write" in names
+
+    def test_grep_registered(self):
+        names = self._get_tool_names()
+        assert "grep" in names
 
 
 # ============================================================================

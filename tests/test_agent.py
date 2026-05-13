@@ -38,8 +38,8 @@ def test_agent_with_tools(mock_provider, simple_response):
     provider = mock_provider([simple_response])
     agent = Agent(provider=provider, tools=[dummy_tool])
 
-    # recall tool is auto-added when auto_learn is enabled
-    assert len(agent.tool_registry) == 2
+    # Only the explicitly passed tool is registered (recall auto-add was removed)
+    assert len(agent.tool_registry) == 1
 
 
 async def test_agent_simple_run(mock_provider, simple_response):

@@ -167,6 +167,7 @@ class TestOpenAIProviderChat:
 
         provider = OpenAIProvider.__new__(OpenAIProvider)
         provider.model = "gpt-4o"
+        provider.base_url = None
         provider._max_retries = 0
 
         mock_resp = MagicMock()
@@ -197,6 +198,7 @@ class TestOpenAIProviderStream:
 
         provider = OpenAIProvider.__new__(OpenAIProvider)
         provider.model = "gpt-4o"
+        provider.base_url = None
 
         chunks = [
             MagicMock(choices=[MagicMock(delta=MagicMock(content="Hello"))]),
@@ -224,7 +226,11 @@ class TestOpenAIProviderStream:
             return collected
 
         result = asyncio.run(run())
-        assert result == ["Hello", " world"]
+        # Stream yields ProviderMessageStarted + ProviderTextDelta events
+        assert len(result) >= 2
+        deltas = [c.delta for c in result if hasattr(c, "delta")]
+        assert "Hello" in deltas
+        assert " world" in deltas
 
 
 # ============================================================================

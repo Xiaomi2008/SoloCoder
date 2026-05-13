@@ -18,6 +18,7 @@ from openagent.core.types import (
 )
 from openagent.provider.base import BaseProvider
 from openagent.provider.converter import MessageConverterMixin
+from openagent.providers.events import ProviderError, ProviderMessageCompleted, ProviderMessageStarted, ProviderTextDelta, ProviderToolCall
 
 
 logger = logging.getLogger("openagent.provider.openai")
