@@ -169,7 +169,6 @@ def display_edit_result_with_lines(file_path: str, result_content: str) -> None:
 
 
 from .logging import AgentLogger
-from .memory import MemoryStore, get_memory_store
 from .session import Session
 from .skill_manager import (
     SkillManager,
@@ -207,9 +206,6 @@ class Agent:
         task_manager: TaskManager | None = None,
         skill_manager: SkillManager | None = None,
         mcp_client: Any | None = None,  # MCP client for tool discovery
-        memory_store: MemoryStore | None = None,
-        auto_learn: bool = True,
-        project_id: str | None = None,
     ) -> None:
         self.provider = provider
         self.session = Session(system_prompt=system_prompt)
@@ -223,25 +219,11 @@ class Agent:
         self.skill_manager = skill_manager or get_skill_manager()
         self.command_registry = get_command_registry()
 
-        # Memory and learning configuration
-        self.memory_store = memory_store or get_memory_store()
-        self.auto_learn = auto_learn
-        self.project_id = project_id
-
         if tools:
             for fn in tools:
                 if not hasattr(fn, "_tool_name"):
                     fn = tool(fn)
                 self.tool_registry.register(fn)
-
-        # Add recall tool automatically if memory is enabled and not already present
-        if self.auto_learn and not any(
-            hasattr(t, "_tool_name") and getattr(t, "_tool_name") == "recall"
-            for t in (tools or [])
-        ):
-            from openagent.tools.builtin import recall
-
-            self.tool_registry.register(recall)
 
         # Integrate MCP client if provided - discover and register MCP tools
         self._mcp_client = mcp_client
@@ -292,11 +274,6 @@ class Agent:
 
         self.session.add("user", user_input)
         result = await self._loop(**kwargs)
-
-        # Auto-learn from completed session
-        if self.auto_learn and self.memory_store:
-            await self._save_learnings()
-
         return result
 
     async def run_multimodal(
@@ -565,30 +542,3 @@ class Agent:
                 "Try again or switch to a more reliable model."
             )
         return response.text
-
-    async def _save_learnings(self) -> None:
-        """Extract and save learnings from this session."""
-        try:
-            from .learning_extractor import LearningExtractor
-
-            extractor = LearningExtractor(provider=self.provider)
-            extraction = await extractor.analyze_session(
-                self.session, project_id=self.project_id
-            )
-
-            # Save patterns to memory store
-            for pattern in extraction.patterns:
-                self.memory_store.save_pattern(pattern)
-
-            # Save preferences to memory store
-            for pref in extraction.preferences:
-                self.memory_store.save_preference(pref)
-
-            # Save facts to memory store (project-specific if project_id is set)
-            for fact in extraction.facts:
-                if self.project_id:
-                    self.memory_store.save_project_fact(self.project_id, fact)
-
-        except Exception as e:
-            # Log but don't fail the session if learning fails
-            self._logger.error(f"Failed to save learnings: {e}")

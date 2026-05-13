@@ -85,7 +85,7 @@ async def test_agent_adds_screenshot_tool_result_as_multimodal_user_message() ->
         return screenshot_base64
 
     provider = CapturingProvider()
-    agent = Agent(provider=provider, tools=[screenshot], auto_learn=False)
+    agent = Agent(provider=provider, tools=[screenshot])
 
     result = await agent.run("Look at the screen")
 
@@ -173,7 +173,7 @@ async def test_agent_simple_run_bridges_to_runtime_agent(mock_provider, monkeypa
     )
 
     provider = mock_provider()
-    agent = Agent(provider=provider, system_prompt="Test prompt", auto_learn=False)
+    agent = Agent(provider=provider, system_prompt="Test prompt")
 
     result = await agent.run("Hello!", temperature=0)
 
@@ -199,7 +199,7 @@ async def test_agent_simple_run_filters_core_only_kwargs_before_provider_call() 
             return Message(role="assistant", content="Hello!")
 
     provider = RecordingProvider()
-    agent = Agent(provider=provider, auto_learn=False)
+    agent = Agent(provider=provider)
 
     result = await agent.run(
         "Hello!",
@@ -226,7 +226,7 @@ async def test_agent_simple_run_compacts_context_before_runtime_provider_call(
             return Message(role="assistant", content="Hello!")
 
     provider = RecordingProvider()
-    agent = Agent(provider=provider, auto_learn=False)
+    agent = Agent(provider=provider)
 
     def fake_check_compaction_needed(*, max_tokens: int, threshold: float) -> bool:
         events.append(("check", max_tokens, threshold))
@@ -266,7 +266,7 @@ async def test_agent_simple_run_disable_compaction_bypasses_runtime_compaction(
             return Message(role="assistant", content="Hello!")
 
     provider = RecordingProvider()
-    agent = Agent(provider=provider, auto_learn=False)
+    agent = Agent(provider=provider)
 
     def fake_check_compaction_needed(*, max_tokens: int, threshold: float) -> bool:
         events.append(("check", max_tokens, threshold))
@@ -319,7 +319,7 @@ async def test_agent_simple_run_preserves_history_across_no_tool_runs() -> None:
             return next(self.responses)
 
     provider = RecordingProvider()
-    agent = Agent(provider=provider, system_prompt="Test prompt", auto_learn=False)
+    agent = Agent(provider=provider, system_prompt="Test prompt")
 
     first_result = await agent.run("Hello!")
     second_result = await agent.run("What did I just say?")
