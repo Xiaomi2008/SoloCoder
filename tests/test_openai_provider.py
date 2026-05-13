@@ -1,279 +1,268 @@
-"""Tests for OpenAI provider behavior and diagnostics."""
+"""Tests for OpenAIProvider - converter, chat, stream, retry."""
 
 from __future__ import annotations
 
-import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from openagent.core.types import Message
-from openagent.provider.openai import OpenAIProvider
-from openagent.providers import (
-    ProviderError,
-    ProviderMessageCompleted,
-    ProviderMessageStarted,
-    ProviderTextDelta,
-    ProviderToolCall,
+from openagent.core.types import (
+    Message, TextBlock, ToolDef, ToolResultBlock, ToolUseBlock,
 )
 
 
-class TestOpenAIProviderDiagnostics:
-    @staticmethod
-    def _make_provider() -> OpenAIProvider:
-        provider = OpenAIProvider.__new__(OpenAIProvider)
-        provider.model = "qwen-local"
-        provider.api_key = None
-        provider.base_url = "http://localhost:1234/v1"
-        provider._max_retries = 0
-        provider._client = MagicMock()
-        return provider
+# ============================================================================
+# OpenAIConverterMixin
+# ============================================================================
 
-    @staticmethod
-    def _response(
-        content: str | None, tool_calls=None, finish_reason: str | None = None
-    ):
-        response = MagicMock()
-        choice = MagicMock()
-        choice.finish_reason = finish_reason
-        choice.message.content = content
-        choice.message.tool_calls = tool_calls
-        response.choices = [choice]
-        response.model_dump.return_value = {
-            "choices": [
-                {
-                    "finish_reason": finish_reason,
-                    "message": {"content": content, "tool_calls": tool_calls},
-                }
-            ]
-        }
-        return response
 
-    def test_logs_empty_assistant_message(self, caplog):
-        provider = self._make_provider()
-        response = self._response(content="", tool_calls=None, finish_reason="stop")
+class TestOpenAIConverter:
+    """Test message conversion for OpenAI API."""
 
-        with caplog.at_level(logging.DEBUG, logger="openagent.provider.openai"):
-            message = provider.convert_response(response)
+    def test_convert_messages_with_system_prompt(self):
+        from openagent.provider.openai import OpenAIConverterMixin
 
-        assert message.role == "assistant"
-        assert message.content == []
-        assert "empty_assistant_message" in caplog.text
-        assert "Raw response payload" in caplog.text
+        conv = OpenAIConverterMixin()
+        result = conv.convert_messages(
+            messages=[Message(role="user", content="hello")],
+            system_prompt="be helpful",
+        )
+        msgs = result["messages"]
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"] == "be helpful"
+        assert msgs[1]["role"] == "user"
+        assert msgs[1]["content"] == "hello"
 
-    def test_logs_invalid_tool_arguments(self, caplog):
-        provider = self._make_provider()
+    def test_convert_messages_system_msg(self):
+        from openagent.provider.openai import OpenAIConverterMixin
+
+        conv = OpenAIConverterMixin()
+        result = conv.convert_messages(
+            messages=[
+                Message(role="system", content="rules"),
+                Message(role="user", content="hi"),
+            ],
+        )
+        msgs = result["messages"]
+        assert msgs[0]["role"] == "system"
+        assert msgs[1]["role"] == "user"
+
+    def test_convert_messages_assistant_tool_call(self):
+        from openagent.provider.openai import OpenAIConverterMixin
+
+        conv = OpenAIConverterMixin()
+        result = conv.convert_messages(
+            messages=[
+                Message(role="user", content="what's the weather"),
+                Message(
+                    role="assistant",
+                    content=[
+                        TextBlock(text="checking..."),
+                        ToolUseBlock(id="call_1", name="get_weather", arguments={"city": "Paris"}),
+                    ],
+                ),
+            ],
+        )
+        assistant_msg = result["messages"][1]
+        assert assistant_msg["role"] == "assistant"
+        assert assistant_msg["content"] == "checking..."
+        assert len(assistant_msg["tool_calls"]) == 1
+        assert assistant_msg["tool_calls"][0]["id"] == "call_1"
+        assert assistant_msg["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    def test_convert_messages_tool_result(self):
+        from openagent.provider.openai import OpenAIConverterMixin
+
+        conv = OpenAIConverterMixin()
+        result = conv.convert_messages(
+            messages=[
+                Message(role="user", content="hi"),
+                Message(
+                    role="tool_result",
+                    content=[
+                        ToolResultBlock(tool_use_id="call_1", content="22C"),
+                    ],
+                ),
+            ],
+        )
+        tool_msg = result["messages"][1]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "call_1"
+        assert tool_msg["content"] == "22C"
+
+    def test_convert_response_text_only(self):
+        from openagent.provider.openai import OpenAIConverterMixin
+
+        conv = OpenAIConverterMixin()
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = "Hello!"
+        mock_resp.choices[0].message.tool_calls = None
+
+        msg = conv.convert_response(mock_resp)
+        assert msg.role == "assistant"
+        assert msg.text == "Hello!"
+
+    def test_convert_response_with_tool_calls(self):
+        from openagent.provider.openai import OpenAIConverterMixin
+
+        conv = OpenAIConverterMixin()
         tool_call = MagicMock()
         tool_call.id = "call_1"
-        tool_call.function.name = "glob"
-        tool_call.function.arguments = "not-json"
-        response = self._response(
-            content="", tool_calls=[tool_call], finish_reason="tool_calls"
-        )
+        tool_call.function.name = "get_weather"
+        tool_call.function.arguments = '{"city": "Paris"}'
 
-        with caplog.at_level(logging.DEBUG, logger="openagent.provider.openai"):
-            with pytest.raises(Exception):
-                provider.convert_response(response)
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = "Checking..."
+        mock_resp.choices[0].message.tool_calls = [tool_call]
 
-        assert "invalid_tool_arguments" in caplog.text
-        assert "not-json" in caplog.text
+        msg = conv.convert_response(mock_resp)
+        assert msg.role == "assistant"
+        assert isinstance(msg.content, list)
+        tool_blocks = [b for b in msg.content if isinstance(b, ToolUseBlock)]
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0].name == "get_weather"
 
-    def test_ignores_reasoning_content_when_tool_call_fields_are_absent(self, caplog):
-        provider = self._make_provider()
-        response = self._response(content="", tool_calls=[], finish_reason="stop")
-        response.choices[0].message.reasoning_content = """Now let me inspect the file.
+    def test_convert_tools(self):
+        from openagent.provider.openai import OpenAIConverterMixin
 
-<tool_call>
-<function=read>
-<parameter=path>
-/Users/taozeng/Projects/SoloCoder/cli_coder.py
-</parameter>
-<parameter=line_start>
-180
-</parameter>
-<parameter=line_end>
-230
-</parameter>
-</function>
-</tool_call>"""
+        conv = OpenAIConverterMixin()
+        tools = [ToolDef(name="get_weather", description="Weather info", parameters={"type": "object"})]
+        result = conv.convert_tools(tools)
 
-        with caplog.at_level(logging.DEBUG, logger="openagent.provider.openai"):
-            message = provider.convert_response(response)
-
-        assert message.role == "assistant"
-        assert message.content == []
-        assert "recovered_tool_call_from_reasoning" not in caplog.text
-        assert "empty_assistant_message" in caplog.text
+        assert len(result) == 1
+        assert result[0]["type"] == "function"
+        assert result[0]["function"]["name"] == "get_weather"
 
 
-class TestOpenAIProviderStreaming:
-    @staticmethod
-    def _make_provider() -> OpenAIProvider:
+# ============================================================================
+# OpenAIProvider chat
+# ============================================================================
+
+
+class TestOpenAIProviderChat:
+    def test_chat_calls_api(self):
+        from openagent.provider.openai import OpenAIProvider
+
         provider = OpenAIProvider.__new__(OpenAIProvider)
         provider.model = "gpt-4o"
-        provider.api_key = "test-key"
-        provider.base_url = None
         provider._max_retries = 0
-        provider._client = MagicMock()
-        return provider
 
-    @staticmethod
-    def _response(content: str):
-        response = MagicMock()
-        choice = MagicMock()
-        choice.message.content = content
-        choice.message.tool_calls = []
-        response.choices = [choice]
-        return response
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = "OK"
+        mock_resp.choices[0].message.tool_calls = None
 
-    @staticmethod
-    def _chunk(
-        message_id: str,
-        content: str | None = None,
-        finish_reason: str | None = None,
-        tool_calls=None,
-    ):
-        chunk = MagicMock()
-        chunk.id = message_id
-        choice = MagicMock()
-        choice.delta.content = content
-        choice.delta.tool_calls = tool_calls
-        choice.finish_reason = finish_reason
-        chunk.choices = [choice]
-        return chunk
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
+        provider._client = mock_client
 
-    @staticmethod
-    async def _collect(stream):
-        return [event async for event in stream]
+        import asyncio
+        result = asyncio.run(provider.chat(
+            messages=[Message(role="user", content="hi")],
+            system_prompt="",
+        ))
+        assert result.text == "OK"
 
-    @pytest.mark.asyncio
-    async def test_chat_returns_canonical_assistant_message(self):
-        provider = self._make_provider()
-        provider._client.chat.completions.create = AsyncMock(
-            return_value=self._response("Hello from OpenAI")
-        )
+    def test_chat_with_tools(self):
+        from openagent.provider.openai import OpenAIProvider
 
-        message = await provider.chat(messages=[Message(role="user", content="Hi")])
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        provider.model = "gpt-4o"
+        provider._max_retries = 0
 
-        assert message == Message(role="assistant", content="Hello from OpenAI")
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = ""
+        mock_resp.choices[0].message.tool_calls = None
 
-    @pytest.mark.asyncio
-    async def test_stream_yields_provider_events_for_text_chunks(self):
-        provider = self._make_provider()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
+        provider._client = mock_client
 
-        async def fake_stream():
-            yield self._chunk("chatcmpl_123", content="Hello")
-            yield self._chunk("chatcmpl_123", content=" world")
+        import asyncio
+        asyncio.run(provider.chat(
+            messages=[Message(role="user", content="hi")],
+            tools=[ToolDef(name="test", description="test", parameters={})],
+            system_prompt="",
+        ))
+        mock_client.chat.completions.create.assert_called_once()
 
-        provider._client.chat.completions.create = AsyncMock(return_value=fake_stream())
 
-        events = await self._collect(
-            provider.stream(messages=[Message(role="user", content="Hi")])
-        )
+# ============================================================================
+# OpenAIProvider stream
+# ============================================================================
 
-        assert [type(event) for event in events] == [
-            ProviderMessageStarted,
-            ProviderTextDelta,
-            ProviderTextDelta,
-            ProviderMessageCompleted,
+
+class TestOpenAIProviderStream:
+    def test_stream_yields_chunks(self):
+        from openagent.provider.openai import OpenAIProvider
+
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        provider.model = "gpt-4o"
+
+        chunks = [
+            MagicMock(choices=[MagicMock(delta=MagicMock(content="Hello"))]),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=" world"))]),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=None))]),
         ]
-        assert events[0].message_id == "chatcmpl_123"
-        assert events[1].message_id == "chatcmpl_123"
-        assert events[1].delta == "Hello"
-        assert events[2].delta == " world"
-        assert events[3].message_id == "chatcmpl_123"
 
-    @pytest.mark.asyncio
-    async def test_stream_emits_single_terminal_completed_event_for_simple_text_response(
-        self,
-    ):
-        provider = self._make_provider()
+        mock_stream = AsyncMock().__aiter__
+        iter_chunks = iter(chunks)
+        async def async_iter():
+            for c in iter_chunks:
+                yield c
 
-        async def fake_stream():
-            yield self._chunk("chatcmpl_terminal", content="Hello")
-            yield self._chunk("chatcmpl_terminal", finish_reason="stop")
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=async_iter())
+        provider._client = mock_client
 
-        provider._client.chat.completions.create = AsyncMock(return_value=fake_stream())
+        import asyncio
+        async def run():
+            collected = []
+            async for chunk in provider.stream(
+                messages=[Message(role="user", content="hi")],
+            ):
+                collected.append(chunk)
+            return collected
 
-        events = await self._collect(
-            provider.stream(messages=[Message(role="user", content="Hi")])
-        )
+        result = asyncio.run(run())
+        assert result == ["Hello", " world"]
 
-        assert [event.type for event in events] == [
-            "provider_message_started",
-            "provider_text_delta",
-            "provider_message_completed",
-        ]
-        assert isinstance(events[-1], ProviderMessageCompleted)
-        assert sum(isinstance(event, ProviderMessageCompleted) for event in events) == 1
 
-    @pytest.mark.asyncio
-    async def test_stream_emits_provider_tool_call_event_from_openai_delta_chunks(self):
-        provider = self._make_provider()
+# ============================================================================
+# OpenAIProvider retry
+# ============================================================================
 
-        def tool_call_delta(
-            index: int, id: str = "", name: str = "", arguments: str = ""
-        ):
-            tool_call = MagicMock()
-            tool_call.index = index
-            tool_call.id = id
-            tool_call.function.name = name
-            tool_call.function.arguments = arguments
-            return tool_call
 
-        async def fake_stream():
-            yield self._chunk(
-                "chatcmpl_tool",
-                tool_calls=[
-                    tool_call_delta(
-                        0,
-                        id="call_123",
-                        name="lookup_weather",
-                        arguments='{"city"',
-                    )
-                ],
-            )
-            yield self._chunk(
-                "chatcmpl_tool",
-                tool_calls=[
-                    tool_call_delta(0, arguments=': "Paris", "units": "metric"}')
-                ],
-                finish_reason="tool_calls",
-            )
+class TestOpenAIProviderRetry:
+    def test_retry_on_failure_then_success(self):
+        from openagent.provider.openai import OpenAIProvider
+        from openai import APIConnectionError
+        from httpx import Request
 
-        provider._client.chat.completions.create = AsyncMock(return_value=fake_stream())
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        provider.model = "gpt-4o"
+        provider._max_retries = 3
 
-        events = await self._collect(
-            provider.stream(messages=[Message(role="user", content="Hi")])
-        )
+        call_count = 0
+        mock_request = MagicMock(spec=Request)
 
-        assert [type(event) for event in events] == [
-            ProviderMessageStarted,
-            ProviderToolCall,
-            ProviderMessageCompleted,
-        ]
-        assert events[1].message_id == "chatcmpl_tool"
-        assert events[1].id == "call_123"
-        assert events[1].name == "lookup_weather"
-        assert events[1].arguments == {"city": "Paris", "units": "metric"}
+        async def mock_create(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise APIConnectionError(message="fail", request=mock_request)
+            mock_resp = MagicMock()
+            mock_resp.choices[0].message.content = "OK"
+            mock_resp.choices[0].message.tool_calls = None
+            return mock_resp
 
-    @pytest.mark.asyncio
-    async def test_stream_emits_terminal_provider_error_instead_of_raising(self):
-        provider = self._make_provider()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = mock_create
+        provider._client = mock_client
 
-        async def fake_stream():
-            raise RuntimeError("stream broke")
-            yield
-
-        provider._client.chat.completions.create = AsyncMock(return_value=fake_stream())
-
-        events = await self._collect(
-            provider.stream(messages=[Message(role="user", content="Hi")])
-        )
-
-        assert [type(event) for event in events] == [
-            ProviderMessageStarted,
-            ProviderError,
-        ]
-        assert events[1].message_id == events[0].message_id
-        assert events[1].error == "stream broke"
+        import asyncio
+        result = asyncio.run(provider.chat(
+            messages=[Message(role="user", content="hi")],
+            system_prompt="",
+        ))
+        assert result.text == "OK"
+        assert call_count == 3

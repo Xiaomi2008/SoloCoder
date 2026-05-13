@@ -6,6 +6,7 @@ Tools are organized into categories:
 - File Operations: read, write, edit, notebook_edit, glob, grep
 - Shell & Process Management: bash (bash_background, bash_output, kill_shell require agent integration)
 - Web & Search: web_search, web_fetch
+- Text Processing: awk, sed
 - Computer Use: screenshot, click, type_text, key_combination (macOS GUI automation)
 - Planning & Workflow: enter_plan_mode, exit_plan_mode
 - User Interaction: ask_user_question (requires agent integration)
@@ -21,6 +22,7 @@ Usage:
 
 from .builtin import (
     ask_user_question,
+    awk,
     bash,
     bash_background,
     bash_output,
@@ -32,6 +34,7 @@ from .builtin import (
     kill_shell,
     notebook_edit,
     read,
+    sed,
     slash_command,
     skill,
     task,
@@ -68,6 +71,9 @@ __all__ = [
     "bash_background",  # Requires agent integration
     "bash_output",      # Requires agent integration
     "kill_shell",       # Requires agent integration
+    # Text processing
+    "awk",
+    "sed",
     # Web & search (fully implemented)
     "web_search",
     "web_fetch",

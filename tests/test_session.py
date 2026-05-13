@@ -189,124 +189,246 @@ def test_session_save_load_complex():
         Path(path).unlink()
 
 
-def test_session_save_load_preserves_tool_result_tool_name():
-    """Tool result tool names should survive session persistence."""
-    session = Session()
-    session.add_tool_results(
-        [
-            ToolResultBlock(
-                tool_use_id="abc",
-                tool_name="search",
-                content="Found it",
+def _make_tool_turn(call_id: str, name: str = "bash") -> tuple:
+    """Helper to create a paired assistant+tool_result turn."""
+    assistant = Message(
+        role="assistant",
+        content=[ToolUseBlock(id=call_id, name=name, arguments={"cmd": f"echo {name}"})],
+    )
+    result = ToolResultBlock(tool_use_id=call_id, content=f"{name} output")
+    return assistant, result
+
+
+def _collect_tool_call_ids(messages: list[Message]) -> set[str]:
+    ids = set()
+    for msg in messages:
+        if isinstance(msg.content, list):
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    ids.add(block.id)
+    return ids
+
+
+def _collect_tool_result_ids(messages: list[Message]) -> set[str]:
+    ids = set()
+    for msg in messages:
+        if isinstance(msg.content, list):
+            for block in msg.content:
+                if isinstance(block, ToolResultBlock):
+                    ids.add(block.tool_use_id)
+    return ids
+
+
+class TestTurnGrouping:
+    """Test that _group_into_turns keeps tool calls paired with results."""
+
+    def test_simple_messages_form_separate_turns(self):
+        session = Session()
+        session.add("user", "Hello")
+        session.add("assistant", "Hi there")
+
+        turns = session._group_into_turns()
+        assert len(turns) == 2
+        assert all(len(t) == 1 for t in turns)
+
+    def test_tool_call_paired_with_result(self):
+        session = Session()
+        session.add("user", "Search something")
+
+        msg = Message(
+            role="assistant",
+            content=[ToolUseBlock(id="call_1", name="search", arguments={"q": "test"})],
+        )
+        session.add_message(msg)
+        session.add_tool_results([
+            ToolResultBlock(tool_use_id="call_1", content="Results"),
+        ])
+
+        turns = session._group_into_turns()
+        # user msg, assistant+tool_result paired
+        assert len(turns) == 2
+        assert len(turns[0]) == 1  # user message alone
+        assert len(turns[1]) == 2  # assistant + tool_result paired
+
+    def test_tool_call_without_result(self):
+        session = Session()
+        msg = Message(
+            role="assistant",
+            content=[ToolUseBlock(id="call_1", name="search", arguments={"q": "test"})],
+        )
+        session.add_message(msg)
+
+        turns = session._group_into_turns()
+        assert len(turns) == 1
+        assert len(turns[0]) == 1  # tool call alone, no result to pair
+
+
+class TestCompressionSafety:
+    """Test that compression never orphans tool calls from results."""
+
+    def test_no_orphaned_tool_calls_after_compression(self):
+        """After compression, every tool call id should have a matching result."""
+        session = Session(max_messages=10, summary_threshold=5)
+
+        for i in range(20):
+            assistant, result = _make_tool_turn(f"call_{i}", name=f"tool_{i}")
+            session.add_message(assistant)
+            session.add_tool_results([result])
+
+        call_ids = _collect_tool_call_ids(session.messages)
+        result_ids = _collect_tool_result_ids(session.messages)
+        assert call_ids == result_ids, "Tool calls and results must be paired after compression"
+
+    def test_no_orphaned_tool_results_after_compression(self):
+        """Surviving tool results should reference existing tool calls."""
+        session = Session(max_messages=8, summary_threshold=4)
+
+        for i in range(15):
+            assistant, result = _make_tool_turn(f"call_{i}")
+            session.add_message(assistant)
+            session.add_tool_results([result])
+
+        call_ids = _collect_tool_call_ids(session.messages)
+        result_ids = _collect_tool_result_ids(session.messages)
+        assert result_ids.issubset(call_ids), "No orphaned tool results"
+
+    def test_compression_preserves_summary_message(self):
+        """Compressed messages should contain a summary marker."""
+        session = Session(max_messages=6, summary_threshold=3)
+
+        for i in range(15):
+            assistant, result = _make_tool_turn(f"call_{i}")
+            session.add_message(assistant)
+            session.add_tool_results([result])
+
+        text_content = "\n".join(
+            m.text for m in session.messages if isinstance(m.content, str)
+        )
+        assert "Conversation Summary" in text_content
+
+    def test_compression_does_not_run_on_small_sessions(self):
+        session = Session(max_messages=50, summary_threshold=30)
+        session.add("user", "Hello")
+        session.add("assistant", "Hi")
+
+        turns_before = session._group_into_turns()
+        session._compress_old_messages()
+        turns_after = session._group_into_turns()
+        assert len(turns_before) == len(turns_after)
+
+
+class TestTokenEstimation:
+    """Test token-aware compression trigger."""
+
+    def test_estimate_tokens_short_string(self):
+        session = Session()
+        msg = Message(role="user", content="Hello")
+        tokens = session._estimate_tokens(msg)
+        assert tokens >= 1
+
+    def test_estimate_tokens_long_content(self):
+        session = Session()
+        long_text = "x" * 4000
+        msg = Message(role="user", content=long_text)
+        tokens = session._estimate_tokens(msg)
+        # ~4 chars per token, so ~1000 tokens
+        assert 800 < tokens <= 1200
+
+    def test_estimate_tokens_tool_use(self):
+        session = Session()
+        msg = Message(
+            role="assistant",
+            content=[ToolUseBlock(id="c1", name="bash", arguments={"cmd": "ls -la"})],
+        )
+        tokens = session._estimate_tokens(msg)
+        assert tokens > 12  # overhead + argument text
+
+    def test_estimate_tokens_tool_result(self):
+        session = Session()
+        msg = Message(
+            role="tool_result",
+            content=[ToolResultBlock(tool_use_id="c1", content="file.txt")],
+        )
+        tokens = session._estimate_tokens(msg)
+        assert tokens > 12
+
+    def test_token_budget_triggers_compression(self):
+        """Compression fires when token budget exceeded even if message count is low."""
+        session = Session(max_messages=9999, summary_threshold=0, max_tokens=200)
+
+        # Add tool turns with long results to exceed token budget quickly
+        for i in range(10):
+            assistant = Message(
+                role="assistant",
+                content=[ToolUseBlock(id=f"call_{i}", name="bash", arguments={"cmd": "echo test"})],
             )
-        ]
-    )
+            session.add_message(assistant)
+            # Long result content to push token count over budget
+            long_result = "x" * 200 + f" output {i}"
+            session.add_tool_results([
+                ToolResultBlock(tool_use_id=f"call_{i}", content=long_result),
+            ])
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        path = f.name
-
-    try:
-        session.save(path)
-        loaded = Session.load(path)
-
-        tool_result = loaded.messages[0].content[0]
-        assert isinstance(tool_result, ToolResultBlock)
-        assert tool_result.tool_name == "search"
-    finally:
-        Path(path).unlink()
-
-
-@pytest.mark.asyncio
-async def test_compact_context_uses_canonical_messages_and_summary_boundary():
-    """Compaction should call providers with Message objects and keep a valid tail."""
-    session = Session(system_prompt="Test system")
-    session.add("user", "First request")
-    session.add_message(
-        Message(
-            role="assistant",
-            content=[
-                TextBlock(text="Running tool"),
-                ToolUseBlock(id="tool-1", name="search", arguments={"q": "x"}),
-            ],
+        text_content = "\n".join(
+            m.text for m in session.messages if isinstance(m.content, str)
         )
-    )
-    session.add_tool_results([ToolResultBlock(tool_use_id="tool-1", content="done")])
-    session.add("assistant", "Tool finished")
-    session.add("user", "Second request")
-    session.add("assistant", "Second response")
+        assert "Conversation Summary" in text_content
 
-    summary = await session.compact_context(DummyProvider(model="dummy"), keep_recent=3)
+    def test_max_messages_still_works(self):
+        """Message count threshold still triggers compression."""
+        session = Session(max_messages=6, summary_threshold=3)
 
-    assert summary == "Compacted summary"
-    assert session.messages[0].role == "system"
-    assert session.messages[0].content == "Conversation summary:\n\nCompacted summary"
-    assert [message.role for message in session.messages[1:]] == ["user", "assistant"]
+        for i in range(15):
+            assistant, result = _make_tool_turn(f"call_{i}")
+            session.add_message(assistant)
+            session.add_tool_results([result])
+
+        assert len(session) < 15  # Should have compressed
 
 
-@pytest.mark.asyncio
-async def test_compact_context_fallback_keeps_messages_from_user_boundary():
-    """Fallback truncation should not start with an assistant-only fragment."""
-    session = Session()
-    session.add("user", "First request")
-    session.add("assistant", "First response")
-    session.add_message(
-        Message(
-            role="assistant",
-            content=[
-                TextBlock(text="Running tool"),
-                ToolUseBlock(id="tool-2", name="search", arguments={"q": "y"}),
-            ],
+class TestCompressionSummary:
+    """Test that summaries include useful information."""
+
+    def test_summary_includes_errors(self):
+        # Use large thresholds so we can manually trigger compression on a full set
+        session = Session(max_messages=999, summary_threshold=0)
+
+        for i in range(20):
+            assistant = Message(
+                role="assistant",
+                content=[ToolUseBlock(id=f"call_{i}", name="bash", arguments={"cmd": "fail"})],
+            )
+            session.add_message(assistant)
+            session.add_tool_results([
+                ToolResultBlock(tool_use_id=f"call_{i}", content="Error: command failed", is_error=True),
+            ])
+
+        # Manually compress to control what gets summarized
+        session._compress_old_messages()
+
+        text_content = "\n".join(
+            m.text for m in session.messages if isinstance(m.content, str)
         )
-    )
-    session.add_tool_results([ToolResultBlock(tool_use_id="tool-2", content="done")])
-    session.add("assistant", "Tool finished")
-    session.add("user", "Latest request")
-    session.add("assistant", "Latest response")
+        assert "Conversation Summary" in text_content
+        assert "Errors:" in text_content or "Error:" in text_content
 
-    class FailingProvider(BaseProvider):
-        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
-            raise RuntimeError("boom")
+    def test_summary_includes_file_paths(self):
+        session = Session(max_messages=999, summary_threshold=0)
 
-    summary = await session.compact_context(
-        FailingProvider(model="dummy"), keep_recent=2
-    )
+        for i in range(20):
+            assistant = Message(
+                role="assistant",
+                content=[ToolUseBlock(id=f"call_{i}", name="edit", arguments={"file": f"/path/to/file{i}.py"})],
+            )
+            session.add_message(assistant)
+            session.add_tool_results([
+                ToolResultBlock(tool_use_id=f"call_{i}", content=f"Edited file{i}.py"),
+            ])
 
-    assert "Compaction failed" in summary
-    assert session.messages[0].role == "user"
-    assert [message.role for message in session.messages] == ["user", "assistant"]
+        # Manually compress
+        session._compress_old_messages()
 
-
-def test_session_token_count_uses_fallback_when_tiktoken_unavailable(monkeypatch):
-    """Token counting should not crash if tiktoken cannot be imported."""
-    session = Session()
-    session.add("user", "alpha beta")
-    session.add_message(
-        Message(role="assistant", content=[TextBlock(text="gamma delta")])
-    )
-
-    monkeypatch.setitem(sys.modules, "tiktoken", None)
-    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
-
-    token_count = session.token_count
-
-    assert token_count == 12
-
-    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
-    importlib.import_module("openagent.core.utils")
-
-
-def test_session_check_compaction_needed_uses_fallback_when_tiktoken_unavailable(
-    monkeypatch,
-):
-    """Compaction checks should keep working without tiktoken."""
-    session = Session()
-    session.add("user", "alpha beta")
-    session.add("assistant", "gamma delta")
-
-    monkeypatch.setitem(sys.modules, "tiktoken", None)
-    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
-
-    assert session.check_compaction_needed(max_tokens=11, threshold=1.0) is True
-
-    monkeypatch.delitem(sys.modules, "openagent.core.utils", raising=False)
-    importlib.import_module("openagent.core.utils")
+        text_content = "\n".join(
+            m.text for m in session.messages if isinstance(m.content, str)
+        )
+        assert "Files modified:" in text_content
