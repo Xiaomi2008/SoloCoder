@@ -25,7 +25,7 @@ from .display import (
 
 def display_write_result(file_path: str, result_content: str) -> None:
     """Display write operation result with file info."""
-    print(f"  ➜ {bold('write')}({cyan(f'"{file_path}"')})")
+    print(f"  ➜ {bold('write')}({cyan('\"' + file_path + '\"')})")
 
     # Parse the success message to show bytes written
     if "Successfully wrote" in result_content:
