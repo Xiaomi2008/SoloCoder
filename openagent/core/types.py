@@ -12,6 +12,23 @@ class TextBlock:
 
 
 @dataclass
+class ImageBlock:
+    """Image block for vision-capable models like Qwen3.5-VL.
+
+    Supports base64-encoded images in the format:
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+    """
+    data: str  # base64-encoded image data
+    mime_type: str = "image/png"
+    type: Literal["image_url"] = "image_url"
+
+    @property
+    def url(self) -> str:
+        """Return the full data URI for the image."""
+        return f"data:{self.mime_type};base64,{self.data}"
+
+
+@dataclass
 class ToolUseBlock:
     name: str
     arguments: dict[str, Any]
@@ -28,7 +45,7 @@ class ToolResultBlock:
     type: Literal["tool_result"] = "tool_result"
 
 
-ContentBlock = Union[TextBlock, ToolUseBlock, ToolResultBlock]
+ContentBlock = Union[TextBlock, ImageBlock, ToolUseBlock, ToolResultBlock]
 
 
 @dataclass
@@ -38,12 +55,14 @@ class Message:
 
     @property
     def text(self) -> str:
+        """Get all text content, excluding images."""
         if isinstance(self.content, str):
             return self.content
         parts: list[str] = []
         for block in self.content:
-            if isinstance(block, TextBlock):
-                parts.append(block.text)
+            if isinstance(block, (TextBlock, ImageBlock)):
+                if isinstance(block, TextBlock):
+                    parts.append(block.text)
         return "\n".join(parts)
 
     @property
@@ -61,6 +80,13 @@ class Message:
     @property
     def has_tool_calls(self) -> bool:
         return len(self.tool_calls) > 0
+
+    @property
+    def has_images(self) -> bool:
+        """Check if the message contains image blocks."""
+        if isinstance(self.content, str):
+            return False
+        return any(isinstance(b, ImageBlock) for b in self.content)
 
 
 @dataclass

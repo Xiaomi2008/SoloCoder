@@ -1,30 +1,37 @@
 from openagent.apps.solocoder import CoderAgent, create_coder
 from openagent.core.agent import Agent
 from openagent.core.display import (
-    bold,
-    dim,
     blue,
-    green,
-    yellow,
-    red,
-    cyan,
-    magenta,
-    white,
+    bold,
     code,
-    user_input,
+    cyan,
     diff_addition,
     diff_deletion,
-    format_diff_output,
+    dim,
+    display_claude_code_block,
     display_code_block,
     display_diff_claude_style,
     display_tool_call_claude_style,
     display_tool_result_claude_style,
-    truncate_text,
+    format_diff_output,
     format_file_list,
     format_grep_results_claude_style,
-    display_claude_code_block,
+    green,
+    magenta,
+    red,
+    truncate_text,
+    white,
+    yellow,
 )
 from openagent.core.logging import AgentLogger, configure_logging, logger
+from openagent.core.memory import (
+    MemoryStore,
+    PatternMemory,
+    PreferenceMemory,
+    FactMemory,
+    get_memory_store,
+)
+from openagent.core.learning_extractor import LearningExtractor
 from openagent.infrastructure import McpClient
 from openagent.runtime import (
     AgentResult,
@@ -59,6 +66,12 @@ from openagent.model import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from openagent.mcp import McpClient
+from openagent.provider.anthropic import AnthropicProvider
+from openagent.provider.base import BaseProvider
+from openagent.provider.google import GoogleProvider
+from openagent.provider.ollama import OllamaProvider
+from openagent.provider.openai import OpenAIProvider
 
 __all__ = [
     # Core classes
@@ -67,6 +80,13 @@ __all__ = [
     "Session",
     "McpClient",
     "ToolRegistry",
+    # Memory and learning
+    "MemoryStore",
+    "PatternMemory",
+    "PreferenceMemory",
+    "FactMemory",
+    "get_memory_store",
+    "LearningExtractor",
     # Providers
     "AnthropicProvider",
     "BaseProvider",

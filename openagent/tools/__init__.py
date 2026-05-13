@@ -6,8 +6,11 @@ Tools are organized into categories:
 - File Operations: read, write, edit, notebook_edit, glob, grep
 - Shell & Process Management: bash (bash_background, bash_output, kill_shell require agent integration)
 - Web & Search: web_search, web_fetch
+- Text Processing: awk, sed
+- Computer Use: screenshot, click, type_text, key_combination (macOS GUI automation)
 - Planning & Workflow: enter_plan_mode, exit_plan_mode
 - User Interaction: ask_user_question (requires agent integration)
+- Memory & Learning: recall (auto-registered when auto_learn=True)
 
 Usage:
     from openagent.tools import read, write, edit, glob, grep, web_search, web_search
@@ -20,6 +23,7 @@ Usage:
 
 from .builtin import (
     ask_user_question,
+    awk,
     bash,
     bash_background,
     bash_output,
@@ -31,15 +35,28 @@ from .builtin import (
     kill_shell,
     notebook_edit,
     read,
+    recall,
+    sed,
     slash_command,
     skill,
-    task,
     todo_list,
     todo_update,
     todo_write,
     web_fetch,
     web_search,
     write,
+)
+from .computer_use import (
+    click,
+    double_click,
+    get_screen_resolution,
+    get_screenshot_info,
+    key_combination,
+    move_mouse,
+    screenshot,
+    scroll,
+    type_text,
+    wait,
 )
 
 __all__ = [
@@ -55,11 +72,23 @@ __all__ = [
     "bash_background",  # Requires agent integration
     "bash_output",      # Requires agent integration
     "kill_shell",       # Requires agent integration
+    # Text processing
+    "awk",
+    "sed",
     # Web & search (fully implemented)
     "web_search",
     "web_fetch",
-    # Agent orchestration (requires agent integration)
-    "task",
+    # Computer use (macOS GUI automation with Qwen3.5 vision)
+    "screenshot",
+    "click",
+    "double_click",
+    "type_text",
+    "key_combination",
+    "move_mouse",
+    "scroll",
+    "get_screen_resolution",
+    "get_screenshot_info",
+    "wait",
     # Planning & workflow with task manager
     "todo_write",
     "todo_update",
@@ -71,4 +100,6 @@ __all__ = [
     # Extensibility (requires agent integration)
     "skill",
     "slash_command",
+    # Memory & learning
+    "recall",
 ]

@@ -142,3 +142,19 @@ class AgentLogger:
     def max_turns_reached(self) -> None:
         """Log when max turns is reached."""
         self._logger.warning("Max turns reached, returning last response")
+
+    def info(self, message: str) -> None:
+        """Log info message."""
+        self._logger.info(message)
+
+    def debug(self, message: str) -> None:
+        """Log debug message."""
+        self._logger.debug(message)
+
+    def warning(self, message: str) -> None:
+        """Log warning message."""
+        self._logger.warning(message)
+
+    def error(self, message: str) -> None:
+        """Log error message."""
+        self._logger.error(message)
