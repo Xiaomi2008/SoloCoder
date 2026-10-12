@@ -79,7 +79,7 @@ class FakeClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def get(self, url):
+    async def get(self, url, headers=None):
         if url in self.routes:
             return FakeResponse(self.routes[url])
         raise ConnectionRefusedError("no server")

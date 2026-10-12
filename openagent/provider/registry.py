@@ -7,6 +7,7 @@ OpenAI-compatible server needs no new code — only a new endpoint entry.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -192,6 +193,114 @@ CLOUD_ENDPOINTS: tuple[EndpointSpec, ...] = (
 )
 
 
+WIRE_APIS_BY_NAME = {w.value: w for w in WireAPI}
+
+# Discovery path per wire API, relative to base_url (which for OpenAI-compatible
+# servers already ends in /v1).
+_DISCOVER_PATHS = {
+    WireAPI.OPENAI_CHAT: "/models",
+    WireAPI.OPENAI_RESPONSES: "/models",
+    WireAPI.ANTHROPIC_MESSAGES: "/v1/models",
+    WireAPI.OLLAMA_CHAT: "/api/tags",
+}
+
+_NAME_RE = re.compile(r"[a-z][a-z0-9_-]*\Z")
+
+BUILTIN_PROVIDERS: tuple[str, ...] = tuple(
+    sorted({e.provider for e in (*LOCAL_ENDPOINTS, *CLOUD_ENDPOINTS)})
+)
+
+
+def spec_from_config(entry: dict[str, Any]) -> EndpointSpec:
+    """Build an endpoint from a user config entry.
+
+    Validation is deliberately strict: a typo in ``base_url`` shows up much later
+    as a mysterious connection error inside the SDK, far from its cause.
+    """
+    name = str(entry.get("name") or "").strip().lower()
+    if not _NAME_RE.match(name):
+        raise ValueError(
+            f"endpoint name {entry.get('name')!r}: use lowercase letters, digits, '-' and '_'"
+        )
+    base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise ValueError(
+            f"{name}: base_url must start with http:// or https://, got {entry.get('base_url')!r}"
+        )
+    wire_name = str(entry.get("wire_api") or "openai-chat")
+    wire = WIRE_APIS_BY_NAME.get(wire_name)
+    if wire is None:
+        raise ValueError(
+            f"{name}: unknown wire_api {wire_name!r}; known: {', '.join(sorted(WIRE_APIS_BY_NAME))}"
+        )
+    requires_key = entry.get("requires_key", True) is not False
+    caps = Capabilities(
+        tools=bool(entry.get("tools", True)),
+        vision=bool(entry.get("vision", False)),
+        streaming=True,
+        context_window=int(entry.get("context_window", 32768)),
+        max_output_tokens=int(entry.get("max_output_tokens", 8192)),
+    )
+    return EndpointSpec(
+        provider=name,
+        label=str(entry.get("label") or name),
+        wire_api=wire,
+        # A key-protected LAN server is still an API-key endpoint: 'local' is a
+        # privacy claim about where inference runs, not an auth mode.
+        auth_mode=AuthMode.API_KEY if requires_key else AuthMode.LOCAL,
+        base_url=base_url,
+        discover_path=_DISCOVER_PATHS.get(wire),
+        default_model=str(entry.get("default_model") or ""),
+        default_caps=caps,
+        local=bool(entry.get("local", False)),
+    )
+
+
+def custom_specs(config: Any = None) -> list[EndpointSpec]:
+    """User-added endpoints from config. A bad entry is skipped, not fatal:
+    one typo must not take the whole model layer down."""
+    from openagent.core.config import get_config
+
+    cfg = config if config is not None else get_config()
+    specs: list[EndpointSpec] = []
+    for entry in getattr(cfg.models, "custom_endpoints", []) or []:
+        try:
+            specs.append(spec_from_config(entry))
+        except (ValueError, TypeError) as exc:
+            logger.warning(f"Ignoring custom model endpoint: {exc}")
+    return specs
+
+
+def add_endpoint_config(entry: dict[str, Any]) -> None:
+    """Persist a custom endpoint (replacing one with the same name)."""
+    from openagent.core.config import ConfigManager, get_config
+
+    spec = spec_from_config(entry)  # validate before writing
+    if spec.provider in BUILTIN_PROVIDERS:
+        raise ValueError(
+            f"'{spec.provider}' is a built-in provider; pick another name "
+            "(or point a built-in at your host with its env var, e.g. LMSTUDIO_BASE_URL)"
+        )
+    entries = [dict(e) for e in get_config().models.custom_endpoints if e.get("name") != spec.provider]
+    entries.append({k: v for k, v in entry.items() if v is not None} | {"name": spec.provider, "base_url": spec.base_url})
+    ConfigManager.update_config(custom_endpoints=entries)
+
+
+def remove_endpoint_config(name: str) -> bool:
+    """Drop a custom endpoint. Built-ins cannot be removed."""
+    from openagent.core.config import ConfigManager, get_config
+
+    name = str(name or "").strip().lower()
+    if name in BUILTIN_PROVIDERS:
+        raise ValueError(f"'{name}' is a built-in provider and cannot be removed")
+    entries = [dict(e) for e in get_config().models.custom_endpoints]
+    kept = [e for e in entries if str(e.get("name", "")).lower() != name]
+    if len(kept) == len(entries):
+        return False
+    ConfigManager.update_config(custom_endpoints=kept)
+    return True
+
+
 class ProviderRegistry:
     """Endpoint table + adapter factory."""
 
@@ -201,7 +310,14 @@ class ProviderRegistry:
         endpoints: list[EndpointSpec] | None = None,
     ) -> None:
         self.broker = broker or AuthBroker()
-        table = endpoints if endpoints is not None else [*LOCAL_ENDPOINTS, *CLOUD_ENDPOINTS]
+        # Custom endpoints come last so a user entry can override a built-in of
+        # the same name (add_endpoint_config refuses that; this is the escape
+        # hatch for hand-edited config).
+        table = (
+            endpoints
+            if endpoints is not None
+            else [*LOCAL_ENDPOINTS, *CLOUD_ENDPOINTS, *custom_specs()]
+        )
         self._endpoints: dict[str, EndpointSpec] = {e.provider: e for e in table}
 
     # ------------------------------------------------------------- endpoints

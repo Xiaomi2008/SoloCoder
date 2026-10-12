@@ -40,6 +40,12 @@ class ModelConfig:
     policy: str = "local_first"  # local_first | cloud_first | cheapest_capable | privacy_lock | fixed
     default_model: str = ""
     roles: dict[str, str] = field(default_factory=dict)
+    # User-added model servers, e.g.
+    #   {"name": "nas", "base_url": "http://192.168.4.34:8080/v1",
+    #    "wire_api": "openai-chat", "local": True, "label": "NAS box"}
+    # ``local: True`` means "inference stays on my network", which is what lets
+    # privacy_lock accept a LAN server the user owns.
+    custom_endpoints: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -63,6 +69,7 @@ class Config:
                 "policy": self.models.policy,
                 "default_model": self.models.default_model,
                 "roles": dict(self.models.roles),
+                "custom_endpoints": [dict(e) for e in self.models.custom_endpoints],
             },
         }
 
@@ -339,6 +346,9 @@ class ConfigManager:
                         policy=data.get("models", {}).get("policy", "local_first"),
                         default_model=data.get("models", {}).get("default_model", ""),
                         roles=dict(data.get("models", {}).get("roles") or {}),
+                        custom_endpoints=[
+                            dict(e) for e in (data.get("models", {}).get("custom_endpoints") or [])
+                        ],
                     ),
                 )
                 logger.info(f"Loaded config from {cls.CONFIG_FILE}")
@@ -380,10 +390,15 @@ class ConfigManager:
             config.models.default_model = kwargs["default_model"]
         if "roles" in kwargs:
             config.models.roles = dict(kwargs["roles"] or {})
+        if "custom_endpoints" in kwargs:
+            config.models.custom_endpoints = [dict(e) for e in (kwargs["custom_endpoints"] or [])]
         if "role" in kwargs and "model" in kwargs:
             config.models.roles = {**config.models.roles, kwargs["role"]: kwargs["model"]}
 
         cls.save_config(config)
+        # Keep the process-wide instance in step with the file: the Mac app
+        # writes settings and then reads get_config() in the same process.
+        reload_config()
         return config
 
 
@@ -416,6 +431,13 @@ def init_config() -> Config:
             f"\n  openagent config set-api-key tavily <your-api-key>"
         )
 
+    return _config
+
+
+def reload_config() -> Config:
+    """Re-read the config file into the global instance."""
+    global _config
+    _config = ConfigManager.load_config()
     return _config
 
 

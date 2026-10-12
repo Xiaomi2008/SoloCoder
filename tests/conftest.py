@@ -10,6 +10,22 @@ import pytest
 from openagent.core.types import Message, TextBlock, ToolDef, ToolUseBlock
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """Point the config file at a temp dir for every test.
+
+    ``ProviderRegistry`` reads the user's config (custom model servers live
+    there), so without this the suite sees the developer's own servers and can
+    write to their config file. Same reason the Keychain is never touched.
+    """
+    from openagent.core import config as cfg
+
+    monkeypatch.setattr(cfg.ConfigManager, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(cfg, "_config", None)
+    yield
+    monkeypatch.setattr(cfg, "_config", None)
+
+
 class MockProvider:
     """Mock provider for testing without real API calls."""
 

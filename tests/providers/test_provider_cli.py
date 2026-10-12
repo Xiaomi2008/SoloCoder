@@ -82,7 +82,7 @@ def test_models_list_reports_when_no_server_is_running(parser, capsys, monkeypat
 
     monkeypatch.setattr(cli.ModelCatalog, "discover", no_servers)
     cli.handle_models(parser.parse_args(["models", "list", "--discover"]))
-    assert "No local model servers responded" in capsys.readouterr().out
+    assert "No model server answered" in capsys.readouterr().out
 
 
 def test_models_use_writes_the_default_model(parser, monkeypatch):

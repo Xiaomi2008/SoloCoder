@@ -17,6 +17,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -62,6 +63,9 @@ class ModelCatalog:
         self.registry = registry or ProviderRegistry()
         self._discovered: dict[str, list[ModelRef]] = {}
         self._probed: dict[str, ProbeResult] = {}
+        # provider -> one-line reason, filled by discover(). "No models" is not a
+        # diagnosis; a server that wants a key must say so.
+        self.discovery_errors: dict[str, str] = {}
 
     # ------------------------------------------------------------- built-ins
 
@@ -120,18 +124,23 @@ class ModelCatalog:
             if provider
             else list(self.registry.local_endpoints())
         )
+        self.discovery_errors = {}
 
         async def one(spec: Any) -> tuple[str, list[ModelRef]]:
             base = self.registry.base_url_for(spec)
             if not base or not spec.discover_path:
                 return spec.provider, []
             url = f"{base.rstrip('/')}{spec.discover_path}"
+            headers = self._discovery_headers(spec.provider)
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.get(url)
+                    response = await client.get(url, headers=headers)
                     response.raise_for_status()
                     payload = response.json()
             except Exception as exc:
+                # Silent failure here costs an hour: "no models" is a very
+                # different problem when the server wants a key.
+                self.discovery_errors[spec.provider] = _discovery_error(spec, url, exc, timeout)
                 logger.debug(f"Discovery failed for {spec.provider} at {url}: {exc}")
                 return spec.provider, []
 
@@ -150,6 +159,16 @@ class ModelCatalog:
         for provider_key, refs in results:
             self._discovered[provider_key] = refs
         return {k: v for k, v in results if v}
+
+    def _discovery_headers(self, provider: str) -> dict[str, str]:
+        """A key-protected server is undiscoverable without its stored key."""
+        try:
+            creds = self.registry.broker.load_credentials(provider)
+        except Exception as exc:  # a broken credential must not break discovery
+            logger.debug(f"Discovery credentials for {provider} unavailable: {exc}")
+            return {}
+        token = getattr(creds, "bearer_token", None) or getattr(creds, "api_key", None)
+        return {"Authorization": f"Bearer {token}"} if token else {}
 
     # ----------------------------------------------------------------- probe
 
@@ -204,6 +223,18 @@ class ModelCatalog:
     def clear(self) -> None:
         self._discovered.clear()
         self._probed.clear()
+
+
+def _discovery_error(spec: Any, url: str, exc: Exception, timeout: float) -> str:
+    """Turn a discovery failure into one line the user can act on."""
+    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+    if status in (401, 403):
+        return f"{url} needs an API key — store it with: auth login {spec.provider} --api-key <key>"
+    if status == 404:
+        return f"{url} returned 404 — no model list at that path"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{url} did not answer within {timeout:g}s"
+    return f"{urlsplit(url).netloc} is not answering — is the server running?"
 
 
 def _parse_listing(wire_api: WireAPI, payload: Any) -> list[DiscoveredModel]:

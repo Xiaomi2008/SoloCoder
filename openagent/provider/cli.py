@@ -17,7 +17,13 @@ from openagent.provider.auth.spec import ANTHROPIC_OAUTH, OPENAI_OAUTH, all_spec
 from openagent.provider.auth.tokens import AuthRequired, AuthStatus
 from openagent.provider.catalog import ModelCatalog
 from openagent.provider.model_ref import AuthMode, ModelRef
-from openagent.provider.registry import ProviderRegistry
+from openagent.provider.registry import (
+    BUILTIN_PROVIDERS,
+    WIRE_APIS_BY_NAME,
+    ProviderRegistry,
+    add_endpoint_config,
+    remove_endpoint_config,
+)
 from openagent.provider.router import ModelRouter, RoutingPolicy
 
 # Friendly aliases so `auth login claude` does the obvious thing.
@@ -77,6 +83,37 @@ def add_subcommands(subparsers: Any) -> None:
         help="Routing policy to use from now on",
     )
 
+    add_ep = models_sub.add_parser(
+        "add-endpoint",
+        help="Register your own model server (LM Studio, llama.cpp, LiteLLM, a NAS box…)",
+    )
+    add_ep.add_argument("name", help="short lowercase id, e.g. nas — becomes the 'nas/model' prefix")
+    add_ep.add_argument("--base-url", required=True, help="e.g. http://192.168.4.34:8080/v1")
+    add_ep.add_argument(
+        "--wire-api",
+        choices=tuple(sorted(WIRE_APIS_BY_NAME)),
+        default="openai-chat",
+        help="dialect the server speaks (default: openai-chat)",
+    )
+    add_ep.add_argument("--label", help="display name")
+    add_ep.add_argument("--default-model", dest="default_model", help="model id to offer first")
+    add_ep.add_argument(
+        "--no-key",
+        dest="requires_key",
+        action="store_false",
+        default=True,
+        help="server needs no API key",
+    )
+    add_ep.add_argument(
+        "--local",
+        action="store_true",
+        help="inference stays on your network — lets privacy_lock use it",
+    )
+    add_ep.add_argument("--context-window", dest="context_window", type=int, default=32768)
+
+    remove_ep = models_sub.add_parser("remove-endpoint", help="Forget a custom model server")
+    remove_ep.add_argument("name")
+
 
 # ---------------------------------------------------------------------- auth
 
@@ -89,7 +126,7 @@ async def handle_auth_async(args: argparse.Namespace) -> int:
     broker = AuthBroker()
 
     if args.auth_action == "status":
-        return _print_status(broker)
+        return _print_status(broker, ProviderRegistry())
 
     provider = _provider_key(args.provider)
 
@@ -106,7 +143,7 @@ async def handle_auth_async(args: argparse.Namespace) -> int:
     return 2
 
 
-def _print_status(broker: AuthBroker) -> int:
+def _print_status(broker: AuthBroker, registry: ProviderRegistry | None = None) -> int:
     rows = broker.status()
     print("\nAPI keys (officially supported)\n")
     for row in rows:
@@ -127,21 +164,50 @@ def _print_status(broker: AuthBroker) -> int:
             print(f"  ✓ {row.label:34} signed in{suffix}{expiry}")
         else:
             print(f"  ✗ {row.label:34} not signed in")
+
+    registry = registry or ProviderRegistry()
+    custom = [e for e in registry.endpoints.values() if e.provider not in BUILTIN_PROVIDERS]
+    if custom:
+        print("\nYour model servers\n")
+        for e in custom:
+            creds = broker.load_credentials(e.provider)
+            has_key = bool(getattr(creds, "api_key", None) or getattr(creds, "bearer_token", None))
+            if has_key:
+                mark, where = "✓", "key set"
+            elif e.auth_mode is AuthMode.LOCAL:
+                mark, where = "✓", "no key needed"
+            else:
+                mark, where = "✗", "no key yet"
+            scope = "local network" if e.local else "remote"
+            print(f"  {mark} {e.label:20} {e.provider:12} {e.base_url}  {where}, {scope}")
+
     print()
     return 0
 
 
 def _login_api_key(broker: AuthBroker, provider: str, api_key: str | None) -> int:
     spec = API_KEY_PROVIDERS.get(provider)
-    if spec is None:
-        print(f"Unknown provider '{provider}'. Known: {', '.join(sorted(API_KEY_PROVIDERS))}")
-        return 2
-    key = api_key or getpass.getpass(f"{spec.label} API key: ").strip()
+    if spec is not None:
+        label = spec.label
+    else:
+        # A user-added server (`models add-endpoint`) is a valid key target.
+        try:
+            endpoint = ProviderRegistry().endpoint(provider)
+        except KeyError as exc:
+            print(f"Unknown provider '{provider}'.")
+            print(f"Known: {', '.join(sorted(API_KEY_PROVIDERS))}, plus your custom endpoints.")
+            return 2
+        if endpoint.auth_mode is not AuthMode.API_KEY:
+            print(f"'{provider}' needs no API key (auth mode: {endpoint.auth_mode}); nothing saved.")
+            return 2
+        label = endpoint.label
+
+    key = api_key or getpass.getpass(f"{label} API key: ").strip()
     if not key:
         print("No key provided; nothing saved.")
         return 2
-    broker.save_api_key(provider, key, label=spec.label)
-    print(f"Saved {spec.label} key to the macOS Keychain.")
+    broker.save_api_key(provider, key, label=label)
+    print(f"Saved {label} key to the macOS Keychain.")
     return 0
 
 
@@ -189,9 +255,11 @@ async def handle_models_async(args: argparse.Namespace) -> int:
             found = await catalog.discover()
             running = len(found)
             print(
-                f"Discovered models from {running} local server(s)"
-                if running else "No local model servers responded (LM Studio, Ollama, MLX, llama.cpp, vLLM)."
+                f"Discovered models from {running} model server(s)"
+                if running else "No model server answered (LM Studio, Ollama, MLX, llama.cpp, vLLM, your endpoints)."
             )
+            for provider, reason in sorted(catalog.discovery_errors.items()):
+                print(f"  ! {provider}: {reason}")
         refs = catalog.all_models()
         _print_models(refs)
         _print_default(registry, catalog)
@@ -211,7 +279,56 @@ async def handle_models_async(args: argparse.Namespace) -> int:
     if args.models_action == "use":
         return _use(catalog, args.key, getattr(args, "role", None), getattr(args, "policy", None))
 
+    if args.models_action == "add-endpoint":
+        return _add_endpoint(args)
+
+    if args.models_action == "remove-endpoint":
+        return _remove_endpoint(args)
+
     return 2
+
+
+def _add_endpoint(args: argparse.Namespace) -> int:
+    entry = {
+        "name": args.name,
+        "base_url": args.base_url,
+        "wire_api": args.wire_api,
+        "label": args.label or args.name,
+        "default_model": args.default_model or "",
+        "requires_key": args.requires_key,
+        "local": args.local,
+        "context_window": args.context_window,
+    }
+    try:
+        add_endpoint_config(entry)
+    except ValueError as exc:
+        print(f"Cannot add endpoint: {exc}")
+        return 2
+
+    print(f"Added endpoint '{entry['name']}' at {entry['base_url']} ({entry['wire_api']}).")
+    if entry["requires_key"]:
+        print(f"  Store its key with: auth login {entry['name']} --api-key <key>")
+    if not entry["local"]:
+        print(
+            "  Marked remote: privacy_lock will not route to it. If inference stays on\n"
+            "  your network, re-add with --local."
+        )
+    print("  Discover its models with: models list --discover")
+    return 0
+
+
+def _remove_endpoint(args: argparse.Namespace) -> int:
+    try:
+        removed = remove_endpoint_config(args.name)
+    except ValueError as exc:
+        print(f"Cannot remove endpoint: {exc}")
+        return 2
+    if not removed:
+        print(f"No custom endpoint named '{args.name}'.")
+        return 1
+    print(f"Removed endpoint '{args.name}'. Its key stays in the Keychain; "
+          f"clear it with: auth logout {args.name}")
+    return 0
 
 
 def _run(coro) -> int:

@@ -22,7 +22,16 @@ from openagent.provider.model_ref import (
     ModelRef,
     WireAPI,
 )
-from openagent.provider.registry import EndpointSpec, ProviderRegistry
+from openagent.provider.registry import (
+    BUILTIN_PROVIDERS,
+    EndpointSpec,
+    ProviderDependencyError,
+    ProviderRegistry,
+    add_endpoint_config,
+    custom_specs,
+    remove_endpoint_config,
+    spec_from_config,
+)
 from openagent.provider.catalog import ModelCatalog, ProbeResult
 from openagent.provider.router import ModelRouter, NoCapableModel, RoutingPolicy, RoutingRules
 from openagent.provider.auth import (
@@ -41,6 +50,7 @@ __all__ = [
     "AuthRequired",
     "AuthStatus",
     "BaseProvider",
+    "BUILTIN_PROVIDERS",
     "Capabilities",
     "CostHint",
     "CostKind",
@@ -56,6 +66,7 @@ __all__ = [
     "OpenAIProvider",
     "OpenAIResponsesProvider",
     "ProbeResult",
+    "ProviderDependencyError",
     "ProviderError",
     "ProviderMessageCompleted",
     "ProviderMessageStarted",
@@ -69,4 +80,8 @@ __all__ = [
     "MessageConverterMixin",
     "TokenSet",
     "WireAPI",
+    "add_endpoint_config",
+    "custom_specs",
+    "remove_endpoint_config",
+    "spec_from_config",
 ]
