@@ -135,14 +135,18 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             bash_manager=bash_manager or get_bash_manager(),
             task_manager=task_manager or get_task_manager(),
             skill_manager=skill_manager or get_skill_manager(),
+            working_dir=working_dir,
         )
-
-        self._working_dir = working_dir or str(Path.cwd())
 
     @property
     def working_dir(self) -> str:
         """Get the current working directory."""
         return self._working_dir
+
+    @working_dir.setter
+    def working_dir(self, value: str | None) -> None:
+        # Tools resolve relative paths against this, so it is the session scope.
+        self._working_dir = str(Path(value).expanduser().resolve()) if value else str(Path.cwd())
 
     async def run(
         self,
@@ -161,7 +165,7 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             The agent's response
         """
         if working_dir:
-            self._working_dir = working_dir
+            self.working_dir = working_dir
         return await super().run(user_input, **kwargs)
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from pathlib import Path
 from typing import Any, Callable, get_type_hints
 from dataclasses import dataclass
 
@@ -26,7 +27,7 @@ def _build_parameters_schema(func: Callable[..., Any]) -> dict[str, Any]:
     for name, param in sig.parameters.items():
         if name == "self":
             continue
-        if name == "context":
+        if name in _INJECTED_PARAMS:
             continue
         hint = hints.get(name, str)
         json_type = PYTHON_TYPE_TO_JSON.get(hint, "string")
@@ -64,6 +65,36 @@ def tool(
 
 
 @dataclass
+class ToolContext:
+    """Per-session facts a tool needs and the model must not be asked for.
+
+    The model addresses files by path; the *session* decides what a relative
+    path means. Before this, ``Agent(working_dir=...)`` was decorative: every
+    tool resolved paths against ``Path.cwd()``, so a coding agent scoped to a
+    project wrote its files into whatever directory the process happened to
+    start in — in a .app bundle, that is inside the app.
+    """
+
+    working_dir: str | None = None
+
+    def resolve(self, path: str | Path | None = None) -> Path:
+        """Absolute path for ``path``, anchored at the session directory."""
+        base = (
+            Path(self.working_dir).expanduser().resolve()
+            if self.working_dir
+            else Path.cwd()
+        )
+        if path is None or str(path) == "":
+            return base
+        candidate = Path(path).expanduser()
+        return candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()
+
+
+# Parameters the harness fills in; they must never reach the model's schema.
+_INJECTED_PARAMS = frozenset({"context", "tool_context"})
+
+
+@dataclass
 class ToolEntry:
     name: str
     description: str
@@ -82,6 +113,13 @@ async def _execute_tool_entry(
 
         if context is not None and "context" in inspect.signature(func).parameters:
             arguments["context"] = context
+
+        # A tool that asks for the session context always gets one: a default
+        # ToolContext means "the process directory", which is the old behaviour.
+        if "tool_context" in inspect.signature(func).parameters:
+            arguments["tool_context"] = (
+                context if isinstance(context, ToolContext) else ToolContext()
+            )
 
         if inspect.iscoroutinefunction(func):
             result = await func(**arguments)

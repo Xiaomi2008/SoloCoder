@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from ..core.tool import tool
+from ..core.tool import ToolContext, tool
 
 
 # ============================================================================
@@ -26,6 +26,7 @@ def read(
     path: str,
     line_start: int | None = None,
     line_end: int | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Read files (including images) by absolute path.
 
@@ -37,7 +38,7 @@ def read(
     Returns:
         File contents as string, or base64-encoded image data for image files
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -88,6 +89,7 @@ def write(
     path: str,
     content: str,
     create_parents: bool = True,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Create or overwrite files.
 
@@ -99,7 +101,7 @@ def write(
     Returns:
         Success message with file size
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -128,6 +130,7 @@ def edit(
     find: str,
     replace: str,
     expected_replacements: int | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Make targeted edits to existing files using find-and-replace.
 
@@ -140,7 +143,7 @@ def edit(
     Returns:
         Result message with number of replacements and unified diff showing changes
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -206,6 +209,7 @@ def notebook_edit(
     cell_index: int,
     new_source: str,
     cell_type: str = "code",
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Edit Jupyter notebook cells.
 
@@ -218,7 +222,7 @@ def notebook_edit(
     Returns:
         Result message with cell update info
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -263,19 +267,19 @@ def notebook_edit(
 
 
 @tool
-def glob(pattern: str, path: str | None = None, max_results: int = 100) -> str:
+def glob(pattern: str, path: str | None = None, max_results: int = 100, tool_context: ToolContext | None = None) -> str:
     """Search for files by pattern (replaces find/ls).
 
     Args:
         pattern: Glob pattern to search for (e.g., "*.py", "**/*.md")
-        path: Base directory to search in. If None, searches current working directory.
+        path: Base directory to search in. If None, searches the session's working directory.
               For security, this should be within the project folder.
         max_results: Maximum number of results to return (default: 100)
 
     Returns:
         Newline-separated list of matching file paths
     """
-    base = Path(path).resolve() if path else Path.cwd()
+    base = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -314,6 +318,7 @@ def grep(
     regex: bool = True,
     max_results: int = 50,
     context_lines: int = 2,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Search file contents by keyword/regex (replaces grep/rg).
 
@@ -328,7 +333,7 @@ def grep(
     Returns:
         Formatted search results with file paths, line numbers, and matching content
     """
-    base = Path(path).resolve() if path else Path.cwd()
+    base = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -431,6 +436,7 @@ def bash(
     timeout: int | None = None,
     background: bool = False,
     working_dir: str | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Execute shell commands with optional timeout and background execution.
 
@@ -439,7 +445,8 @@ def bash(
         timeout: Optional timeout in seconds. If exceeded, process is terminated.
         background: If True, run asynchronously and return immediately with session ID.
                    Use bash_output to retrieve results later.
-        working_dir: Working directory for the command. If None, uses current directory.
+        working_dir: Working directory for the command. If None, uses the session's
+                   working directory (the agent's project), not the process directory.
 
     Returns:
         Command output (stdout), or session ID for background processes
@@ -450,9 +457,9 @@ def bash(
 
     try:
         # Set up working directory
-        cwd = Path(working_dir).resolve() if working_dir else None
-        if cwd and not cwd.exists():
-            return f"Error: Working directory '{working_dir}' does not exist."
+        cwd = (tool_context or ToolContext()).resolve(working_dir)
+        if not cwd.exists():
+            return f"Error: Working directory '{working_dir or cwd}' does not exist."
 
         # Security check: ensure working_dir is within allowed directory if set
         import os
@@ -653,12 +660,14 @@ def sed(
 def bash_background(
     command: str,
     working_dir: str | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Start a background shell session and execute commands.
 
     Args:
         command: Shell command to execute in the background session
-        working_dir: Working directory for the session. If None, uses current directory.
+        working_dir: Working directory for the session. If None, uses the session's
+                   working directory.
 
     Returns:
         Session ID for tracking the background process
@@ -667,11 +676,12 @@ def bash_background(
 
     try:
         manager = get_bash_manager()
+        session_dir = working_dir or (tool_context.working_dir if tool_context else None)
         # Run the async function in a new event loop if needed
         session_id = asyncio.run(
-            manager.start_session(command=command, working_dir=working_dir)
+            manager.start_session(command=command, working_dir=session_dir)
         )
-        return f"Started bash session '{session_id}' in '{working_dir or '.'}'. Use bash_output to retrieve output."
+        return f"Started bash session '{session_id}' in '{session_dir or '.'}'. Use bash_output to retrieve output."
     except Exception as e:
         return f"Error starting bash session: {e}"
 

@@ -42,7 +42,7 @@ from openagent.core.memory import (
 )
 from openagent.core.learning_extractor import LearningExtractor
 from openagent.core.session import Session
-from openagent.core.tool import ToolRegistry, tool
+from openagent.core.tool import ToolContext, ToolRegistry, tool
 from openagent.infrastructure import McpClient
 from openagent.model import (
     ContentBlock,
@@ -86,6 +86,7 @@ __all__ = [
     "CoderAgent",
     "Session",
     "McpClient",
+    "ToolContext",
     "ToolRegistry",
     # Memory and learning
     "MemoryStore",

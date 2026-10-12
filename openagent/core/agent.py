@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Callable
 
 # Changed imports for core modules
@@ -176,7 +177,7 @@ from .skill_manager import (
     get_skill_manager,
 )
 from .task_manager import TaskManager, get_task_manager
-from .tool import ToolRegistry, tool
+from .tool import ToolContext, ToolRegistry, tool
 from .types import Message, ToolResultBlock
 from openagent.runtime.agent import RuntimeAgent
 from openagent.runtime.loop import (
@@ -210,12 +211,15 @@ class Agent:
         task_manager: TaskManager | None = None,
         skill_manager: SkillManager | None = None,
         mcp_client: Any | None = None,  # MCP client for tool discovery
+        working_dir: str | None = None,
     ) -> None:
         self.provider = provider
         self.session = Session(system_prompt=system_prompt)
         self.max_turns = max_turns
         self.tool_registry = ToolRegistry()
         self._logger = AgentLogger(agent_id)
+        # The directory relative tool paths mean. Sub-agents inherit it.
+        self.working_dir = str(Path(working_dir).expanduser().resolve()) if working_dir else str(Path.cwd())
 
         # Initialize managers (use provided or create new instances)
         self.bash_manager = bash_manager or get_bash_manager()
@@ -233,6 +237,11 @@ class Agent:
         self._mcp_client = mcp_client
         if mcp_client is not None:
             asyncio.run(self._integrate_mcp_tools())
+
+    @property
+    def tool_context(self) -> ToolContext:
+        """What tools get for this session (the model never sees it)."""
+        return ToolContext(working_dir=self.working_dir)
 
     async def _integrate_mcp_tools(self) -> None:
         """Discover and integrate MCP tools from the client."""
@@ -466,7 +475,10 @@ class Agent:
             for tc in response.tool_calls:
                 display_tool_call_claude_style(tc.name, tc.arguments)
 
-            tool_tasks = [self.tool_registry.execute(tc) for tc in response.tool_calls]
+            tool_tasks = [
+                self.tool_registry.execute(tc, context=self.tool_context)
+                for tc in response.tool_calls
+            ]
             results = await asyncio.gather(*tool_tasks)
 
             # Log results in Claude Code style with diff highlighting for code changes

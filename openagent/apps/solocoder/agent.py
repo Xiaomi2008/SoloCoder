@@ -122,9 +122,9 @@ class CoderAgent(BaseAgent):
             bash_manager=bash_manager or get_bash_manager(),
             task_manager=task_manager or get_task_manager(),
             skill_manager=skill_manager or get_skill_manager(),
+            working_dir=working_dir,
         )
 
-        self._working_dir = working_dir or str(Path.cwd())
         self.max_context_tokens = max_context_tokens
         self.compact_threshold = compact_threshold
         self.disable_compaction = disable_compaction
@@ -133,6 +133,12 @@ class CoderAgent(BaseAgent):
     def working_dir(self) -> str:
         return self._working_dir
 
+    @working_dir.setter
+    def working_dir(self, value: str | None) -> None:
+        # The agent owns the session directory; tools resolve relative paths
+        # against it, so a run() override must move the scope, not just a label.
+        self._working_dir = str(Path(value).expanduser().resolve()) if value else str(Path.cwd())
+
     async def run(
         self,
         user_input: str,
@@ -140,7 +146,7 @@ class CoderAgent(BaseAgent):
         **kwargs: Any,
     ) -> str:
         if working_dir:
-            self._working_dir = working_dir
+            self.working_dir = working_dir
         kwargs.setdefault("max_context_tokens", self.max_context_tokens)
         kwargs.setdefault("compact_threshold", self.compact_threshold)
         kwargs.setdefault("disable_compaction", self.disable_compaction)
@@ -166,7 +172,7 @@ class CoderAgent(BaseAgent):
             Agent response as string
         """
         if working_dir:
-            self._working_dir = working_dir
+            self.working_dir = working_dir
         kwargs.setdefault("max_context_tokens", self.max_context_tokens)
         kwargs.setdefault("compact_threshold", self.compact_threshold)
         kwargs.setdefault("disable_compaction", self.disable_compaction)
