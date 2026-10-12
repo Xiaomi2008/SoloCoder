@@ -9,6 +9,11 @@ A capable autonomous coding agent running entirely locally—powered by Qwen3.5-
 
 ---
 
+## Where the work stands
+
+- [`dev_docs/HANDOFF.md`](dev_docs/HANDOFF.md) — current state, verified gates, outstanding items, next task. **Read this to resume after a restart.**
+- [`dev_docs/mac-agent-app-architecture.md`](dev_docs/mac-agent-app-architecture.md) — the plan: SoloCoder → a native SwiftUI Mac agent app (Python engine as a sidecar over a Unix socket), local LLMs + subscription cloud models.
+
 ## Quick Start
 
 ```bash

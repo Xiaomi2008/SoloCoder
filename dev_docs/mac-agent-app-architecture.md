@@ -3,6 +3,8 @@
 **Status:** proposal, v1
 **Goal:** turn SoloCoder from a local coding CLI into a **general-purpose Mac agent** (coding is one capability among many) that runs on **local LLMs** and **subscription cloud models** (ChatGPT Plus/Pro, Claude Pro/Max), with API keys as the officially supported fallback.
 
+**Resuming after a restart:** read [`HANDOFF.md`](HANDOFF.md) first — it is the live state (what is built, what is verified, what is outstanding, what to do next). This document is the design and the reasoning; it does not track progress.
+
 ---
 
 ## 1. Assets we already have (and keep)
