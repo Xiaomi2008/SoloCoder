@@ -62,6 +62,10 @@ Examples:
   python cli_coder.py --base-url http://localhost:1234/v1  # OpenAI-compatible API
   python cli_coder.py config save-key tavily YOUR_API_KEY    # Save Tavily API key
   python cli_coder.py config set-provider duckduck            # Set search provider
+  python cli_coder.py auth status                            # Credentials in the Keychain
+  python cli_coder.py auth login claude                       # Claude Pro/Max sign-in (unofficial)
+  python cli_coder.py models list --discover                  # Models from running local servers
+  python cli_coder.py models use lmstudio/qwen3-coder-32b     # Pick the model
 
 Type 'quit' or 'exit' to stop the agent.
         """,
@@ -116,6 +120,11 @@ Type 'quit' or 'exit' to stop the agent.
 
     # reset action
     config_subparsers.add_parser("reset", help="Reset configuration to defaults")
+
+    # Credential and model management (auth / models subcommands)
+    from openagent.provider.cli import add_subcommands as add_model_subcommands
+
+    add_model_subcommands(subparsers)
 
     parser.add_argument(
         "--model",
@@ -794,6 +803,13 @@ async def main():
     if args.command == "config":
         await handle_config_command(args)
         return
+
+    # Handle auth / models commands (no agent loop involved)
+    if args.command in ("auth", "models"):
+        from openagent.provider.cli import handle_auth_async, handle_models_async
+
+        handler = handle_auth_async if args.command == "auth" else handle_models_async
+        raise SystemExit(await handler(args))
 
     from openagent import configure_logging
 

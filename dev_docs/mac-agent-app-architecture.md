@@ -211,6 +211,23 @@ Existing: files, shell, grep/glob, web search/fetch, plan mode, todos, memory/re
 
 **Phase 1 — Provider registry + auth (3–5 days).** `ModelRef`/`ModelCatalog`/`ProviderRegistry`; split adapters by wire API; `AuthBroker` (keychain, api_key, oauth); **ChatGPT + Claude OAuth** with PKCE loopback + refresh; live model discovery + capability probe; router with local-first and privacy-lock. CLI gains `agent auth login anthropic-oauth`, `agent models`, `agent use <ref>`. Gate: integration test per auth mode against recorded fixtures; a real run on LM Studio *and* on Claude Max OAuth.
 
+> **Phase 1 status: built** (`openagent/provider/`: `model_ref`, `auth/`, `registry`, `catalog`, `router`, `responses`, `cli`; 428 tests).
+>
+> Deviations found while building, in rough order of how much they cost to discover:
+>
+> 1. **ChatGPT subscription tokens do not work on `api.openai.com`.** The subscription backend is the Codex **Responses** API at `chatgpt.com/backend-api/codex`; `/v1/chat/completions` rejects the JWT. This forced a new `openai-responses` adapter (`WireAPI.OPENAI_RESPONSES`) and a `bearer_token` credential concept distinct from `api_key` — an API-key-shaped credential cannot express "this is a Bearer JWT for a different host".
+> 2. **Anthropic OAuth is not an API key with a different base URL.** It needs `Authorization: Bearer`, the `anthropic-beta: oauth-2025-04-20` header, and (when the JWT carries it) the `anthropic-account-id` header — decoded from the JWT, not from an endpoint.
+> 3. **Keychain account names are a namespace.** `auth:anthropic` (subscription) and `anthropic` (API key) must not collide, and `AuthBroker` must not inherit the legacy plaintext-migration path: reading `auth:anthropic` used to pick up a bare `anthropic` key and rewrite it as a JSON credential blob under a new name, silently moving the user's key.
+> 4. **`openagent.providers.ProviderError` is a stream *event*, not an exception.** Raising it raises a dataclass. Registry dependency errors are now `ProviderDependencyError`.
+> 5. **A falsy store is still a store.** `store or SecretManager()` made an empty dict-backed test fake fall through to the **real macOS Keychain**, so the suite wrote credentials to the user's machine. `is None` + a guard test that fails loudly on any real-Keychain write.
+> 6. **The OAuth loopback listener must bind IPv4 *and* IPv6 loopback.** Binding `::1` only means the browser's redirect to `127.0.0.1:port` never arrives. It must also refuse to bind a non-loopback host: the listener receives the user's access token.
+> 7. **`BaseProvider` had no `close()`.** Every adapter owns a client; a long-lived app that builds a provider per turn leaks a connection pool per turn. Added to the base class (sync/async `close` both handled).
+> 8. **`ollama` / `google-genai` are extras.** A missing SDK now surfaces as `pip install openagent[ollama]`, not a stack trace.
+> 9. **OpenAI-compatible discovery URLs already end in `/v1`.** Joining a `/v1/models` path produced `/v1/v1/models`, which 404s against every real server. Pinned by a test over all endpoints.
+> 10. **CLI handlers must be awaitable.** `cli_coder.main()` is async, so a handler calling `asyncio.run()` dies with "cannot be called from a running event loop". Handlers are `handle_*_async`, with sync wrappers for the standalone CLI.
+>
+> **Gate results.** 428 tests pass, zero warnings. Live gate ran against a real OpenAI-compatible HTTP server on LM Studio's port: discovery listed the served model, `models probe` round-tripped a tool call (233 ms), and a provider built from a `ModelRef` completed a text turn and a tool-call turn, then closed cleanly. LM Studio's own API server was not running during this session, so the literal "run on LM Studio" and "run on Claude Max OAuth" checks are **outstanding** — they need the LM Studio server enabled and a Claude subscription sign-in, respectively.
+
 **Phase 2 — Agent service (3–4 days).** `openagent/service/` JSON-RPC + JSONL event stream over a Unix socket; session CRUD, run cancel, permission-request channel; `openagent serve` command. Gate: a headless TUI client (`openagent tui`) drives a full run through the socket, and a Swift `AgentClient` test-harness passes the same contract tests (stream, cancel, permission round-trip, reconnect).
 
 **Phase 3 — Native Mac app shell (1 week).** SwiftUI app skeleton: windows, `MenuBarExtra`, `Settings`, commands, sidecar lifecycle (spawn/health/restart), Keychain, TCC prompts, notifications, `agent://`. `AgentClient` SwiftPM package consuming the Phase 2 socket. Gate: a native SwiftUI window (no web assets) completes a streamed run on a local model, with cancel working.

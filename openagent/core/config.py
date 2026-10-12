@@ -29,10 +29,25 @@ class SearchConfig:
 
 
 @dataclass
+class ModelConfig:
+    """Which models to use, and how to pick among them.
+
+    ``default_model`` is a ModelRef key (``provider/model``). ``roles`` maps a
+    role (main, subagent, compact, title, verify) to the same form, letting a
+    cheap local model handle compaction while the main loop uses a frontier one.
+    """
+
+    policy: str = "local_first"  # local_first | cloud_first | cheapest_capable | privacy_lock | fixed
+    default_model: str = ""
+    roles: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     """Main configuration for OpenAgent."""
 
     search: SearchConfig = field(default_factory=SearchConfig)
+    models: ModelConfig = field(default_factory=ModelConfig)
     _config_path: Path | None = field(default=None, init=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,7 +58,12 @@ class Config:
                 "tavily_max_results": self.search.tavily_max_results,
                 "duckduck_max_results": self.search.duckduck_max_results,
                 "fallback_to_duckduck": self.search.fallback_to_duckduck,
-            }
+            },
+            "models": {
+                "policy": self.models.policy,
+                "default_model": self.models.default_model,
+                "roles": dict(self.models.roles),
+            },
         }
 
 
@@ -314,7 +334,12 @@ class ConfigManager:
                         fallback_to_duckduck=data.get("search", {}).get(
                             "fallback_to_duckduck", True
                         ),
-                    )
+                    ),
+                    models=ModelConfig(
+                        policy=data.get("models", {}).get("policy", "local_first"),
+                        default_model=data.get("models", {}).get("default_model", ""),
+                        roles=dict(data.get("models", {}).get("roles") or {}),
+                    ),
                 )
                 logger.info(f"Loaded config from {cls.CONFIG_FILE}")
                 return config
@@ -349,6 +374,14 @@ class ConfigManager:
             config.search.duckduck_max_results = kwargs["duckduck_max_results"]
         if "fallback_to_duckduck" in kwargs:
             config.search.fallback_to_duckduck = kwargs["fallback_to_duckduck"]
+        if "policy" in kwargs:
+            config.models.policy = kwargs["policy"]
+        if "default_model" in kwargs:
+            config.models.default_model = kwargs["default_model"]
+        if "roles" in kwargs:
+            config.models.roles = dict(kwargs["roles"] or {})
+        if "role" in kwargs and "model" in kwargs:
+            config.models.roles = {**config.models.roles, kwargs["role"]: kwargs["model"]}
 
         cls.save_config(config)
         return config
