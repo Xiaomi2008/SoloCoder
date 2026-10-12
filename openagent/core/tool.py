@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 from typing import Any, Callable, get_type_hints
@@ -84,7 +83,7 @@ async def _execute_tool_entry(
         if context is not None and "context" in inspect.signature(func).parameters:
             arguments["context"] = context
 
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             result = await func(**arguments)
         else:
             result = func(**arguments)

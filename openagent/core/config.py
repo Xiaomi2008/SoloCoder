@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..core.logging import logger
+
+KEYCHAIN_SERVICE = "openagent"
+_SECURITY_BIN = "/usr/bin/security"
 
 
 @dataclass
@@ -42,7 +48,18 @@ class Config:
 
 
 class SecretManager:
-    """Manages sensitive data like API keys."""
+    """Manages sensitive data like API keys and OAuth tokens.
+
+    Storage backends, in priority order:
+
+    1. **macOS Keychain** (``/usr/bin/security``) on macOS. Secrets never touch
+       the filesystem in plaintext. This is the backend the Mac app shares with
+       the agent service, so a token signed in from the app is usable by the CLI.
+    2. A ``0600`` JSON file, for Linux/CI where no keychain exists.
+
+    Legacy plaintext keys found in ``secrets/secrets.json`` are migrated to the
+    keychain on first read and removed from the file.
+    """
 
     @classmethod
     def get_secret_folder(cls) -> Path:
@@ -53,12 +70,72 @@ class SecretManager:
 
     @classmethod
     def get_secret_file(cls) -> Path:
-        """Get the secrets file path."""
+        """Get the legacy/file secrets file path."""
         return cls.get_secret_folder() / "secrets.json"
+
+    # --- backend selection -------------------------------------------------
+
+    @classmethod
+    def keychain_available(cls) -> bool:
+        """True when the macOS Keychain CLI is usable on this platform."""
+        return sys.platform == "darwin" and Path(_SECURITY_BIN).exists()
+
+    # --- macOS Keychain backend -------------------------------------------
+
+    @classmethod
+    def _keychain_get(cls, account: str) -> str | None:
+        result = subprocess.run(
+            [_SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        value = result.stdout.strip()
+        return value or None
+
+    @classmethod
+    def _keychain_set(cls, account: str, secret: str) -> bool:
+        """Add or update a keychain item.
+
+        Notes on the ``security`` CLI contract, learned the hard way:
+        - ``-w`` must be the LAST flag: it takes an optional argument, so a
+          trailing ``-U`` is swallowed as the password.
+        - With ``-w`` and no argument it prompts "password data for new item:"
+          then "retype password for new item:". A single stdin line fails the
+          retype with "passwords don't match" and stores nothing while still
+          exiting 0 — so the secret is written twice.
+        - stdin (not argv) keeps the secret out of the process argument list.
+        """
+        result = subprocess.run(
+            [
+                _SECURITY_BIN, "add-generic-password", "-U",
+                "-s", KEYCHAIN_SERVICE, "-a", account, "-w",
+            ],
+            input=f"{secret}\n{secret}\n",
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.debug(f"Keychain write failed for {account}: {result.stderr.strip()}")
+            return False
+        # The CLI can exit 0 without storing anything; confirm by reading back.
+        return cls._keychain_get(account) == secret
+
+    @classmethod
+    def _keychain_delete(cls, account: str) -> bool:
+        result = subprocess.run(
+            [_SECURITY_BIN, "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+
+    # --- file backend (non-macOS fallback) --------------------------------
 
     @classmethod
     def _load_secrets(cls) -> dict[str, str]:
-        """Load secrets from file."""
+        """Load secrets from the file backend."""
         secret_file = cls.get_secret_file()
         if secret_file.exists():
             try:
@@ -73,51 +150,138 @@ class SecretManager:
     def _save_secrets(cls, secrets: dict[str, str]) -> None:
         """Save secrets to file with restricted permissions."""
         secret_file = cls.get_secret_file()
+        secret_file.parent.mkdir(parents=True, exist_ok=True)
         with open(secret_file, "w") as f:
-            os.chmod(secret_file, 0o600)  # Owner read/write only
             json.dump(secrets, f, indent=2)
+        os.chmod(secret_file, 0o600)  # Owner read/write only
+
+    # --- public API -------------------------------------------------------
+
+    @staticmethod
+    def _legacy_names(name: str) -> list[str]:
+        """Legacy file keys that may hold this secret (bare provider names)."""
+        names = [name]
+        if name.endswith("_api_key"):
+            names.append(name[: -len("_api_key")])
+        return names
+
+    @classmethod
+    def get_secret(cls, name: str) -> str | None:
+        """Get a secret by name, preferring the environment, then the keychain."""
+        env_key = os.environ.get(name.upper())
+        if env_key:
+            logger.debug(f"Using {name} from environment variable")
+            return env_key
+
+        if cls.keychain_available():
+            value = cls._keychain_get(name)
+            if value:
+                logger.debug(f"Using {name} from macOS Keychain")
+                return value
+            # One-time migration of a legacy plaintext entry.
+            secrets = cls._load_secrets()
+            legacy = None
+            for legacy_name in cls._legacy_names(name):
+                legacy = secrets.pop(legacy_name, None)
+                if legacy:
+                    break
+            if legacy:
+                if cls._keychain_set(name, legacy):
+                    cls._save_secrets(secrets)
+                    logger.info(f"Migrated {name} from plaintext secrets file to Keychain")
+                    return legacy
+                return legacy
+            return None
+
+        value = cls._load_secrets().get(name)
+        if value:
+            logger.debug(f"Using {name} from secrets file")
+        return value
+
+    @classmethod
+    def set_secret(cls, name: str, value: str) -> bool:
+        """Store a secret. Returns False when the backend rejected it."""
+        if cls.keychain_available():
+            ok = cls._keychain_set(name, value)
+            if ok:
+                secrets = cls._load_secrets()
+                secrets.pop(name, None)
+                cls._save_secrets(secrets)
+                logger.info(f"Stored {name} in macOS Keychain")
+                return True
+            logger.warning("Keychain write failed; falling back to the file backend")
+
+        secrets = cls._load_secrets()
+        secrets[name] = value
+        cls._save_secrets(secrets)
+        logger.info(f"Stored {name} in the secrets file")
+        return True
+
+    @classmethod
+    def delete_secret(cls, name: str) -> bool:
+        """Remove a secret from every backend we may have written it to."""
+        removed = False
+        if cls.keychain_available() and cls._keychain_delete(name):
+            removed = True
+        secrets = cls._load_secrets()
+        if name in secrets:
+            del secrets[name]
+            cls._save_secrets(secrets)
+            removed = True
+        if removed:
+            logger.info(f"Deleted {name}")
+        return removed
+
+    @staticmethod
+    def _parse_acct_names(dump_output: str) -> list[str]:
+        """Extract account names from ``security dump-keychain`` output.
+
+        Attribute lines look like:     "acct"<blob>="tavily_api_key"
+        """
+        return re.findall(r'"acct"<blob>="([^"]+)"', dump_output)
+
+    @classmethod
+    def _keychain_accounts(cls) -> list[str]:
+        result = subprocess.run(
+            [_SECURITY_BIN, "dump-keychain", "-s", KEYCHAIN_SERVICE],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return []
+        return cls._parse_acct_names(result.stdout)
+
+    @classmethod
+    def list_secrets(cls) -> list[str]:
+        """Names of stored secrets (values are never returned)."""
+        names: set[str] = set(cls._load_secrets())
+        if cls.keychain_available():
+            names.update(cls._keychain_accounts())
+        return sorted(names)
+
+    # --- API-key shims (existing call sites) ------------------------------
 
     @classmethod
     def get_api_key(cls, provider: str) -> str | None:
-        """Get API key for a provider from secrets file or environment."""
+        """Get API key for a provider from environment, keychain, or secrets file."""
         provider = provider.lower()
 
-        # First check environment variable
-        env_var = f"{provider.upper()}_API_KEY"
-        env_key = os.environ.get(env_var)
+        env_key = os.environ.get(f"{provider.upper()}_API_KEY")
         if env_key:
             logger.debug(f"Using {provider} API key from environment variable")
             return env_key
 
-        # Then check secrets file
-        secrets = cls._load_secrets()
-        key = secrets.get(provider)
-        if key:
-            logger.debug(f"Using {provider} API key from secrets file")
-            return key
-
-        logger.debug(f"No {provider} API key found")
-        return None
+        return cls.get_secret(f"{provider}_api_key")
 
     @classmethod
     def save_api_key(cls, provider: str, api_key: str) -> bool:
-        """Save API key to secrets file."""
-        secrets = cls._load_secrets()
-        secrets[provider] = api_key
-        cls._save_secrets(secrets)
-        logger.info(f"Saved {provider} API key to secrets file")
-        return True
+        """Save API key for a provider."""
+        return cls.set_secret(f"{provider.lower()}_api_key", api_key)
 
     @classmethod
     def delete_api_key(cls, provider: str) -> bool:
-        """Delete API key from secrets file."""
-        secrets = cls._load_secrets()
-        if provider in secrets:
-            del secrets[provider]
-            cls._save_secrets(secrets)
-            logger.info(f"Deleted {provider} API key from secrets file")
-            return True
-        return False
+        """Delete API key for a provider."""
+        return cls.delete_secret(f"{provider.lower()}_api_key")
 
 
 class ConfigManager:
@@ -165,8 +329,7 @@ class ConfigManager:
     @classmethod
     def save_config(cls, config: Config) -> None:
         """Save configuration to file."""
-        config.SECRET_FILE = cls.CONFIG_FILE
-        config.SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cls.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
         with open(cls.CONFIG_FILE, "w") as f:
             json.dump(config.to_dict(), f, indent=2)

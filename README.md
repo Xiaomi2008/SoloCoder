@@ -13,7 +13,7 @@ A capable autonomous coding agent running entirely locally—powered by Qwen3.5-
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-repo/SoloCoder.git
+git clone https://github.com/Xiaomi2008/SoloCoder.git
 cd SoloCoder
 
 # 2. Install dependencies (using uv recommended)
@@ -58,7 +58,7 @@ The backbone model is **Qwen3.5-35B-A3B**, served locally via LM Studio's OpenAI
 ### Step 1: Clone and Install Dependencies
 
 ```bash
-git clone https://github.com/your-repo/SoloCoder.git
+git clone https://github.com/Xiaomi2008/SoloCoder.git
 cd SoloCoder
 
 # Using uv (recommended)

@@ -5,7 +5,7 @@ description = "A lightweight, async-first agent framework with pluggable LLM pro
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Anthropic", email = "support@anthropic.com" },
+    { name = "Tao Zeng" },
 ]
 keywords = [
     "ai",
@@ -78,11 +78,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/anthropics/openagent"
-Repository = "https://github.com/anthropics/openagent"
-Documentation = "https://github.com/anthropics/openagent#readme"
-Issues = "https://github.com/anthropics/openagent/issues"
-Changelog = "https://github.com/anthropics/openagent/releases"
+Homepage = "https://github.com/Xiaomi2008/SoloCoder"
+Repository = "https://github.com/Xiaomi2008/SoloCoder"
+Documentation = "https://github.com/Xiaomi2008/SoloCoder#readme"
+Issues = "https://github.com/Xiaomi2008/SoloCoder/issues"
+Changelog = "https://github.com/Xiaomi2008/SoloCoder/releases"
 
 
 [tool.ruff]

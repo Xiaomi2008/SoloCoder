@@ -6,7 +6,7 @@ import json
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ class PatternMemory:
     outcome: str = "success"  # "success", "partial", "failed but learned"
     tags: list[str] = field(default_factory=list)  # ["async", "context-manager"]
     created_at: str = field(
-        default_factory=lambda: datetime.utcnow().isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     usage_count: int = 0  # Track how often this pattern helps
 
@@ -44,7 +44,7 @@ class PreferenceMemory:
     context: str | None = None  # When this applies
     confidence: float = 1.0  # How certain we are (can decay)
     created_at: str = field(
-        default_factory=lambda: datetime.utcnow().isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,7 +64,7 @@ class FactMemory:
     category: str  # "testing", "dependencies", "architecture"
     source_session_id: str  # Which session this came from
     created_at: str = field(
-        default_factory=lambda: datetime.utcnow().isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,7 +97,7 @@ class MemoryStore:
         """Initialize metadata file if it doesn't exist."""
         if not self.metadata_file.exists():
             self._save_metadata({
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "total_patterns": 0,
                 "total_preferences": 0,
                 "total_facts": 0,
@@ -120,7 +120,7 @@ class MemoryStore:
         """Initialize metadata file if it doesn't exist."""
         if not self.metadata_file.exists():
             self._save_metadata({
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "total_patterns": 0,
                 "total_preferences": 0,
                 "total_facts": 0,
@@ -325,7 +325,7 @@ class MemoryStore:
                 project_dir.rmdir()
 
         self._save_metadata({
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "total_patterns": 0,
             "total_preferences": 0,
             "total_facts": 0,

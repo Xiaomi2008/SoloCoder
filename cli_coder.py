@@ -904,9 +904,12 @@ async def handle_config_command(args: argparse.Namespace) -> None:
         # Save to secrets
         SecretManager.save_api_key(provider, api_key)
 
-        print(
-            f"\n{green('✓')} Saved {provider} API key securely to ./secrets/secrets.json"
+        backend = (
+            "macOS Keychain"
+            if SecretManager.keychain_available()
+            else "./secrets/secrets.json (0600)"
         )
+        print(f"\n{green('✓')} Saved {provider} API key to the {backend}")
         print(f"  Set via environment variable: {env_var}")
         print(f"\nTip: You can also set it directly:")
         print(f"  export {env_var}='{api_key[:3]}...{api_key[-3:]}'")
@@ -926,7 +929,7 @@ async def handle_config_command(args: argparse.Namespace) -> None:
         provider = args.provider
 
         if SecretManager.delete_api_key(provider):
-            print(f"\n{green('✓')} Deleted {provider} API key from secrets file")
+            print(f"\n{green('✓')} Deleted {provider} API key")
         else:
             print(f"\n{red('✗')} No {provider} API key found to delete")
 

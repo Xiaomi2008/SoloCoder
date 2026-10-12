@@ -1,5 +1,14 @@
-from openagent.runtime.agent import Agent
+from openagent.runtime.agent import Agent, RuntimeAgent
 from openagent.runtime.context import RuntimeContext
+from openagent.runtime.loop import (
+    EMPTY_RESPONSE_EXHAUSTED_MESSAGE,
+    EMPTY_RESPONSE_RETRY_MESSAGE,
+    EmptyResponseGuard,
+    LoopSettings,
+    is_empty_final_response,
+    maybe_compact_context,
+    next_id,
+)
 from openagent.runtime.events import (
     AgentResult,
     ContextCompactionCompleted,
@@ -22,8 +31,17 @@ from openagent.runtime.tool_executor import ToolExecutor
 
 __all__ = [
     "Agent",
+    "RuntimeAgent",
     "RuntimeContext",
     "ToolExecutor",
+    # Shared run-loop policy
+    "EMPTY_RESPONSE_EXHAUSTED_MESSAGE",
+    "EMPTY_RESPONSE_RETRY_MESSAGE",
+    "EmptyResponseGuard",
+    "LoopSettings",
+    "is_empty_final_response",
+    "maybe_compact_context",
+    "next_id",
     "AgentResult",
     "ContextCompactionCompleted",
     "ContextCompactionFailed",

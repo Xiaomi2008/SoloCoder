@@ -7,19 +7,15 @@ from typing import Any, Callable
 from .bash_manager import BashManager, get_bash_manager
 from .display import (
     bold,
-    dim,
     cyan,
-    green,
-    red,
-    white,
+    dim,
     diff_addition,
     diff_deletion,
     display_tool_call_claude_style,
     display_tool_result_claude_style,
-    format_diff_output,
-    display_code_block,
-    display_diff_claude_style,
-    truncate_text,
+    green,
+    red,
+    yellow,
 )
 
 
@@ -181,8 +177,16 @@ from .skill_manager import (
 )
 from .task_manager import TaskManager, get_task_manager
 from .tool import ToolRegistry, tool
-from .types import ImageBlock, Message, ToolResultBlock, text_message
-from openagent.runtime.agent import Agent as RuntimeAgent
+from .types import Message, ToolResultBlock
+from openagent.runtime.agent import RuntimeAgent
+from openagent.runtime.loop import (
+    EMPTY_RESPONSE_EXHAUSTED_MESSAGE,
+    EMPTY_RESPONSE_RETRY_MESSAGE as _RETRY_PROMPT,
+    EmptyResponseGuard,
+    LoopSettings,
+    is_empty_final_response,
+    maybe_compact_context,
+)
 
 # BaseProvider is likely in parent package or sibling 'provider' package
 # Since we are in core/, provider/ is '../provider/'
@@ -191,10 +195,7 @@ from openagent.provider.base import BaseProvider
 
 
 class Agent:
-    EMPTY_RESPONSE_RETRY_MESSAGE = (
-        "Your previous response was empty. Continue the task and reply with either "
-        "a non-empty assistant message or valid tool calls."
-    )
+    EMPTY_RESPONSE_RETRY_MESSAGE = _RETRY_PROMPT
     SCREENSHOT_TOOL_IMAGE_MIME_TYPE = "image/jpeg"
     SCREENSHOT_FOLLOWUP_MAX_TOKENS = 2048
 
@@ -311,7 +312,8 @@ class Agent:
 
     @staticmethod
     def _is_empty_final_response(message: Message) -> bool:
-        return not message.has_tool_calls and not message.text.strip()
+        """Deprecated alias for :func:`openagent.runtime.loop.is_empty_final_response`."""
+        return is_empty_final_response(message)
 
     def _add_tool_result_followup_messages(
         self, results: list[ToolResultBlock]
@@ -364,18 +366,12 @@ class Agent:
         )
         response: Message | None = None
         completed_turns = 0
-        empty_response_retries = 0
-        max_empty_response_retries = kwargs.pop("max_empty_response_retries", 3)
         awaiting_final_response = False
 
-        # Get compaction settings from kwargs or use defaults
-        max_context_tokens = kwargs.pop("max_context_tokens", 128000)
-        compact_threshold = kwargs.pop("compact_threshold", 0.8)
-
-        # Check if compaction is disabled (via agent instance attribute or kwarg)
-        disable_compaction = kwargs.pop(
-            "disable_compaction", getattr(self, "disable_compaction", False)
-        )
+        # Loop settings are split out of kwargs so they never reach the provider.
+        settings, provider_kwargs = LoopSettings.from_kwargs(kwargs)
+        settings.apply_instance_override(self)
+        guard = EmptyResponseGuard(settings.max_empty_response_retries)
 
         screenshot_followup_added = False
 
@@ -384,27 +380,23 @@ class Agent:
             self._logger.turn_start(turn_number, self.max_turns)
 
             # Check if context compaction is needed before sending request (unless disabled)
-            if not disable_compaction and self.session.check_compaction_needed(
-                max_tokens=max_context_tokens, threshold=compact_threshold
-            ):
+            summary = await maybe_compact_context(self.session, self.provider, settings)
+            if summary:
                 self._logger.info("Context approaching limit, compacting...")
-                summary = await self.session.compact_context(
-                    provider=self.provider, keep_recent=5, summary_type="detailed"
-                )
                 self._logger.info(f"Compacted context: {summary[:100]}...")
 
             # Display thinking indicator
             print("\x1b[2K\x1b[G\x1b[2m⠋ Thinking...\x1b[0m", end="", flush=True)
 
-            provider_kwargs = self._provider_kwargs_for_turn(
-                kwargs, screenshot_followup_added
+            turn_kwargs = self._provider_kwargs_for_turn(
+                provider_kwargs, screenshot_followup_added
             )
 
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
                 system_prompt=self.session.system_prompt,
-                **provider_kwargs,
+                **turn_kwargs,
             )
 
             # Clear thinking indicator
@@ -413,8 +405,8 @@ class Agent:
             # Show compact context usage indicator
             try:
                 current_tokens = self.session.token_count
-                max_tokens = kwargs.get("max_context_tokens", 128000)
-                threshold = kwargs.get("compact_threshold", 0.8)
+                max_tokens = settings.max_context_tokens
+                threshold = settings.compact_threshold
                 percentage = (
                     (current_tokens / max_tokens) * 100 if max_tokens > 0 else 0
                 )
@@ -447,26 +439,17 @@ class Agent:
             except Exception:
                 pass
 
-            if self._is_empty_final_response(response):
+            if is_empty_final_response(response):
                 self._logger._logger.warning(
                     "Provider returned an empty assistant response; requesting a retry."
                 )
-                empty_response_retries += 1
-                if empty_response_retries > max_empty_response_retries:
-                    return (
-                        "The model returned empty responses repeatedly before finishing "
-                        "the task. Try again, switch models, or lower tool complexity."
-                    )
-
-                if (
-                    not self.session.messages
-                    or self.session.messages[-1].text
-                    != self.EMPTY_RESPONSE_RETRY_MESSAGE
-                ):
-                    self.session.add("system", self.EMPTY_RESPONSE_RETRY_MESSAGE)
+                guard.record_empty()
+                if guard.exhausted:
+                    return EMPTY_RESPONSE_EXHAUSTED_MESSAGE
+                guard.ensure_retry_prompt(self.session)
                 continue
 
-            empty_response_retries = 0
+            guard.record_success()
             self.session.add_message(response)
             if not awaiting_final_response:
                 completed_turns += 1
@@ -539,7 +522,7 @@ class Agent:
                 "The model kept requesting more tool work after the turn limit was reached. "
                 "Try again, increase `--max-turns`, or switch to a more reliable model."
             )
-        if self._is_empty_final_response(response):
+        if is_empty_final_response(response):
             return (
                 "The model stopped with an empty response before finishing the task. "
                 "Try again or switch to a more reliable model."

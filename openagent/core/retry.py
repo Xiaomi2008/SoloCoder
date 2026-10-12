@@ -6,6 +6,7 @@ Provides exponential backoff with jitter for handling transient API failures.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import random
 from functools import wraps
 from typing import Any, Callable, TypeVar
@@ -47,7 +48,7 @@ def with_retry(
         retryable_exceptions = DEFAULT_RETRYABLE_EXCEPTIONS
 
     def decorator(func: F) -> F:
-        is_async = asyncio.iscoroutinefunction(func)
+        is_async = inspect.iscoroutinefunction(func)
 
         @wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
