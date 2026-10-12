@@ -50,6 +50,17 @@ class MockProvider:
 
 
 @pytest.fixture
+def scripted_provider():
+    """A provider whose ``stream`` replays a script — see tests/support."""
+    from tests.support.streaming_provider import ScriptedStreamProvider
+
+    def _create(turns: list[list[Any]] | None = None) -> ScriptedStreamProvider:
+        return ScriptedStreamProvider(turns)
+
+    return _create
+
+
+@pytest.fixture
 def mock_provider():
     """Create a mock provider with configurable responses."""
 

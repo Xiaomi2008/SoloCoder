@@ -73,6 +73,20 @@ class LoopSettings:
             self.disable_compaction = bool(getattr(agent, "disable_compaction", False))
 
 
+def compaction_needed(session: Session, settings: LoopSettings) -> bool:
+    """Whether the next turn must compact, without running the summary model.
+
+    The streaming runner asks this *before* emitting
+    ``context_compaction_started``: a started event with no matching completed
+    event breaks the ordering guarantee the UI is written against.
+    """
+    if settings.disable_compaction:
+        return False
+    return session.check_compaction_needed(
+        max_tokens=settings.max_context_tokens, threshold=settings.compact_threshold
+    )
+
+
 async def maybe_compact_context(
     session: Session, provider: BaseProvider, settings: LoopSettings, *, keep_recent: int = 5
 ) -> str | None:
@@ -94,6 +108,52 @@ async def maybe_compact_context(
 def is_empty_final_response(message: Message) -> bool:
     """A response with neither tool calls nor text — the model gave up."""
     return not message.has_tool_calls and not message.text.strip()
+
+
+SCREENSHOT_FOLLOWUP_TEXT = (
+    "Latest screenshot from the screenshot tool. "
+    "Use screenshot image coordinates only. "
+    "If unsure, call get_screenshot_info() for the valid image size and scale."
+)
+
+
+def add_screenshot_followup(
+    session: Session,
+    results: list[Any],
+    *,
+    mime_type: str = "image/jpeg",
+) -> bool:
+    """Feed a screenshot tool result back to a vision model as an image.
+
+    A screenshot result is base64 text; sending it as text makes the model
+    "see" a giant string. This re-attaches it as an image block plus the
+    coordinate range, and reports whether it did, because the caller must then
+    cap ``max_tokens`` for the next turn.
+    """
+    added = False
+    for result in results:
+        if getattr(result, "is_error", False) or getattr(result, "tool_name", None) != "screenshot":
+            continue
+        if not result.content or result.content.startswith("Error"):
+            continue
+
+        info = ""
+        try:
+            from openagent.tools.computer_use import get_screenshot_info
+
+            screenshot_info = get_screenshot_info()
+            if not screenshot_info.startswith("No screenshot"):
+                info = f" The valid image coordinate range is described here: {screenshot_info}"
+        except Exception:
+            info = ""
+
+        session.add_user_multimodal(
+            text=f"{SCREENSHOT_FOLLOWUP_TEXT}{info}",
+            image_data=result.content,
+            image_mime_type=mime_type,
+        )
+        added = True
+    return added
 
 
 class EmptyResponseGuard:

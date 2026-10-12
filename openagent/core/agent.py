@@ -185,6 +185,7 @@ from openagent.runtime.loop import (
     EMPTY_RESPONSE_RETRY_MESSAGE as _RETRY_PROMPT,
     EmptyResponseGuard,
     LoopSettings,
+    add_screenshot_followup,
     is_empty_final_response,
     maybe_compact_context,
 )
@@ -327,36 +328,10 @@ class Agent:
     def _add_tool_result_followup_messages(
         self, results: list[ToolResultBlock]
     ) -> bool:
-        added_screenshot_followup = False
-        for result in results:
-            if result.is_error or result.tool_name != "screenshot":
-                continue
-            if not result.content or result.content.startswith("Error"):
-                continue
-
-            screenshot_info_text = ""
-            try:
-                from openagent.tools.computer_use import get_screenshot_info
-
-                screenshot_info = get_screenshot_info()
-                if not screenshot_info.startswith("No screenshot"):
-                    screenshot_info_text = f" The valid image coordinate range is described here: {screenshot_info}"
-            except Exception:
-                screenshot_info_text = ""
-
-            self.session.add_user_multimodal(
-                text=(
-                    "Latest screenshot from the screenshot tool. "
-                    "Use screenshot image coordinates only. "
-                    "If unsure, call get_screenshot_info() for the valid image size and scale."
-                    f"{screenshot_info_text}"
-                ),
-                image_data=result.content,
-                image_mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE,
-            )
-            added_screenshot_followup = True
-
-        return added_screenshot_followup
+        """Shared with the streaming runner — see :func:`add_screenshot_followup`."""
+        return add_screenshot_followup(
+            self.session, results, mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE
+        )
 
     def _provider_kwargs_for_turn(
         self, base_kwargs: dict[str, Any], screenshot_followup_added: bool
@@ -376,6 +351,11 @@ class Agent:
         response: Message | None = None
         completed_turns = 0
         awaiting_final_response = False
+        #: One turn past the limit, for the final text after the last tool
+        #: batch — and only once. Granting it every time the flag is set made a
+        #: model that keeps calling tools loop forever: each iteration ends by
+        #: re-arming the flag, so the exit condition was never reached.
+        grace_used = False
 
         # Loop settings are split out of kwargs so they never reach the provider.
         settings, provider_kwargs = LoopSettings.from_kwargs(kwargs)
@@ -384,7 +364,9 @@ class Agent:
 
         screenshot_followup_added = False
 
-        while completed_turns < self.max_turns or awaiting_final_response:
+        while completed_turns < self.max_turns or (
+            awaiting_final_response and not grace_used
+        ):
             turn_number = min(completed_turns + 1, self.max_turns)
             self._logger.turn_start(turn_number, self.max_turns)
 
@@ -460,8 +442,9 @@ class Agent:
 
             guard.record_success()
             self.session.add_message(response)
-            if not awaiting_final_response:
-                completed_turns += 1
+            if awaiting_final_response and completed_turns >= self.max_turns:
+                grace_used = True
+            completed_turns += 1
             awaiting_final_response = False
 
             has_tools = response.has_tool_calls

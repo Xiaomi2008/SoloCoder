@@ -9,6 +9,9 @@ class AgentResult:
     run_id: str
     final_message_id: str
     output_text: str
+    #: Why the loop stopped: "end_turn" | "max_turns" | "empty_response".
+    #: Defaults to end_turn so existing constructors keep working.
+    stop_reason: str = "end_turn"
 
 
 @dataclass
@@ -101,6 +104,31 @@ class ToolCallFailed:
 
 
 @dataclass
+class PermissionRequested:
+    """A tool is about to run and needs the user's approval.
+
+    ``request_id`` is the correlation key for the answer, which arrives as a
+    ``permission.respond`` call on the same connection.
+    """
+
+    run_id: str
+    request_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    reason: str = ""
+    type: Literal["permission_requested"] = "permission_requested"
+
+
+@dataclass
+class PermissionResolved:
+    run_id: str
+    request_id: str
+    granted: bool
+    scope: str = "once"
+    type: Literal["permission_resolved"] = "permission_resolved"
+
+
+@dataclass
 class ContextCompactionStarted:
     run_id: str
     reason: str
@@ -137,6 +165,8 @@ RuntimeEvent = (
     | ContextCompactionStarted
     | ContextCompactionCompleted
     | ContextCompactionFailed
+    | PermissionRequested
+    | PermissionResolved
 )
 
 
@@ -149,6 +179,8 @@ __all__ = [
     "MessageDelta",
     "MessageFailed",
     "MessageStarted",
+    "PermissionRequested",
+    "PermissionResolved",
     "RunCancelled",
     "RunCompleted",
     "RunFailed",

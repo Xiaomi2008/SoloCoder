@@ -1,14 +1,5 @@
 from openagent.runtime.agent import Agent, RuntimeAgent
 from openagent.runtime.context import RuntimeContext
-from openagent.runtime.loop import (
-    EMPTY_RESPONSE_EXHAUSTED_MESSAGE,
-    EMPTY_RESPONSE_RETRY_MESSAGE,
-    EmptyResponseGuard,
-    LoopSettings,
-    is_empty_final_response,
-    maybe_compact_context,
-    next_id,
-)
 from openagent.runtime.events import (
     AgentResult,
     ContextCompactionCompleted,
@@ -18,6 +9,8 @@ from openagent.runtime.events import (
     MessageDelta,
     MessageFailed,
     MessageStarted,
+    PermissionRequested,
+    PermissionResolved,
     RunCancelled,
     RunCompleted,
     RunFailed,
@@ -27,6 +20,30 @@ from openagent.runtime.events import (
     ToolCallFailed,
     ToolCallStarted,
 )
+from openagent.runtime.loop import (
+    EMPTY_RESPONSE_EXHAUSTED_MESSAGE,
+    EMPTY_RESPONSE_RETRY_MESSAGE,
+    EmptyResponseGuard,
+    LoopSettings,
+    add_screenshot_followup,
+    compaction_needed,
+    is_empty_final_response,
+    maybe_compact_context,
+    next_id,
+)
+from openagent.runtime.permissions import (
+    AllowAllGate,
+    PermissionDecision,
+    PermissionGate,
+    PermissionMode,
+    PermissionRequest,
+    ReadOnlyGate,
+    RiskGate,
+    gate_for_mode,
+    risk_reason,
+    tool_risk,
+)
+from openagent.runtime.runner import AgentRunner
 from openagent.runtime.tool_executor import ToolExecutor
 
 __all__ = [
@@ -34,6 +51,8 @@ __all__ = [
     "RuntimeAgent",
     "RuntimeContext",
     "ToolExecutor",
+    # The streaming, tool-capable loop the service runs on
+    "AgentRunner",
     # Shared run-loop policy
     "EMPTY_RESPONSE_EXHAUSTED_MESSAGE",
     "EMPTY_RESPONSE_RETRY_MESSAGE",
@@ -50,6 +69,8 @@ __all__ = [
     "MessageDelta",
     "MessageFailed",
     "MessageStarted",
+    "PermissionRequested",
+    "PermissionResolved",
     "RunCancelled",
     "RunCompleted",
     "RunFailed",
@@ -58,4 +79,17 @@ __all__ = [
     "ToolCallCompleted",
     "ToolCallFailed",
     "ToolCallStarted",
+    # Permission policy
+    "AllowAllGate",
+    "PermissionDecision",
+    "PermissionGate",
+    "PermissionMode",
+    "PermissionRequest",
+    "ReadOnlyGate",
+    "RiskGate",
+    "add_screenshot_followup",
+    "compaction_needed",
+    "gate_for_mode",
+    "risk_reason",
+    "tool_risk",
 ]
