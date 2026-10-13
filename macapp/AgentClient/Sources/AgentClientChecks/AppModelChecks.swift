@@ -223,11 +223,19 @@ func composerChecks(_ checks: Checks) {
         return model
     }
 
-    let cold = AppModel()
+    // A model built in this process may restore the scope a previous model
+    // stored, so a check about "no scope" has to say so.
+    func coldModel() -> AppModel {
+        let model = AppModel()
+        model.workingDir = ""
+        return model
+    }
+
+    let cold = coldModel()
     checks.equal(cold.sendBlock("hello"), .notConnected, "no service: Send is blocked on the connection")
     checks.equal(cold.sendBlock(""), .notConnected, "…and that outranks an empty field")
 
-    let noScope = AppModel()
+    let noScope = coldModel()
     noScope.connected = true
     checks.equal(noScope.sendBlock("hi"), .noWorkingDir, "no working directory: Send is blocked on the scope")
 
@@ -248,6 +256,38 @@ func composerChecks(_ checks: Checks) {
         checks.expect(!reason.reason.isEmpty, "every block has a reason the composer can show: \(reason)")
     }
 
+    // The banner is prose. Killing the app's own service and sending once drew
+    // "notConnected" in the card — the enum's mirror name, a name for a state
+    // rather than a sentence about what happened.
+    checks.equal(AppModel.describe(ClientError.notConnected), "not connected", "a transport failure reads as a sentence")
+    checks.equal(AppModel.describe(ClientError.closed), "the connection closed", "…and so does a socket that closed")
+    checks.equal(
+        AppModel.describe(ClientError.timedOut("run.start")), "timed out waiting for run.start",
+        "…and a timeout names what it waited for"
+    )
+    struct Bare: Error {}
+    checks.equal(AppModel.describe(Bare()), "\(Bare())", "an error with no sentence of its own keeps the mirror name")
+
+    // The scope is remembered between launches. It used not to be: every launch
+    // started with no scope, and the first prompt of a session was refused by a
+    // modal — "choose a working directory — it is the scope the agent works in" —
+    // which is what stopped the live loop test from running at all.
+    checks.equal(AppModel.restorableWorkingDir(nil), "", "no stored scope: nothing to restore")
+    checks.equal(AppModel.restorableWorkingDir(""), "", "an empty stored scope is not a scope")
+    checks.equal(AppModel.restorableWorkingDir("/tmp"), "/tmp", "a stored scope that is still a directory comes back")
+    checks.equal(
+        AppModel.restorableWorkingDir("/tmp/oa-scope-that-is-gone"), "",
+        "a stored scope that no longer exists is dropped, not restored"
+    )
+    checks.equal(
+        AppModel.restorableWorkingDir("/etc/hosts"), "",
+        "…and so is a stored scope that turned out to be a file"
+    )
+    let firstLaunch = AppModel()
+    firstLaunch.workingDir = "/tmp"
+    checks.equal(AppModel().workingDir, "/tmp", "the next launch starts scoped")
+    firstLaunch.workingDir = ""
+    checks.equal(AppModel().workingDir, "", "…and forgetting the scope is remembered too")
 }
 
 @MainActor

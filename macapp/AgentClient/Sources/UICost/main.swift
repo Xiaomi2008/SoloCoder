@@ -28,8 +28,11 @@ import Foundation
 //                   or one bullet list of 11,245 — and a publish lays all of it out,
 //                   every 60 ms, for as long as the run does not stop. The fold of
 //                   the same 24k is 105 ms for the whole run, so the fold is not
-//                   where the core went. `streamingBlocks` bounds the drawing to 60
-//                   blocks of 2,000 characters and counts what the bound left out
+//                   where the core went. `shownBlocks` bounds the drawing to 60
+//                   blocks of 2,000 characters and counts what the bound left out —
+//                   and it bounds a finished answer too (section 2d), because the
+//                   row for one is in the viewport and its blocks are laid out on
+//                   every publish of every run after it
 //   one publish     7 µs at 401 lines, 66 µs at 4001: the copy-on-write copy of the
 //                   lines array, paid on the next mutation, linear in line count,
 //                   ~0.1% of the 60 ms cadence
@@ -47,6 +50,14 @@ import Foundation
 // counts are the thing to watch.
 
 func ev(_ s: String) -> AgentEvent { try! AgentEvent.decode(from: Data(s.utf8)) }
+
+/// A JSON string literal for text built at runtime — a 4,000-paragraph answer
+/// with newlines in it is not a string literal worth typing out.
+func jsonLiteral(_ text: String) -> String {
+    let data = try! JSONSerialization.data(withJSONObject: [text], options: [])
+    let encoded = String(decoding: data, as: UTF8.self)   // ["…"]
+    return String(encoded.dropFirst().dropLast())
+}
 
 func fold(turns: Int, lines: Int, chunks: Int) -> (Transcript, Double) {
     var transcript = Transcript()
@@ -298,7 +309,7 @@ func loopAnswer(chars: Int, line: String, blank: Bool, label: String = "") {
     let shown = out.blocks.reduce(0) { $0 + blockChars($1) }
     // What the bound leaves the view: the blocks it draws, and the characters in
     // them. This is the row that matters — the fold was never the cost.
-    let drawn = out.streamingBlocks
+    let drawn = out.shownBlocks
     print(String(
         format: """
             loop answer%@: %7d chars streamed: fold %6.1f ms; kept %6d chars, %5d blocks, \
@@ -336,6 +347,58 @@ loopAnswer(chars: 64_000, line: "apple", blank: true)
 // to the counter above, thousands of rows to the view.
 loopAnswer(chars: 24_000, line: "- apple", blank: false, label: " (bullets)")
 loopAnswer(chars: 64_000, line: "- apple", blank: false, label: " (bullets)")
+
+// 2d. The answer a run leaves behind.
+//
+// The loop above is the cost *during* a run. This is the cost the next run pays:
+// a completed message replaces its line, that row is in the viewport, and every
+// publish of every later run lays its blocks out. The rule used to be that a
+// finished answer is drawn whole — "the bound is for the stream, not the
+// product". Measured live, that is 2,573 text views, ~100% CPU for 90 s, 235 MB →
+// 800 MB, an AX walk that times out, and a Stop click that is never delivered.
+func completedAnswer(paragraphs: Int, tailWords: Int = 0) {
+    let parts = (0..<paragraphs).map { "paragraph \($0)" }
+    // A run-on ending is the tail `Markdown.split` never commits, so it is the
+    // part a finished answer keeps streaming past its blocks — the shape the
+    // looping prompt leaves behind.
+    let runOn = Array(repeating: "tailword", count: tailWords).joined(separator: " ")
+    let answer = parts.joined(separator: "\n\n") + (tailWords == 0 ? "" : "\n\n" + runOn)
+    var t = Transcript()
+    t.addUserMessage("do the thing")
+    t.apply(ev(#"{"type":"run_started","run_id":"r"}"#))
+    t.apply(ev(#"{"type":"message_started","run_id":"r","message_id":"m"}"#))
+    let payload = parts.map { "\($0)\\n\\n" }.joined()
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    t.apply(ev(#"{"type":"message_delta","run_id":"r","message_id":"m","delta":"\#(payload)"}"#))
+    let streamed = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+    // The parse the reducer now does once, here, instead of the view doing it on
+    // every render.
+    let a0 = DispatchTime.now().uptimeNanoseconds
+    t.apply(ev(#"{"type":"message_completed","run_id":"r","message_id":"m","output_text":\#(jsonLiteral(answer))}"#))
+    let completed = Double(DispatchTime.now().uptimeNanoseconds - a0) / 1e6
+    guard let out = t.lines.last(where: { if case .assistant = $0.kind { return true } else { return false } })
+    else { return }
+    let drawn = out.shownBlocks
+    print(String(
+        format: """
+            completed answer: %5d paragraphs, %7d chars: delta %6.1f ms, completed (the parse) %6.1f ms
+              drawn: %3d of %5d blocks, %5d of %6d chars; %d blocks and %d tail chars behind "Show all"
+            """,
+        paragraphs, answer.utf8.count, streamed, completed,
+        drawn.shown.count, drawn.blocksTotal,
+        drawn.shown.reduce(0) { $0 + blockChars($1) },
+        out.blocks.reduce(0) { $0 + blockChars($1) },
+        drawn.hiddenBlocks, drawn.tailHidden
+    ))
+}
+
+completedAnswer(paragraphs: 3)
+completedAnswer(paragraphs: 400)
+completedAnswer(paragraphs: 4_000)
+// The looping prompt's shape: paragraphs all the way down, then a run-on ending
+// that never commits, so both axes are cut at once.
+completedAnswer(paragraphs: 400, tailWords: 3_000)
+completedAnswer(paragraphs: 4_000, tailWords: 3_000)
 
 // 3. One published write.
 //

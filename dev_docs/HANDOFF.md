@@ -9,10 +9,10 @@ own service and drives real runs, and `scripts/build_app.sh` produces a signed
 119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
 inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`, 29 commits ahead of origin — the phase 0–3i
-  commits plus the streaming-view bound, nothing pushed
+- Branch: `feat/computer-use-macos`, 30 commits ahead of origin — the phase 0–3i
+  commits plus the streaming and finished-answer bounds, nothing pushed
 - Python suite: **609 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **382 checks passed** (`swift run agent-checks`), **395** with
+- Swift suite: **416 checks passed** (`swift run agent-checks`), **429** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
   it; add
@@ -37,12 +37,16 @@ inside it. `scripts/package_check.sh` is the gate that says so.
   characters on screen while it streams. An unbounded, ungated answer wedged the
   app at 100% CPU — 200k streamed characters measured 719 s to fold, and it
   measures 386 ms now. Fixing the fold did not stop the wedge: the live looping run
-  still pinned a core, and the cost was the 2,573 views a publish laid out
-- Working tree: clean as of the streaming-view-bound commit (2026-10-13).
-  `.build/app/SoloCoder.app` (120 MB) is rebuilt from it and passes the packaging
-  gate, so it ships `session.delete` and the bound;
-  `/Applications/SoloCoder.app` is still the phase 3h build and does not know that
-  method — installing the new bundle is the step left
+  still pinned a core, and the cost was the 2,573 views a publish laid out. The
+  same bound now covers the answer a run **leaves behind** — the row outlives the
+  stream, and every later publish laid out all of it — with the rest of the answer
+  behind a "Show all 4,000 blocks and 26,999 characters" button (phase 3i+)
+- Working tree: clean as of the finished-answer-bound commit (2026-10-13).
+  `.build/app/SoloCoder.app` (120 MB) is one commit behind it — it ships
+  `session.delete` and the streaming bound, not the finished-answer bound, the
+  remembered scope or the in-window refusal;
+  `/Applications/SoloCoder.app` is still the phase 3h build and does not know
+  `session.delete` at all — installing the new bundle is the step left
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
   (`fastapi`); a `uv run` sync prunes extras, and it did mid-session
 
@@ -371,6 +375,134 @@ reachable; pressing Refresh re-ran discovery and the row appeared as
 invisible until something asks again.
 
 Gates: **609** Python tests.
+
+## Phase 3i+: the answer a run leaves behind
+
+The live loop test — the prompt that writes `apple` on its own line 4,000 times —
+found the case phase 3i's three bounds did not cover: not the answer while it
+streams, but the answer a finished run **leaves behind**.
+
+**The bound stopped at the stream, and the row outlives the stream.** The view
+applied `streamingBlocks` only while the line was streaming; the rule written in
+the comment was "the bound is for the stream, not the product". A completed answer
+is the product, and it is in the viewport: `message_completed` replaces the line,
+the row stays on screen, and every publish of every *later* run lays out every
+block of it. The looping run leaves 2,573 blocks. Measured on the next run in the
+same session: main thread pinned at ~100% CPU, RSS 235 MB → 800 MB in 90 s,
+`sample` all inside AttributeGraph (`AG::Graph::propagate_dirty`,
+`AG::Graph::UpdateStack::update`, `AG::Subgraph::update`, `DisplayList`), the AX
+walk timing out, and the Stop click never delivered — 45 s after Cancel the run
+still said "Starting…". The unit that costs is the **count of views in the
+viewport**, not characters: the timeline is a `LazyVStack`, so it bounds rows,
+and `BlocksView` is a non-lazy `VStack` of one `Text` per block, so it bounds
+nothing.
+
+**The same bound, on a finished line, and the parse moved to the reducer.**
+`streamingBlocks` is now `shownBlocks` and the view uses it for both states: the
+last `answerBlocksShown` (60) blocks, each capped at `answerBlockCharsShown`
+(2,000) characters, plus the last 2,000 characters of the tail. The rest is behind
+a button. The markdown parse that produced `blocks` used to run in the view, so it
+ran on every render of a row that never changes again; `TranscriptLine.parseAnswer()`
+is called by the reducer at `message_completed` and by `addAssistantMessage` on a
+history load — once per answer. `blocks` is no longer documented as "empty for a
+finished line", because it is not: it is the answer's structure, kept whole, and
+`shownBlocks` is what the view may lay out. The stored answer is never trimmed
+further than the 12k+4k cap phase 3i set.
+
+**The row names what it left out, on both axes.** `ShownBlocks.hiddenSummary`
+("… 3,940 blocks and 24,999 characters above are not shown") and
+`revealLabel` ("Show all 4,000 blocks and 26,999 characters") are computed in the
+core, because a check asserts them. Blocks and characters are counted apart
+because they are cut apart, and a run-on answer has **no blocks at all**: 20,000
+characters of `apple` with no blank line is one tail and zero blocks, and a row
+that said "Show all 0 blocks" about it — the first live screenshot said exactly
+that — is reading from the wrong axis.
+
+**Measured** (`swift run ui-cost`, new section 2d; the parse column is the whole
+answer parsed once):
+
+| completed answer | delta | the parse | drawn | behind "Show all" |
+|---|---|---|---|---|
+| 3 paragraphs, 37 chars | 0.0 ms | 0.1 ms | 2 of 2 blocks, 22 of 22 chars | nothing |
+| 400 paragraphs, 5.9k chars | 1.2 ms | 1.3 ms | 60 of 399 blocks, 780 of 5,077 chars | 339 blocks |
+| 4,000 paragraphs, 63k chars | 3.6 ms | 13.1 ms | 60 of 3,999 blocks, 840 of 54,876 chars | 3,939 blocks |
+| 4,000 paragraphs + run-on tail, 90k chars | 3.6 ms | 13.6 ms | 60 of 4,000 blocks, 840 of 54,890 chars | 3,940 blocks, 24,999 tail chars |
+
+A short answer is drawn whole — the bound only speaks when it cuts — and a long
+one draws tens of views instead of thousands.
+
+**Live**, on the rebuilt app, `lan/swift-1.5-iq3_s`, permission mode `ask`:
+
+| | before | after |
+|---|---|---|
+| open the session holding the looping answer | ~100% CPU, 235 → 800 MB, the AX walk times out | **0.0% CPU, 126 MB** |
+| a streamed answer with a table, headings and numbered lists | a pinned core | 0-48% CPU, RSS 146 → 167 MB over 22 s |
+| Stop pressed mid-stream | never delivered — "Starting…" 45 s later | the run closes; **0.0% CPU and a flat 166 MB two seconds later**, composer back to idle |
+
+The looping prompt does not loop any more: asked to "reply with exactly the word
+apple, 4,000 times, no tools", the model answers with a repo-orientation report
+and asks for a task number. The report is the better test — a markdown table,
+headings, two numbered lists, code spans — because that is the shape a real answer
+has, and the row draws it bounded.
+
+**The relaunched app had no scope, so the first live loop test measured nothing.**
+The prompt was sent, the service refused the run — "choose a working directory —
+it is the scope the agent works in" — and the app sat at 0.0% CPU with a flat
+141 MB: a clean measurement of a run that never started. `AppModel.workingDir` was
+in-memory only, so *every* launch began with that modal, and the first prompt of
+every session was the one refused. It is stored when set and restored at launch,
+and `AppModel.restorableWorkingDir` drops a stored path that is not a directory —
+a folder deleted over the weekend is not a scope, and a status bar naming a folder
+that is gone is worse than one that asks for a folder. The open panel is driven
+from the command line with `cmd+shift+g`, the path, and two Returns.
+
+Traps this phase added:
+
+- **A tail is long only when the deltas carry no newline.** `Markdown.split` cuts
+  the tail at the *last blank line*, and text ending in `"\n"` leaves a trailing
+  empty element that reads as blank — so a run-on answer streamed as
+  `"apple\n\n"` deltas commits as one block and leaves the tail empty. The
+  first tail-bound check asserted `tailHidden > 0` on that shape and failed for
+  the right reason: there is no tail to bound. The check streams 3,000 words with
+  no newline, which is the shape that has one.
+- **Which half holds the end of the answer.** The last paragraph is in the blocks
+  (the split cut before it) and the run-on ending is the tail, so "the drawn
+  blocks reach the end" and "the tail is the end" are two checks, not one.
+- **A JSON payload built by interpolation needs `jsonLiteral`.** A raw newline
+  inside `#"…"#` interpolated into `output_text` is a fatal
+  `Unescaped control character '0xa'` in the checks and in `ui-cost`; encode the
+  string with `JSONSerialization` and drop the surrounding `["…"]`.
+- **`pgrep -f` finds the shell, not the app.** The launcher's command line
+  contains the binary path and its pid is lower, so `pgrep -f …/debug/solocoder |
+  head -1` samples `/bin/zsh`. Use `pgrep -x solocoder`.
+- **Setting `AXValue` on the composer does not drive the SwiftUI binding** — the
+  field shows the text and the send button stays disabled. Real keystrokes work.
+
+**A refusal stopped wearing a modal.** The system `.alert` — a card with a bold
+title "The service said no" and a full-width blue OK — blocks the composer, and
+this app's refusals are routine: no scope, an unknown model, a service that died.
+Bionic has no modal for a routine. `BannerCard` is a hairline-bordered card at the
+top of the window, amber icon, violet "Dismiss", the window left usable. Its first
+text was **"notConnected"**: `AppModel.describe` rendered `"\(error)"`, the enum's
+mirror name. It now reads `LocalizedError.errorDescription` — the sentence every
+client error already carries — and keeps the mirror name for an error that chose
+no sentence, because a plain `NSError`'s `localizedDescription`
+("The operation couldn't be completed. (…)") is worse, not better.
+
+Open defects, all seen on screen:
+
+- **A refused run leaves no row.** The modal said "the service said no", the
+  timeline stayed at "No run yet", and the prompt was gone from the composer — so
+  the user has no record of what was refused. `.messageFailed` already exists in
+  the transcript vocabulary; the view does not draw it.
+- **Cancel is delivered only when the main thread is free.** The bound removes the
+  pin that made the Stop click undeliverable; it does not remove the class. A run
+  that wedges the main thread in some other way swallows the click again.
+- **The picker is as fresh as the last `model.list`** (previous section), and the
+  launch takes the sidecar's `default_model` and `Ask` — the scope is remembered
+  now, the rest of the session's settings are not.
+
+Gates: **412 checks** (`swift run agent-checks`), **425** with `AGENT_REPO_ROOT`.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 

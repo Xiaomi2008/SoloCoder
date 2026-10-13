@@ -13,6 +13,15 @@ private func ev(_ json: String) throws -> AgentEvent {
     try AgentEvent.decode(from: Data(json.utf8))
 }
 
+/// A JSON string literal for text the test builds rather than types: a 4,000
+/// paragraph answer with `\n\n` between the paragraphs is not a string literal
+/// worth writing out, and its newlines have to be escaped to go on the wire.
+private func jsonLiteral(_ text: String) -> String {
+    let data = try! JSONSerialization.data(withJSONObject: [text], options: [])
+    let encoded = String(decoding: data, as: UTF8.self)   // ["…"]
+    return String(encoded.dropFirst().dropLast())
+}
+
 private func fold(
     _ events: [AgentEvent],
     prompt: String? = "list the files",
@@ -517,7 +526,7 @@ func transcriptChecks(_ checks: Checks) throws {
 
     // The 300 paragraphs above, drawn. The bound keeps the end, where the text is
     // arriving, and counts the rest so the row can say what it left out.
-    let shown = midLine?.streamingBlocks ?? ShownBlocks()
+    let shown = midLine?.shownBlocks ?? ShownBlocks()
     checks.expect(
         shown.shown.count <= Transcript.answerBlocksShown,
         "a publish lays out at most \(Transcript.answerBlocksShown) blocks (\(shown.shown.count))"
@@ -527,7 +536,7 @@ func transcriptChecks(_ checks: Checks) throws {
         "the hidden count is the difference and not a guess (\(shown.hiddenBlocks) hidden)"
     )
     // The newest committed block, which is the end of what the reducer has parsed.
-    // The newest of the *answer* is in the tail, and the tail is never cut.
+    // The newest of the *answer* is in the tail, bounded at its end below.
     let newestCommitted = blocksText(Array((midLine?.blocks ?? []).suffix(1)))
     checks.expect(
         shown.hiddenBlocks > 0,
@@ -542,8 +551,8 @@ func transcriptChecks(_ checks: Checks) throws {
         "and drops the top, which is off the screen anyway"
     )
     checks.expect(
-        (midLine?.tailText ?? "").contains("the last line, still arriving"),
-        "the bound never cuts the tail — the arriving text is the point"
+        shown.tail.contains("the last line, still arriving"),
+        "the drawn tail keeps the arriving text — that is the end of the answer"
     )
     checks.expect(
         blocksText(midLine?.blocks ?? []).contains(paragraphs[0]),
@@ -561,7 +570,7 @@ func transcriptChecks(_ checks: Checks) throws {
     }
     let runOn = try fold(oneParagraph)
     let runOnLine = runOn.lines.last { if case .assistant = $0.kind { return true } else { return false } }
-    let shownRunOn = runOnLine?.streamingBlocks ?? ShownBlocks()
+    let shownRunOn = runOnLine?.shownBlocks ?? ShownBlocks()
     checks.expect(
         shownRunOn.shown.count == 1,
         "one paragraph is one block, however long it is (\(shownRunOn.shown.count))"
@@ -575,17 +584,192 @@ func transcriptChecks(_ checks: Checks) throws {
         "the cut is counted, so the row can say what it dropped (\(shownRunOn.cutChars) characters)"
     )
 
-    // A finished answer is drawn whole. One layout of the product is not this
-    // defect, and a bound answer in the pasteboard is a bound answer.
+    // The tail is bounded too, at its end.
+    //
+    // How long the tail can be is not free choice: `Markdown.split` cuts the tail
+    // at the last blank line, and the reparse gate moves that boundary every
+    // `answerReparseEvery` characters, so a stream that ends each delta with a
+    // newline leaves the tail empty — the run-on case above commits its whole
+    // paragraph and draws it as a block. The tail is long when the arriving text
+    // has no newline in it, which is what word-sized deltas look like. That is
+    // the case the bound is for: the tail is the one unit the block bound cannot
+    // reach, because it is not in `blocks`.
+    var noNewline: [AgentEvent] = [
+        try ev(#"{"type":"run_started","run_id":"r1"}"#),
+        try ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+    ]
+    for _ in 0..<3_000 {
+        noNewline.append(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"apple"}"#))
+    }
+    let streamFold = try fold(noNewline)
+    let streamLine = streamFold.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    let shownStream = streamLine?.shownBlocks ?? ShownBlocks()
+    checks.expect(
+        (streamLine?.tailText ?? "").utf8.count > 10_000,
+        "a stream with no newline in it is all tail: \((streamLine?.tailText ?? "").utf8.count) characters"
+    )
+    checks.expect(
+        shownStream.tail.utf8.count == Transcript.answerBlockCharsShown,
+        "and the bound bites: \(shownStream.tail.utf8.count) characters drawn"
+    )
+    checks.expect(
+        shownStream.tailHidden == (streamLine?.tailText ?? "").utf8.count - shownStream.tail.utf8.count,
+        "and its hidden part is counted: \(shownStream.tailHidden) characters"
+    )
+    checks.expect(
+        shownStream.tail.hasSuffix("apple"),
+        "the tail keeps its end, where the text is arriving"
+    )
+    checks.expect(
+        (streamLine?.tailText ?? "").utf8.count > shownStream.tail.utf8.count,
+        "the stored tail is untouched: the bound is on the drawing"
+    )
+    checks.expect(
+        !shownStream.isEmpty,
+        "a long tail alone is a drawn row — the bound leaves something to show"
+    )
+
+    // The other shape: committed blocks *and* a long tail, which is what a loop
+    // with blank lines looks like once it is past the scan gate. Both bounds have
+    // to hold at once.
+    var longTail: [AgentEvent] = [
+        try ev(#"{"type":"run_started","run_id":"r1"}"#),
+        try ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"a paragraph, closed.\n\n"}"#),
+    ]
+    for _ in 0..<3_000 {
+        longTail.append(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"apple"}"#))
+    }
+    let tailFold = try fold(longTail)
+    let tailLine = tailFold.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    let shownTail = tailLine?.shownBlocks ?? ShownBlocks()
+    checks.expect(
+        shownTail.tail.utf8.count <= Transcript.answerBlockCharsShown,
+        "blocks and tail are bounded together: \(shownTail.tail.utf8.count) tail characters"
+    )
+    checks.expect(
+        shownTail.tailHidden > 10_000,
+        "with committed blocks behind it, the tail is still cut (\(shownTail.tailHidden) hidden)"
+    )
+    checks.expect(
+        shownTail.shown.contains { blocksText([$0]).contains("a paragraph, closed.") },
+        "the block bound keeps its own end, independent of the tail"
+    )
+
+    // A finished answer is bounded too, and the row says what it left out.
+    //
+    // "The bound is for the stream, not the product" was the rule. The live app
+    // answered it: a looping run leaves a 20,000-character answer in the
+    // transcript, that row is in the viewport, and every publish lays out all
+    // 2,573 of its blocks — 100% CPU, 800 MB, an AX walk that times out, and a
+    // Stop click that is never delivered. So the row draws the end of the answer
+    // and puts the rest behind a button the user presses on purpose.
+    //
+    // What is *stored* stays the whole answer: the cap is for the stream, and the
+    // completed event is authoritative.
+    // Both shapes at once: paragraphs, which are blocks, and a run-on ending,
+    // which is a tail — so the bound cuts on both axes and the row has to name
+    // both. The deltas stream the paragraphs; the completed event carries the
+    // whole answer, tail included, because it is the authoritative one.
+    let longParagraphs = (0..<4_000).map { "paragraph \($0)" }
+    let runOnTail = Array(repeating: "tailword", count: 3_000).joined(separator: " ")
+    let longAnswer = longParagraphs.joined(separator: "\n\n") + "\n\n" + runOnTail
+    var longRun: [AgentEvent] = [
+        try ev(#"{"type":"run_started","run_id":"r1"}"#),
+        try ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+    ]
+    for p in longParagraphs {
+        longRun.append(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"\#(p)\n\n"}"#))
+    }
+    longRun.append(
+        try ev(
+            #"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":\#(jsonLiteral(longAnswer))}"#
+        )
+    )
+    let longFinished = try fold(longRun)
+    let longLine = longFinished.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    let shownLong = longLine?.shownBlocks ?? ShownBlocks()
+    checks.expect(
+        (longLine?.blocks.count ?? 0) > Transcript.answerBlocksShown,
+        "the completed answer is parsed once, by the reducer: \(longLine?.blocks.count ?? 0) blocks"
+    )
+    checks.expect(
+        shownLong.shown.count <= Transcript.answerBlocksShown,
+        "a finished answer is drawn bounded too: \(shownLong.shown.count) of \(longLine?.blocks.count ?? 0) blocks"
+    )
+    checks.expect(
+        shownLong.blocksTotal == (longLine?.blocks.count ?? 0) && shownLong.blocksTotal > 0,
+        "the row is told the total, so its button can name it: \(shownLong.blocksTotal)"
+    )
+    checks.expect(
+        shownLong.hiddenBlocks == (longLine?.blocks.count ?? 0) - shownLong.shown.count,
+        "and the row says what it left out: \(shownLong.hiddenBlocks) blocks"
+    )
+    checks.expect(
+        shownLong.tailHidden == (longLine?.tailText ?? "").utf8.count - shownLong.tail.utf8.count
+            && shownLong.tailHidden > 10_000,
+        "and the characters of the tail: \(shownLong.tailHidden)"
+    )
+    // The drawn blocks and the drawn tail are the answer's end, with nothing
+    // missing between them: `Markdown.split` cuts the tail at the last blank line,
+    // so the last paragraph is in the blocks and the run-on ending is the tail.
+    checks.expect(
+        blocksText(shownLong.shown).contains(longParagraphs[longParagraphs.count - 1]),
+        "the drawn blocks reach the last paragraph: \(longParagraphs[longParagraphs.count - 1])"
+    )
+    checks.expect(
+        shownLong.tail.hasSuffix("tailword"),
+        "and the tail is the end of the answer — that is what the user reads"
+    )
+    var storedLong = ""
+    if case .assistant(let t) = longLine?.kind { storedLong = t }
+    checks.expect(
+        storedLong.utf8.count == longAnswer.utf8.count,
+        "the stored answer is the whole answer, cap and all: \(storedLong.utf8.count) of \(longAnswer.utf8.count)"
+    )
+
+    // The common case is a short answer, and it is drawn whole: the bound leaves
+    // nothing out, so the row shows no marker and no button.
     let finished = try fold([
         ev(#"{"type":"run_started","run_id":"r1"}"#),
         ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
         ev(#"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":"a whole answer, in full"}"#),
     ])
     let finishedLine = finished.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    let shownFinished = finishedLine?.shownBlocks ?? ShownBlocks()
     checks.expect(
-        finishedLine?.streamingBlocks.isEmpty ?? false,
-        "a finished answer is drawn whole — the bound is for the stream, not the product"
+        shownFinished.shown.count == (finishedLine?.blocks.count ?? 0) && shownFinished.hiddenBlocks == 0,
+        "a short finished answer is drawn whole: \(shownFinished.shown.count) blocks, nothing hidden"
+    )
+    checks.expect(
+        !shownFinished.isEmpty,
+        "and it is drawn from the parsed blocks, not by parsing on a render"
+    )
+    checks.expect(
+        shownFinished.hiddenSummary.isEmpty && shownFinished.revealLabel.isEmpty,
+        "an answer the bound did not cut says nothing and offers nothing"
+    )
+
+    // The words the row prints. It has to say what is missing twice — above the
+    // blocks, and on the button that lifts the bound — and the two have to agree,
+    // so they are computed in the core. The live app got this wrong first: the
+    // run-on answer has no blank lines, so it has no blocks and 20,000 characters
+    // of tail, and the row read "Show all 0 blocks" under it.
+    checks.expect(
+        shownStream.hiddenSummary == "\(shownStream.tailHidden) characters",
+        "a run-on answer is counted in characters, not blocks: \(shownStream.hiddenSummary)"
+    )
+    checks.expect(
+        shownStream.revealLabel == "Show all \((streamLine?.tailText ?? "").utf8.count) characters",
+        "and the button names what it adds: \(shownStream.revealLabel)"
+    )
+    checks.expect(
+        shownLong.hiddenSummary.hasPrefix("\(shownLong.hiddenBlocks) blocks"),
+        "a paragraphed answer is counted in blocks: \(shownLong.hiddenSummary)"
+    )
+    checks.expect(
+        shownLong.revealLabel == "Show all \(shownLong.blocksTotal) blocks and \((longLine?.tailText ?? "").utf8.count) characters",
+        "and its button names both: \(shownLong.revealLabel)"
     )
 }
 

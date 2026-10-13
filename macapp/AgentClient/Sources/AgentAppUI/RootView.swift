@@ -56,17 +56,51 @@ public struct RootView: View {
         .sheet(item: $model.promptToAnswer) { request in
             PermissionSheet(request: request)
         }
-        .alert(
-            "The service said no",
-            isPresented: Binding(
-                get: { model.banner != nil },
-                set: { if !$0 { model.banner = nil } }
-            )
-        ) {
-            Button("OK") { model.banner = nil }
-        } message: {
-            Text(model.banner ?? "")
+        // A refusal is drawn in the window, not in a modal. The system alert is
+        // a card with a bold title and a blue button that blocks the composer,
+        // and this app's refusals are routine: no working directory, an unknown
+        // model, a run that cannot reach its model. Routine does not wear a
+        // modal.
+        .overlay(alignment: .top) {
+            if let banner = model.banner {
+                BannerCard(text: banner) { model.banner = nil }
+                    .padding(.top, 12)
+                    .padding(.horizontal, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: model.banner)
+    }
+}
+
+/// A refusal, in the app's own language: a hairline-bordered card at the top of
+/// the window, in the app's accent, that leaves the composer usable.
+struct BannerCard: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.warning)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 12)
+            Button("Dismiss", action: dismiss)
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+        }
+        .padding(12)
+        .frame(maxWidth: Theme.columnWidth)
+        .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.edge, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.08), radius: 14, y: 4)
     }
 }
 
@@ -585,7 +619,7 @@ struct AnswerLine: View {
     var body: some View {
         switch line.kind {
         case .assistant(let text):
-            AssistantLine(text: text, streaming: line.streaming, shown: line.streamingBlocks, tail: line.tailText)
+            AssistantLine(text: text, streaming: line.streaming, shown: line.shownBlocks)
         case .messageFailed(let error):
             FailedLine(error: error)
         default:
@@ -618,14 +652,37 @@ extension AnswerLine: Equatable {}
 /// split's tail starts after the newest, so the text between them was drawn by
 /// neither and disappeared while the answer streamed.
 ///
-/// The bound is not applied here. It is `TranscriptLine.streamingBlocks`, which
-/// the core computes: "at most 60 blocks, each at most 2000 characters, and here
-/// is what that left out" is a fact a check can assert, and a view cannot.
+/// The bound is not applied here. It is `TranscriptLine.shownBlocks`, which the
+/// core computes: "at most 60 blocks, each at most 2000 characters, the last
+/// 2000 characters of the tail, and here is what that left out" is a fact a check
+/// can assert, and a view cannot.
+///
+/// A finished answer is bounded by the same rule, and the rest of it is one
+/// button away. That is not a compromise about where to put a scrollbar: the row
+/// is in the viewport, so its blocks are laid out on every publish, and a
+/// 20,000-character answer is 2,573 of them. The live app spent 90 seconds at
+/// 100% CPU and 800 MB doing exactly that, and would not take the Stop click.
+/// Reading an answer means the end of it; the beginning is what "Show all" is
+/// for, and that is a choice the user makes with a name on it.
 struct AssistantLine: View {
     let text: String
     let streaming: Bool
     var shown: ShownBlocks = ShownBlocks()
-    var tail: String = ""
+
+    /// Per row, because two answers in one turn are read differently: the last
+    /// one is the result, the one before it is a step.
+    @State private var expanded = false
+
+    /// The answer, as markdown, is the thing worth taking away. A run writes
+    /// several answers around its tool calls, so the copy is per line — "the
+    /// answer" here means the one being looked at. Not while streaming: the text
+    /// is not finished, and a copy of a half-arrived answer is a half answer in
+    /// the pasteboard. The copy is the whole answer even when the row is not,
+    /// because the bound is about what the screen lays out, not about what the
+    /// run said.
+    @ViewBuilder private var copy: some View {
+        CopyButton(text: text, label: "this answer").padding(4)
+    }
 
     var body: some View {
         if text.isEmpty {
@@ -635,8 +692,8 @@ struct AssistantLine: View {
             }
         } else if streaming {
             VStack(alignment: .leading, spacing: 8) {
-                if shown.hiddenBlocks > 0 {
-                    Text("… \(shown.hiddenBlocks) blocks above are not shown")
+                if !shown.hiddenSummary.isEmpty {
+                    Text("… \(shown.hiddenSummary) above are not shown")
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
                 BlocksView(blocks: shown.shown)
@@ -644,21 +701,48 @@ struct AssistantLine: View {
                     Text("… \(shown.cutChars) characters of this answer are not shown")
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
-                if !tail.isEmpty {
-                    Text(tail)
+                if !shown.tail.isEmpty {
+                    Text(shown.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-        } else {
-            MarkdownView(text: text)
-                // The answer, as markdown, is the thing worth taking away. A run
-                // writes several answers around its tool calls, so the copy is
-                // per line — "the answer" here means the one being looked at.
-                // Not while streaming: the text is not finished, and a copy of a
-                // half-arrived answer is a half answer in the pasteboard.
-                .overlay(alignment: .topTrailing) {
-                    CopyButton(text: text, label: "this answer").padding(4)
+        } else if expanded || shown.isEmpty {
+            // `shown` is empty when the answer has no structure to bound — a
+            // paragraph, a code block — and drawing it whole is the whole answer
+            // in a handful of views.
+            VStack(alignment: .leading, spacing: 8) {
+                MarkdownView(text: text)
+                if expanded {
+                    Button("Show less") { expanded = false }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.muted)
                 }
+            }
+            .overlay(alignment: .topTrailing) { copy }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                if !shown.hiddenSummary.isEmpty {
+                    Text("… \(shown.hiddenSummary) above are not shown")
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
+                BlocksView(blocks: shown.shown)
+                if shown.cutChars > 0 {
+                    Text("… \(shown.cutChars) characters of this answer are not shown")
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
+                if !shown.tail.isEmpty {
+                    Text(shown.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !shown.revealLabel.isEmpty {
+                    Button(shown.revealLabel) { expanded = true }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.accent)
+                }
+            }
+            .overlay(alignment: .topTrailing) { copy }
         }
     }
 }
@@ -686,7 +770,7 @@ struct LineView: View {
             // here so the switch is total and stays total when a kind is added.
             UserBubble(text: text)
         case .assistant(let text):
-            AssistantLine(text: text, streaming: line.streaming, shown: line.streamingBlocks, tail: line.tailText)
+            AssistantLine(text: text, streaming: line.streaming, shown: line.shownBlocks)
         case .reasoning(let text):
             ReasoningLine(text: text, streaming: line.streaming, duration: reasoningDuration)
         case .messageFailed(let error):

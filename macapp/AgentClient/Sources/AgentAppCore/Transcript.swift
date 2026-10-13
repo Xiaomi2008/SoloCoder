@@ -116,14 +116,68 @@ public struct ShownBlocks: Equatable, Sendable {
     public var hiddenBlocks: Int = 0
     /// Characters cut off the blocks that are drawn.
     public var cutChars: Int = 0
+    /// The tail a streaming answer draws: the end of `tailText`, bounded.
+    ///
+    /// The tail is the block that is still arriving, so it is not in `blocks`
+    /// and the block bound cannot reach it. Left alone it is the whole rest of
+    /// the answer — a loop with no blank lines leaves one paragraph of 18,005
+    /// characters, all of it tail — and the view lays out every character of it.
+    public var tail: String = ""
+    /// Characters of `tailText` that precede `tail` and are not drawn.
+    public var tailHidden: Int = 0
+    /// Every block the answer has, drawn or not.
+    ///
+    /// `hiddenBlocks` is what a row says it left out; this is what a "Show all
+    /// 2,573 blocks" button has to name. They are the same number while the
+    /// bound is the only reason blocks are missing, and they are not the same
+    /// number the moment the row is expanded — which is why the row asks for
+    /// this one and not the other.
+    public var blocksTotal: Int = 0
 
-    public init(shown: [MarkdownBlock] = [], hiddenBlocks: Int = 0, cutChars: Int = 0) {
+    public init(
+        shown: [MarkdownBlock] = [],
+        hiddenBlocks: Int = 0,
+        cutChars: Int = 0,
+        tail: String = "",
+        tailHidden: Int = 0,
+        blocksTotal: Int = 0
+    ) {
         self.shown = shown
         self.hiddenBlocks = hiddenBlocks
         self.cutChars = cutChars
+        self.tail = tail
+        self.tailHidden = tailHidden
+        self.blocksTotal = blocksTotal
     }
 
-    public var isEmpty: Bool { shown.isEmpty && hiddenBlocks == 0 }
+    public var isEmpty: Bool { shown.isEmpty && hiddenBlocks == 0 && tail.isEmpty }
+
+    /// What the bound left out, in the words the row prints: "3,939 blocks and
+    /// 18,005 characters". Empty when the bound left nothing out.
+    ///
+    /// Blocks and characters are counted apart because they are cut apart, and a
+    /// run-on answer has no blocks at all: 20,000 characters of "apple" with no
+    /// blank line is one tail and zero blocks, and a row that said "0 blocks are
+    /// not shown" about it would be reading from the wrong axis.
+    public var hiddenSummary: String {
+        var parts: [String] = []
+        if hiddenBlocks > 0 { parts.append("\(hiddenBlocks) blocks") }
+        if tailHidden > 0 { parts.append("\(tailHidden) characters") }
+        return parts.joined(separator: " and ")
+    }
+
+    /// The label of the button that lifts the bound: what pressing it adds.
+    ///
+    /// The counts are the totals, not the hidden ones, because that is what the
+    /// user gets — "Show all 3,999 blocks" is the answer's size, and the row has
+    /// already said what is missing. Empty when there is nothing to reveal.
+    public var revealLabel: String {
+        var parts: [String] = []
+        if hiddenBlocks > 0 { parts.append("\(blocksTotal) blocks") }
+        if tailHidden > 0 { parts.append("\(tailHidden + tail.utf8.count) characters") }
+        guard !parts.isEmpty else { return "" }
+        return "Show all \(parts.joined(separator: " and "))"
+    }
 }
 
 public struct TranscriptLine: Identifiable, Equatable, Sendable {
@@ -166,7 +220,9 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     /// per character. The tail, the block still being written, stays plain text
     /// until its blank line arrives.
     ///
-    /// Empty for a finished line, which the view parses whole.
+    /// A finished answer has these too — `parseAnswer` builds them once, from
+    /// the text that arrived whole — so the row that shows it is bounded the
+    /// same way and never parses on a render.
     public var blocks: [MarkdownBlock] = []
     /// The text `blocks` was parsed from, so the parse runs when it changes.
     ///
@@ -187,22 +243,58 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public var tailText: String = ""
     /// The answer length `blocks` was last scanned at, the gate's floor.
     var parsedLength: Int = 0
-    /// The blocks a streaming answer draws, and what the bound left out.
+    /// The blocks the answer draws, and what the bound left out.
     ///
     /// `blocks` is the answer's committed structure and is never trimmed — the
     /// stored answer is the answer. This is what the view is allowed to lay out,
-    /// and it is bounded on both axes: the last `answerBlocksShown` blocks, each
-    /// cut to `answerBlockCharsShown`. The last blocks, not the first, because a
-    /// streaming answer is read at its end, where the text is arriving.
+    /// and it is bounded on every axis it has: the last `answerBlocksShown`
+    /// blocks, each cut to `answerBlockCharsShown`, plus the last
+    /// `answerBlockCharsShown` characters of the tail. The last blocks, not the
+    /// first, because an answer is read at its end, where the text is arriving.
     ///
-    /// A finished line ignores this and is drawn whole; see the constants.
-    public var streamingBlocks: ShownBlocks {
+    /// This bounds a finished answer too. It used not to — "the bound is for the
+    /// stream, not the product" — and the live app answered that: a run that
+    /// leaves a 20,000-character answer behind leaves 2,573 blocks, the row is in
+    /// the viewport, and every publish lays out every one of them. Measured on
+    /// the next run in the same session: main thread pinned at ~100% CPU, RSS
+    /// 235 MB → 800 MB in 90 s, `sample` all inside AttributeGraph
+    /// (`propagate_dirty`, `UpdateStack::update`, `DisplayList`), the AX walk
+    /// timing out, and the Stop click never delivered — the run said "Starting…"
+    /// 45 s after Cancel was pressed. A row the user can read is a row of tens of
+    /// blocks; the rest is behind "Show all", which is a choice, not a default.
+    public var shownBlocks: ShownBlocks {
         let keep = Array(blocks.suffix(Transcript.answerBlocksShown))
-        var out = ShownBlocks(hiddenBlocks: blocks.count - keep.count)
+        var out = ShownBlocks(
+            hiddenBlocks: blocks.count - keep.count,
+            blocksTotal: blocks.count
+        )
         for block in keep {
             let (cut, dropped) = Transcript.capBlock(block)
             out.shown.append(cut)
             out.cutChars += dropped
+        }
+        // The tail is bounded at its end for the same reason the blocks are: the
+        // text that is arriving is at the end, and that is the part worth
+        // drawing. It is the one unit the block bound cannot reach, because the
+        // tail is not in `blocks`. Its reach is narrower than the blocks':
+        // `Markdown.split` cuts the tail at the last blank line and the reparse
+        // gate moves that boundary every `answerReparseEvery` characters, so a
+        // stream that ends its deltas with newlines leaves the tail empty, and a
+        // stream of word-sized deltas leaves at most that much. The loop shapes
+        // the harness measures (`swift run ui-cost`, section 2c) leave 200-2,900
+        // characters of tail, so this bound is the difference between drawing
+        // 2,000 and drawing all of it — real, and an order of magnitude below
+        // what the blocks cost. A finished answer is where it is biggest: the
+        // run-on ending never commits, so section 2d's 4,000-paragraph answer
+        // with a run-on tail keeps 2,000 characters and leaves 24,999 behind
+        // "Show all".
+        let limit = Transcript.answerBlockCharsShown
+        let n = tailText.utf8.count
+        if n > limit {
+            out.tail = String(tailText.suffix(limit))
+            out.tailHidden = n - limit
+        } else {
+            out.tail = tailText
         }
         return out
     }
@@ -238,6 +330,25 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public var stoppedAt: Date {
         guard case .tool(let row) = kind, let ended = row.endedAt, ended > at else { return at }
         return ended
+    }
+
+    /// Parse an answer that arrived whole, once, into the blocks the view draws.
+    ///
+    /// Called at `message_completed` and for a history loaded from disk. The
+    /// streaming line builds `blocks` as its deltas land; the completed event
+    /// replaces the line, and a line that arrives with no blocks leaves the view
+    /// with nothing bounded to draw, so it parses and lays out the whole answer —
+    /// 2,573 text views for a looping run, on every publish, forever. Parsing
+    /// here costs a few milliseconds once (`swift run ui-cost`, section 2) and
+    /// buys the row a bounded drawing and a block count to label a "Show all"
+    /// with.
+    mutating func parseAnswer() {
+        guard case .assistant(let text) = kind else { return }
+        let (complete, tail) = Markdown.split(text)
+        blocks = Markdown.blocks(complete)
+        parsedPrefix = complete
+        parsedLength = text.utf8.count
+        tailText = tail
     }
 
     /// Fold a delta into the answer, and re-parse the part of it that is finished.
@@ -492,8 +603,14 @@ public struct Transcript: Equatable, Sendable {
     /// History is not a stream: a stored session has the finished text and no
     /// events to fold, and inventing fake `message_completed` payloads to render
     /// it would make the transcript lie about what it saw.
+    ///
+    /// Parsed on the way in, for the same reason a completed answer is: a loaded
+    /// session's answers are finished, and a finished answer the view has to
+    /// parse and draw whole is the row that pins the main thread.
     public mutating func addAssistantMessage(_ text: String) {
-        emit(TranscriptLine(id: "history-\(lines.count)", kind: .assistant(text), messageId: nil))
+        var line = TranscriptLine(id: "history-\(lines.count)", kind: .assistant(text), messageId: nil)
+        line.parseAnswer()
+        emit(line)
     }
 
     /// A run that never reached the service.
@@ -580,6 +697,7 @@ public struct Transcript: Equatable, Sendable {
             closeReasoning(for: e.messageId)
             // Authoritative. Deltas are the progress; this is the answer.
             var line = TranscriptLine(id: e.messageId, kind: .assistant(e.outputText), messageId: e.messageId)
+            line.parseAnswer()
             if let index = indexOfMessage(e.messageId) {
                 line.at = lines[index].at
                 lines[index] = line

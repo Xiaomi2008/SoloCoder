@@ -32,7 +32,22 @@ public final class AppModel: ObservableObject {
     @Published public var modelPolicy = ""
     @Published public var sessions: [SessionRow] = []
     @Published public var selectedModel = ""
-    @Published public var workingDir = ""
+    /// The scope the agent works in, remembered between launches.
+    ///
+    /// A launch with no directory refuses `run.start` — "choose a working
+    /// directory — it is the scope the agent works in" — so every launch used to
+    /// open with a modal the user clears before typing anything, and the first
+    /// prompt of the session is the one that gets refused. The path is stored
+    /// when it is set and restored at launch.
+    @Published public var workingDir = "" {
+        didSet {
+            if workingDir.isEmpty {
+                UserDefaults.standard.removeObject(forKey: Self.workingDirKey)
+            } else {
+                UserDefaults.standard.set(workingDir, forKey: Self.workingDirKey)
+            }
+        }
+    }
     @Published public var permissionMode: PermissionMode = .ask
     /// How much the model may think before answering. `nil` means "model
     /// decides", which sends nothing — and on a reasoning model that default is
@@ -55,7 +70,26 @@ public final class AppModel: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var terminalTypes: Set<String> = Wire.terminalEventTypes
 
-    public init() {}
+    private static let workingDirKey = "openagent.workingDir"
+
+    /// The stored scope, kept only while it is still a directory.
+    ///
+    /// A folder the user deleted over the weekend is not a scope, and restoring
+    /// its path means the status bar names a folder that is gone and the run is
+    /// refused by the service for a reason the screen does not show. An empty
+    /// string asks for a folder, which is the honest state.
+    public static func restorableWorkingDir(_ stored: String?) -> String {
+        guard let stored, !stored.isEmpty else { return "" }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: stored, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else { return "" }
+        return stored
+    }
+
+    public init() {
+        workingDir = Self.restorableWorkingDir(UserDefaults.standard.string(forKey: Self.workingDirKey))
+    }
 
     /// A non-bundled app has no Console entry that a developer finds quickly, so
     /// the app's own story goes to stderr — which is where `swift run` and the
@@ -468,11 +502,24 @@ public final class AppModel: ObservableObject {
         return ""
     }
 
-    /// A `ServiceError` says what the service said, which is the useful part;
-    /// everything else gets its own description.
-    static func describe(_ error: any Error) -> String {
+    /// What the user reads in the banner.
+    ///
+    /// A `ServiceError` says what the service said, which is the useful part.
+    /// Everything else goes through `LocalizedError`, because every error this
+    /// client raises has a sentence already and `"\(error)"` is the enum's mirror
+    /// name: killing the service and sending once drew "notConnected" in the
+    /// banner, which is a name for a state, not a sentence about what happened.
+    /// An error that does not conform is left as `"\(error)"` — a plain `NSError`'s
+    /// `localizedDescription` is "The operation couldn't be completed. (…)", which
+    /// is worse than the mirror name, not better.
+    public static func describe(_ error: any Error) -> String {
         if let service = error as? ServiceError {
             return "\(service.code) (\(service.code.rawCode)): \(service.message)"
+        }
+        if let localized = error as? LocalizedError,
+            let prose = localized.errorDescription, !prose.isEmpty
+        {
+            return prose
         }
         return "\(error)"
     }
