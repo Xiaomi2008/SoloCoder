@@ -108,6 +108,31 @@ and slow while thinking. Three costs, all on that path:
   asked for `reasoning_effort: none`, so the suite measured the fast half of a
   reasoning model and stayed green while the slow half got slow.
 
+### What a long session costs, measured (`swift run ui-cost`, release)
+
+The four places a value-type transcript pays, on a 401-line session:
+
+| Where | Cost | Shape |
+|---|---|---|
+| folding the session | 44 ms (5 µs per event) | linear, once, off the main thread |
+| one delta at the end | 6 µs | **flat** in timeline length — applied in place |
+| appending the answer | 0.1 → 1.4 µs per delta at 80k chars | O(n) per delta, 7.4 ms for the run: uncapped on purpose, and cheap |
+| one publish | 7 µs at 401 lines, 68 µs at 4001 | the COW copy of the lines array, linear in line count, ~0.1% of the 60 ms cadence |
+| the `.equatable()` row skip | O(1) per row | an unchanged row's string shares its buffer; `==` starts with an identity check |
+
+Nothing here is on the table. The publish — a view-graph re-render — is what a
+long session costs, which is what the 60 ms buffer exists to bound.
+
+- **A cost that does not move with the size of its input is a fold, not a
+  measurement.** The check to run on every number above. Nine shapes of the
+  row-skip micro-benchmark reported ~0 ns for a 40k-character `==`, on `String`,
+  on a struct wrapping one, and on `Data` alike: the operands are pure expressions
+  of a constant, so they get common-subexpression eliminated into one shared
+  buffer and take the identity path the measurement was about. Hoisting the pool,
+  `inout` + `@inline(never)`, a closure-built pool, 1k and 1M iterations, the
+  operand hoisted and rebuilt per iteration — all fold. `let copy = t; t = copy`
+  is a no-op and reads 0.000 ms at every size.
+
 ## Phase 3d: the views
 
 The views were the only code no check reached, and the only way to see them was
