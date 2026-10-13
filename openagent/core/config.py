@@ -163,8 +163,19 @@ class SecretManager:
         if result.returncode != 0:
             logger.debug(f"Keychain write failed for {account}: {result.stderr.strip()}")
             return False
-        # The CLI can exit 0 without storing anything; confirm by reading back.
-        return cls._keychain_get(account) == secret
+        # The CLI can exit 0 without storing the whole value — a long secret is
+        # read from stdin a line at a time, and what lands can be a prefix. So
+        # confirm by reading back, and when it does not match, remove the item.
+        # Leaving it behind is worse than the failed write: a half-written payload
+        # reads back non-empty on every later call, so it shadows the intact copy
+        # the file backend keeps, and the provider is wedged. Seen live — a
+        # ChatGPT sign-in printed "Signed in", and `auth status` then reported
+        # "Ignoring corrupt credential entry" for the token sitting in the file.
+        if cls._keychain_get(account) == secret:
+            return True
+        logger.debug(f"Keychain read-back mismatch for {account}; removing the item")
+        cls._keychain_delete(account)
+        return False
 
     @classmethod
     def _keychain_delete(cls, account: str) -> bool:
@@ -280,6 +291,35 @@ class SecretManager:
         if removed:
             logger.info(f"Deleted {name}")
         return removed
+
+    @classmethod
+    def quarantine_secret(cls, name: str) -> str | None:
+        """Drop the entry ``get_secret`` would have returned, and return the next one.
+
+        A value that fails to parse is not a credential, and leaving it in place
+        is not neutral: ``get_secret`` prefers the keychain, so a half-written
+        keychain item shadows the intact copy the file backend kept, every read
+        returns the unusable value, ``auth status`` reports "not signed in" for a
+        token that is on disk, and the only way out is `auth logout`.
+
+        The caller knows the value is unusable; this knows which backend produced
+        it. So it removes exactly that one — the keychain's when the keychain has
+        one, the file's otherwise — and returns the copy the *other* backend
+        holds, left in place so the next read works. When the file's copy is the
+        unusable one there is nothing left to hand back, and it is removed.
+        """
+        if cls.keychain_available() and cls._keychain_get(name):
+            cls._keychain_delete(name)
+            return cls._load_secrets().get(name)
+
+        secrets = cls._load_secrets()
+        removed = False
+        for legacy_name in cls._legacy_names(name):
+            if secrets.pop(legacy_name, None):
+                removed = True
+        if removed:
+            cls._save_secrets(secrets)
+        return None
 
     @staticmethod
     def _parse_acct_names(dump_output: str) -> list[str]:

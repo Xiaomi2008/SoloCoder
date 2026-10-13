@@ -57,6 +57,21 @@ API_KEY_PROVIDERS: dict[str, ApiKeyProvider] = {
 }
 
 
+def _decode_payload(provider: str, raw: str | None) -> dict[str, Any] | None:
+    """Parse a stored payload. ``None`` when there is none, or it will not parse."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning(
+            f"Credential entry for '{provider}' is unreadable; discarding it. "
+            f"Sign in again with: auth login {provider}"
+        )
+        return None
+    return data if isinstance(data, dict) else None
+
+
 class AuthBroker:
     """Credential resolution, storage, and refresh."""
 
@@ -91,13 +106,18 @@ class AuthBroker:
         self._store.set_secret(self._account(provider), json.dumps(payload))
 
     def load_credentials(self, provider: str) -> Credentials | None:
-        raw = self._store.get_secret(self._account(provider))
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning(f"Ignoring corrupt credential entry for '{provider}'")
+        account = self._account(provider)
+        raw = self._store.get_secret(account)
+        data = _decode_payload(provider, raw)
+        if data is None and raw:
+            # An entry that will not parse is not a credential, and leaving it
+            # where it is wedges the provider: the keychain is read first, so a
+            # half-written item shadows the intact copy the file backend kept,
+            # `auth status` says "not signed in" about a token that is on disk,
+            # and the only way out is `auth logout`. Discard the unusable entry
+            # and take the copy that survives it.
+            data = _decode_payload(provider, self._store.quarantine_secret(account))
+        if data is None:
             return None
         tokens = data.get("tokens")
         return Credentials(

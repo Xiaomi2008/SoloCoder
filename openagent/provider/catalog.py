@@ -296,18 +296,30 @@ def _caps(**kw: Any) -> Capabilities:
 
 
 _BUILTINS: tuple[tuple[str, str, Capabilities, CostHint], ...] = (
+    # Hand-curated, offline, and it goes stale: nothing here is fetched, so a
+    # model that ships tomorrow does not appear until this table is edited. It
+    # exists so the picker is not empty on first launch with no server running,
+    # and every row is a claim — `models probe` is what turns it into a fact, and
+    # discovery from a running server replaces the row wholesale. Prices are
+    # deliberately left unset where they are not known: the CLI renders an
+    # unknown price as the cost kind, not a guess.
     (
-        "anthropic", "claude-sonnet-4-5",
+        "anthropic", "claude-sonnet-5-5",
         _caps(tools=True, vision=True, reasoning=True, streaming=True, json_mode=True, context_window=200000, max_output_tokens=64000),
-        CostHint(CostKind.PER_TOKEN, 3.0, 15.0),
+        CostHint(CostKind.PER_TOKEN),
     ),
     (
-        "anthropic", "claude-opus-4-1",
+        "anthropic", "claude-opus-5-5",
         _caps(tools=True, vision=True, reasoning=True, streaming=True, json_mode=True, context_window=200000, max_output_tokens=32000),
-        CostHint(CostKind.PER_TOKEN, 15.0, 75.0),
+        CostHint(CostKind.PER_TOKEN),
     ),
     (
-        "anthropic_oauth", "claude-sonnet-4-5",
+        "anthropic", "claude-haiku-4-5",
+        _caps(tools=True, vision=True, streaming=True, json_mode=True, context_window=200000, max_output_tokens=8192),
+        CostHint(CostKind.PER_TOKEN),
+    ),
+    (
+        "anthropic_oauth", "claude-opus-5-5",
         _caps(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
         CostHint(CostKind.SUBSCRIPTION),
     ),
@@ -321,6 +333,11 @@ _BUILTINS: tuple[tuple[str, str, Capabilities, CostHint], ...] = (
         _caps(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
         CostHint(CostKind.SUBSCRIPTION),
     ),
+    # Probed on a ChatGPT Plus account: this backend answers *every* model id —
+    # this one, gpt-6-x, gpt-5.1-codex-max — with the same "not supported when
+    # using Codex with a ChatGPT account", and its model listing is a 403 HTML
+    # page. The wording is generic, so it says nothing about any id; adding a
+    # newer one here would be a guess with no way to check it.
     (
         "gemini", "gemini-2.0-flash",
         _caps(tools=True, vision=True, streaming=True, context_window=1000000, max_output_tokens=8192),

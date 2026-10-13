@@ -155,6 +155,65 @@ def test_keychain_write_failure_falls_back_to_file(secret_file, monkeypatch):
     assert json.loads(secret_file.read_text()) == {"demo_key": "v1"}
 
 
+# --- a half-written keychain item -----------------------------------------
+#
+# The `security` CLI reads the secret from stdin a line at a time and can exit 0
+# having stored a prefix of it. Two things follow, and both are tested here: the
+# read-back check has to *remove* what it found, and a value that is already
+# stored and unreadable has to stop shadowing the copy that works.
+
+
+def _fake_security(stored: dict[str, str], limit: int = 1024):
+    """Stand in for `/usr/bin/security`, storing at most `limit` characters."""
+
+    def run(cmd, **kwargs):
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        account = cmd[cmd.index("-a") + 1]
+        if cmd[1] == "add-generic-password":
+            stored[account] = kwargs["input"].splitlines()[0][:limit]
+        elif cmd[1] == "find-generic-password":
+            Result.stdout = stored.get(account, "")
+        elif cmd[1] == "delete-generic-password":
+            stored.pop(account, None)
+        return Result()
+
+    return run
+
+
+def test_readback_mismatch_removes_the_half_written_item(secret_file, monkeypatch):
+    monkeypatch.setattr(SecretManager, "keychain_available", classmethod(lambda cls: True))
+    stored: dict[str, str] = {}
+    monkeypatch.setattr("openagent.core.config.subprocess.run", _fake_security(stored))
+
+    long_secret = "x" * 4281  # an OAuth payload is this order of magnitude
+    assert SecretManager.set_secret("auth:openai_oauth", long_secret) is True
+    # The truncated item is gone, and the whole payload is in the file backend.
+    assert stored == {}
+    assert json.loads(secret_file.read_text())["auth:openai_oauth"] == long_secret
+    assert SecretManager.get_secret("auth:openai_oauth") == long_secret
+
+
+def test_quarantine_drops_the_keychain_copy_and_keeps_the_file_copy(secret_file, fake_keychain):
+    secret_file.write_text(json.dumps({"auth:openai_oauth": "good"}))
+    fake_keychain["auth:openai_oauth"] = "{truncated"
+
+    assert SecretManager.quarantine_secret("auth:openai_oauth") == "good"
+    assert "auth:openai_oauth" not in fake_keychain
+    # The copy that works is still stored, so the next read finds it.
+    assert SecretManager.get_secret("auth:openai_oauth") == "good"
+
+
+def test_quarantine_drops_a_file_entry_that_cannot_be_used(secret_file, file_only):
+    secret_file.write_text(json.dumps({"auth:openai_oauth": "{truncated"}))
+
+    assert SecretManager.quarantine_secret("auth:openai_oauth") is None
+    assert json.loads(secret_file.read_text()) == {}
+
+
 def test_list_secrets_returns_names_not_values(secret_file, fake_keychain):
     SecretManager.set_secret("alpha_key", "secret-a")
     SecretManager.set_secret("beta_key", "secret-b")

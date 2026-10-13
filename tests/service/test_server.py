@@ -729,6 +729,33 @@ async def test_model_list_reports_policy_and_selection(connected: ServiceClient)
     assert {m["provider"] for m in data["models"]} >= {"lmstudio", "anthropic"}
 
 
+async def test_a_stored_default_that_names_no_row_is_not_reported(
+    harness: Harness, monkeypatch
+):
+    """A saved default outlives the curated table it was picked from.
+
+    The app adopts `default_model` when it has no selection of its own, so a
+    default the pool does not contain is a key the app will send to `run.start`
+    and be answered "unknown model" — for a model it never saw in the picker.
+    """
+    from openagent.core import config as core_config
+
+    cfg = core_config.Config()
+    cfg.models.default_model = "anthropic_oauth/claude-sonnet-4-5"
+    monkeypatch.setattr(core_config, "get_config", lambda: cfg)
+
+    service = await harness.serve()
+    client = await harness.connect(service)
+    data = await client.models()
+    keys = {f"{m['provider']}/{m['model']}" for m in data["models"]}
+    assert "anthropic_oauth/claude-sonnet-4-5" not in keys
+    assert data["default_model"] is None
+
+    # A default that is one of the rows is reported untouched.
+    cfg.models.default_model = "anthropic/claude-sonnet-5-5"
+    assert (await client.models())["default_model"] == "anthropic/claude-sonnet-5-5"
+
+
 async def test_startup_warms_the_catalog(harness: Harness):
     """A model server the user added is only in the catalog after discovery.
 
@@ -879,7 +906,7 @@ async def test_missing_credentials_become_not_authenticated(harness: Harness, wo
     try:
         client = await harness.connect(signed_out)
         with pytest.raises(RpcError) as exc:
-            await client.start_run("go", workdir, model="anthropic/claude-sonnet-4-5")
+            await client.start_run("go", workdir, model="anthropic/claude-sonnet-5-5")
         assert exc.value.code == ErrorCode.NOT_AUTHENTICATED
         assert exc.value.data["sign_in_hint"] == "openagent auth login anthropic"
     finally:

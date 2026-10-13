@@ -112,7 +112,7 @@ async def test_discover_is_silent_when_nothing_is_running(catalog, monkeypatch):
 
 def test_builtins_populate_the_catalog_offline(catalog):
     keys = {ref.key for ref in catalog.all_models()}
-    assert "anthropic/claude-sonnet-4-5" in keys
+    assert "anthropic/claude-sonnet-5-5" in keys
     assert "openai_oauth/gpt-5-codex" in keys
     assert "mlx/mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit" in keys
 

@@ -793,10 +793,18 @@ class AgentService:
             selected = router.select(Capabilities(tools=True), role="main").key
         except NoCapableModel:
             selected = None
+        default_key = router.rules.default_key
+        # A saved default outlives the curated table it was picked from: change
+        # the built-ins and the stored key names a model that is not in the pool.
+        # Handing the client a default it cannot select is how the app ends up
+        # sending `run.start` for a model it never listed, so the default is
+        # reported only when it is one of the rows.
+        if default_key and default_key not in {ref.key for ref in refs}:
+            default_key = None
         return {
             "models": [r.to_dict() for r in refs],
             "policy": str(router.rules.policy),
-            "default_model": router.rules.default_key,
+            "default_model": default_key,
             "selected": selected,
             "discovery_errors": dict(self.catalog.discovery_errors),
         }

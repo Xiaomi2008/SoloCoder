@@ -28,6 +28,10 @@ class DictStore:
     def delete_secret(self, name: str) -> bool:
         return self.data.pop(name, None) is not None
 
+    def quarantine_secret(self, name: str) -> str | None:
+        # One backend, so there is no copy left behind to hand back.
+        return self.data.pop(name, None)
+
 
 @pytest.fixture
 def store() -> DictStore:
@@ -83,6 +87,27 @@ def test_credentials_round_trip_through_the_store(broker, store):
 def test_corrupt_entry_is_ignored_not_fatal(broker, store):
     store.data["auth:anthropic"] = "{not json"
     assert broker.load_credentials("anthropic") is None
+
+
+def test_a_corrupt_entry_is_removed_so_it_stops_shadowing(broker, store):
+    """An unreadable entry must not outlive the read that found it.
+
+    Live: a ChatGPT sign-in printed "Signed in", the file backend kept the whole
+    payload, and `auth status` still said "not signed in" — the truncated keychain
+    item was read first, on every call, and the only way out was `auth logout`.
+    """
+    store.data["auth:openai_oauth"] = '{"mode": "oauth_subscription", "tokens": {"access_token": '
+    assert broker.load_credentials("openai_oauth") is None
+    assert "auth:openai_oauth" not in store.data
+    # A sign-in after that lands on a clean slate.
+    broker.save_api_key("openai_oauth", "sk-good")
+    assert broker.load_credentials("openai_oauth").api_key == "sk-good"
+
+
+def test_a_payload_that_is_not_an_object_is_not_a_credential(broker, store):
+    for junk in ("null", "[]", '"a string"', "42"):
+        store.data["auth:anthropic"] = junk
+        assert broker.load_credentials("anthropic") is None
 
 
 def test_delete_credentials(broker, store):

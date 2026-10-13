@@ -55,6 +55,9 @@ class FakeStore:
     def delete_secret(self, name):
         return self.data.pop(name, None) is not None
 
+    def quarantine_secret(self, name):
+        return self.data.pop(name, None)
+
 
 def test_auth_status_shows_both_credential_classes(parser, capsys, monkeypatch):
     broker = AuthBroker(store=FakeStore(), env={})  # nothing configured
@@ -72,7 +75,7 @@ def test_auth_status_shows_both_credential_classes(parser, capsys, monkeypatch):
 def test_models_list_prints_the_catalog(parser, capsys):
     assert cli.handle_models(parser.parse_args(["models", "list"])) == 0
     out = capsys.readouterr().out
-    assert "anthropic/claude-sonnet-4-5" in out
+    assert "anthropic/claude-sonnet-5-5" in out
     assert "TOOLS" in out
 
 

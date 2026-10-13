@@ -11,7 +11,7 @@ inside it. `scripts/package_check.sh` is the gate that says so.
 
 - Branch: `feat/computer-use-macos`, 29 commits ahead of origin — the phase 0–3i
   commits plus the streaming-view bound, nothing pushed
-- Python suite: **602 passed** (`.venv/bin/python -m pytest tests -q`)
+- Python suite: **609 passed** (`.venv/bin/python -m pytest tests -q`)
 - Swift suite: **382 checks passed** (`swift run agent-checks`), **395** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
@@ -308,6 +308,69 @@ and the transcript has a `.messageFailed` kind, so the row exists in the
 vocabulary; the view draws the modal and not the row. A failure the user can
 dismiss is a failure that never happened — the session file has no trace of it
 either.
+
+## Phase 3i+: the credential store, and the model table that went stale
+
+The live loop test needed a model, so the app signed in to ChatGPT. That sign-in
+took the whole session, and it is worth the detail because the store was the
+defect, twice.
+
+**A keychain write that fails must not leave anything behind.** `security
+add-generic-password` reads the secret from stdin a line at a time and can exit
+0 having stored a prefix of it. `_keychain_set` already noticed — it reads back
+and compares, and the comparison failed, so `set_secret` fell back to the file
+backend, which wrote the whole 4,281-character payload. What nothing noticed is
+the item the CLI left in the keychain: `get_secret` reads the keychain **first**,
+so the truncated prefix shadowed the intact copy on every later read, and
+`auth status` answered "Ignoring corrupt credential entry … not signed in" about
+a token sitting on disk. The only way out was `auth logout`. Three changes:
+`_keychain_set` deletes the item when the read-back does not match;
+`SecretManager.quarantine_secret` drops the entry `get_secret` would have
+returned and hands back the copy the other backend holds, left in place; and
+`AuthBroker.load_credentials` calls it when a payload will not parse. The repair
+runs on read, so the next `auth status` on the same machine printed
+`✓ ChatGPT Plus / Pro  signed in  385c0a82-…` with no re-sign-in.
+
+**The plan claim was read under the wrong name, and the test agreed with the
+code.** OpenAI spells it `chatgpt_plan_type`; `flow.py` read `plan_type`, and
+`test_oauth_flow` asserted `plan_type` — so the suite was green and every real
+sign-in stored `plan_type=None`. A test that repeats the code's spelling of a
+vendor field checks the spelling, not the field.
+
+**The Codex backend is closed to this account, and the wording proves nothing
+about model ids.** With a valid token, an account id, and plan `plus`, every id
+— `gpt-5-codex` (the endpoint's own default), `gpt-6-x`, `gpt-6-codex`,
+`gpt-5.1-codex-max`, `gpt-5.1-codex-mini` — returns the identical
+`400 {"detail": "The 'X' model is not supported when using Codex with a ChatGPT
+account."}`, and `GET /models` returns a 403 HTML page. Sending the account id as
+`ChatGPT-Account-Id` instead of `OpenAI-Organization`, or not sending it, changes
+nothing. So the message is generic: it is not evidence that any id is right or
+obsolete, and no id added to the catalog here could be checked. The subscription
+path is not usable from this machine; `lan/swift-1.5-iq3_s` is.
+
+**The built-in model table is hand-curated, offline, and it went stale.** It is
+not fetched from anywhere, so it is a list of what the repo author knew when the
+file was written: `claude-opus-4-1`, `gpt-4o`, `gemini-2.0-flash`. The Anthropic
+rows now name the Claude 5 family, the endpoint defaults moved with them, and
+prices are left unset where they are not known — the CLI renders an unknown price
+as the cost kind, and a made-up number is worse than none.
+
+**A stored default must be one of the rows.** `~/.openagent/config.json` still
+says `default_model: anthropic_oauth/claude-sonnet-4-5`. The app adopts
+`default_model` when it has no selection of its own, and `run.start` for a model
+the catalog does not contain answers `MODEL_UNAVAILABLE: unknown model` — so
+refreshing the table would have broken the app's default. `_model_list` now
+reports `default_model` only when it is among the rows it returns.
+
+**The picker is as fresh as the last `model.list`.** The app calls
+`models(discover: true)`, and the sidecar's discovery does find
+`lan/swift-1.5-iq3_s` (200, one id) with the stored key. The menu showed nine
+rows and no `lan` row because it was the snapshot from before the LAN server was
+reachable; pressing Refresh re-ran discovery and the row appeared as
+`lan/swift-1.5-iq3_s`. A model server that comes up after the sidecar starts is
+invisible until something asks again.
+
+Gates: **609** Python tests.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 
@@ -935,6 +998,16 @@ and deletes them, through `session.delete`.
 - **`hello` reports `terminal_event_types`** and a client ends a *run* on the
   union of its own set and the server's, so a terminal event added in a later
   protocol version closes an older client's timeline instead of leaving it open.
+
+- **A store that reads one backend first needs a documented way to discard what
+  it found there.** Keychain-then-file means a half-written keychain value is
+  returned forever, and the intact file copy is unreachable. The read path needs
+  a "this one is unusable, give me the next" — and the write path needs to delete
+  what it failed to write.
+- **A test that asserts the code's spelling of a vendor field proves nothing.**
+  `plan_type` vs `chatgpt_plan_type`: the fixture and the code agreed, the suite
+  was green, and the field was blank for every real sign-in. Fixtures for
+  third-party payloads should be copied from a real payload.
 
 ## Git
 

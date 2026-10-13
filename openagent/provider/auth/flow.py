@@ -125,8 +125,15 @@ def token_from_response(spec: OAuthProviderSpec, payload: dict) -> TokenSet:
         claims = decode_jwt_claims(access_token)
         account_id = account_id or _lookup(claims, spec.account_claim)
         auth_claim = claims.get("https://api.openai.com/auth")
-        if isinstance(auth_claim, dict) and isinstance(auth_claim.get("plan_type"), str):
-            plan_type = auth_claim["plan_type"]
+        if isinstance(auth_claim, dict):
+            # OpenAI spells this claim `chatgpt_plan_type`; the Anthropic-style
+            # claim is `plan_type`. Reading only the second left the plan blank
+            # for every ChatGPT sign-in, and the plan is the one line that
+            # explains a backend that refuses every model for the account.
+            for key in ("chatgpt_plan_type", "plan_type"):
+                if isinstance(auth_claim.get(key), str):
+                    plan_type = auth_claim[key]
+                    break
 
     return TokenSet(
         access_token=access_token,

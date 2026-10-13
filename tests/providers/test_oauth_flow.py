@@ -86,19 +86,33 @@ def test_anthropic_token_response_yields_account_and_expiry():
     assert tokens.expires_at > time.time() + 3500
 
 
+def _tokens_with_auth_claim(spec, auth_claim: dict):
+    payload = {"https://api.openai.com/auth": auth_claim}
+    jwt = "h." + base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode() + ".s"
+    return token_from_response(spec, {"access_token": jwt, "refresh_token": "rt"})
+
+
 def test_openai_token_response_reads_the_account_id_from_the_jwt():
     """The ChatGPT account id lives in a namespaced JWT claim, and the
-    inference call will not route without it."""
-    payload = {
-        "https://api.openai.com/auth": {
-            "chatgpt_account_id": "acct_42",
-            "plan_type": "plus",
-        }
-    }
-    jwt = "h." + base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode() + ".s"
-    tokens = token_from_response(OPENAI_OAUTH_SPEC, {"access_token": jwt, "refresh_token": "rt"})
+    inference call will not route without it.
+
+    The claim spellings are the vendor's, not ours: a real ChatGPT access token
+    says `chatgpt_plan_type`. This test used to assert `plan_type`, matched the
+    code, and so hid a plan that read blank on every real sign-in.
+    """
+    tokens = _tokens_with_auth_claim(
+        OPENAI_OAUTH_SPEC, {"chatgpt_account_id": "acct_42", "chatgpt_plan_type": "plus"}
+    )
     assert tokens.account_id == "acct_42"
     assert tokens.plan_type == "plus"
+
+
+def test_the_vendors_spelling_of_the_plan_wins_when_both_are_present():
+    tokens = _tokens_with_auth_claim(
+        OPENAI_OAUTH_SPEC,
+        {"chatgpt_account_id": "acct_42", "chatgpt_plan_type": "pro", "plan_type": "stale"},
+    )
+    assert tokens.plan_type == "pro"
 
 
 def test_missing_access_token_is_an_explicit_error():
