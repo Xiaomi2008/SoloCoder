@@ -585,7 +585,7 @@ struct AnswerLine: View {
     var body: some View {
         switch line.kind {
         case .assistant(let text):
-            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks, tail: line.tailText)
+            AssistantLine(text: text, streaming: line.streaming, shown: line.streamingBlocks, tail: line.tailText)
         case .messageFailed(let error):
             FailedLine(error: error)
         default:
@@ -617,10 +617,14 @@ extension AnswerLine: Equatable {}
 /// scanning on a gate, its `blocks` stop at the oldest blank line and a fresh
 /// split's tail starts after the newest, so the text between them was drawn by
 /// neither and disappeared while the answer streamed.
+///
+/// The bound is not applied here. It is `TranscriptLine.streamingBlocks`, which
+/// the core computes: "at most 60 blocks, each at most 2000 characters, and here
+/// is what that left out" is a fact a check can assert, and a view cannot.
 struct AssistantLine: View {
     let text: String
     let streaming: Bool
-    var blocks: [MarkdownBlock] = []
+    var shown: ShownBlocks = ShownBlocks()
     var tail: String = ""
 
     var body: some View {
@@ -631,7 +635,15 @@ struct AssistantLine: View {
             }
         } else if streaming {
             VStack(alignment: .leading, spacing: 8) {
-                BlocksView(blocks: blocks)
+                if shown.hiddenBlocks > 0 {
+                    Text("… \(shown.hiddenBlocks) blocks above are not shown")
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
+                BlocksView(blocks: shown.shown)
+                if shown.cutChars > 0 {
+                    Text("… \(shown.cutChars) characters of this answer are not shown")
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
                 if !tail.isEmpty {
                     Text(tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -674,7 +686,7 @@ struct LineView: View {
             // here so the switch is total and stays total when a kind is added.
             UserBubble(text: text)
         case .assistant(let text):
-            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks, tail: line.tailText)
+            AssistantLine(text: text, streaming: line.streaming, shown: line.streamingBlocks, tail: line.tailText)
         case .reasoning(let text):
             ReasoningLine(text: text, streaming: line.streaming, duration: reasoningDuration)
         case .messageFailed(let error):

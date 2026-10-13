@@ -104,6 +104,28 @@ public struct CompactionRow: Identifiable, Equatable, Sendable {
     public var state: State
 }
 
+/// What a streaming answer is drawn as: the blocks in the bound, and the count of
+/// everything the bound left out.
+///
+/// The counts are part of the answer, not decoration the view invents: a row that
+/// says "1,843 blocks above" is the difference between a UI that dropped text and
+/// a UI that is showing you the end of a long run.
+public struct ShownBlocks: Equatable, Sendable {
+    public var shown: [MarkdownBlock] = []
+    /// Blocks that exist and are not drawn, all of them before `shown`.
+    public var hiddenBlocks: Int = 0
+    /// Characters cut off the blocks that are drawn.
+    public var cutChars: Int = 0
+
+    public init(shown: [MarkdownBlock] = [], hiddenBlocks: Int = 0, cutChars: Int = 0) {
+        self.shown = shown
+        self.hiddenBlocks = hiddenBlocks
+        self.cutChars = cutChars
+    }
+
+    public var isEmpty: Bool { shown.isEmpty && hiddenBlocks == 0 }
+}
+
 public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case user(String)
@@ -165,6 +187,25 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public var tailText: String = ""
     /// The answer length `blocks` was last scanned at, the gate's floor.
     var parsedLength: Int = 0
+    /// The blocks a streaming answer draws, and what the bound left out.
+    ///
+    /// `blocks` is the answer's committed structure and is never trimmed — the
+    /// stored answer is the answer. This is what the view is allowed to lay out,
+    /// and it is bounded on both axes: the last `answerBlocksShown` blocks, each
+    /// cut to `answerBlockCharsShown`. The last blocks, not the first, because a
+    /// streaming answer is read at its end, where the text is arriving.
+    ///
+    /// A finished line ignores this and is drawn whole; see the constants.
+    public var streamingBlocks: ShownBlocks {
+        let keep = Array(blocks.suffix(Transcript.answerBlocksShown))
+        var out = ShownBlocks(hiddenBlocks: blocks.count - keep.count)
+        for block in keep {
+            let (cut, dropped) = Transcript.capBlock(block)
+            out.shown.append(cut)
+            out.cutChars += dropped
+        }
+        return out
+    }
     /// When the line arrived.
     ///
     /// The turn's "Worked for 2m 50s" is the distance between the line that opened
@@ -805,6 +846,78 @@ public struct Transcript: Equatable, Sendable {
     /// only make it late: most answers are under this, and the first one that
     /// commits should render as soon as it commits. Above it, the gate runs.
     public static let answerScanFreely = 2_000
+
+    /// The most blocks a streaming answer draws, and the most characters of each.
+    ///
+    /// The cap bounds the answer's characters and the gate bounds the scans, and
+    /// the app *still* wedged on a live looping run: main thread pinned at 100%,
+    /// RSS climbing 6 MB/s (178 MB → 782 MB in two minutes), `sample` putting the
+    /// main thread inside SwiftUI's attribute graph — `AG::Subgraph::update`,
+    /// `ViewLayoutEngine.sizeThatFits`, `SelectionOverlay.updateNSView` — with no
+    /// frame from this codebase in it at all. The reducer was not the cost; the
+    /// unit was. A publish lays the streaming answer out as views: one per block,
+    /// and one text view per block however long that block is. Measured
+    /// (`swift run ui-cost`, section 2c), a looping answer with blank lines leaves
+    /// 2,573 blocks; one without blank lines leaves a single paragraph of 18,005
+    /// characters. Both are a per-publish cost that grows with a run that does not
+    /// stop, which is the same defect wearing the answer's clothes.
+    ///
+    /// 60 blocks is about three screens of answer — the reading position — and
+    /// 2,000 characters is about one. What is beyond them is counted in the line,
+    /// and the tail, the text that is arriving, is never cut. A finished answer
+    /// is drawn whole: one layout of the product is not this defect.
+    public static let answerBlocksShown = 60
+    public static let answerBlockCharsShown = 2_000
+
+    /// Cut one block to the drawing bound, and say how many characters came off.
+    static func capBlock(_ block: MarkdownBlock) -> (MarkdownBlock, Int) {
+        let limit = answerBlockCharsShown
+        func cut(_ text: String) -> (String, Int) {
+            let n = text.utf8.count
+            guard n > limit else { return (text, 0) }
+            return (String(text.prefix(limit)), n - limit)
+        }
+        // A list is cut at an item, not mid-item: half a bullet is not a bullet,
+        // and the bound is approximate in the same way `reasoningKeep` is.
+        func cutItems(_ items: [String]) -> ([String], Int) {
+            var kept: [String] = []
+            var used = 0
+            for item in items {
+                let n = item.utf8.count
+                if used + n > limit, !kept.isEmpty { break }
+                kept.append(item)
+                used += n
+            }
+            return (kept, items.dropFirst(kept.count).reduce(0) { $0 + $1.utf8.count })
+        }
+        switch block {
+        case .paragraph(let text):
+            let (t, d) = cut(text); return (.paragraph(t), d)
+        case .heading(let level, let text):
+            let (t, d) = cut(text); return (.heading(level: level, text: t), d)
+        case .code(let language, let text):
+            let (t, d) = cut(text); return (.code(language: language, text: t), d)
+        case .bullets(let items):
+            let (k, d) = cutItems(items); return (.bullets(k), d)
+        case .numbered(let items):
+            let (k, d) = cutItems(items.map(\.text)); return (.numbered(Array(items.prefix(k.count))), d)
+        case .quote(let lines):
+            let (k, d) = cutItems(lines); return (.quote(k), d)
+        case .table(let rows):
+            var kept: [[String]] = []
+            var used = 0
+            for row in rows {
+                let n = row.reduce(0) { $0 + $1.utf8.count }
+                if used + n > limit, !kept.isEmpty { break }
+                kept.append(row)
+                used += n
+            }
+            let dropped = rows.dropFirst(kept.count).reduce(0) { r, row in r + row.reduce(0) { $0 + $1.utf8.count } }
+            return (.table(rows: kept), dropped)
+        case .rule:
+            return (block, 0)
+        }
+    }
 
     /// Cut an answer back to the cap. Above it, the line is the head, a visible
     /// count of what is missing, and the tail.

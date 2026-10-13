@@ -501,6 +501,92 @@ func transcriptChecks(_ checks: Checks) throws {
         (midLine?.tailText ?? "").contains(paragraphs[295]),
         "the tail carries the paragraphs committed since the last scan, not just the last line"
     )
+
+    // MARK: the bound on what a publish lays out
+
+    // The cap bounds the answer's characters and the gate bounds the scans, and
+    // the app *still* wedged on a live looping run: CPU pinned at 100%, RSS
+    // climbing 6 MB/s (178 MB → 782 MB in two minutes), `sample` putting the main
+    // thread inside SwiftUI's attribute graph with no frame from this codebase in
+    // it at all. The unit was wrong. A publish lays the streaming answer out as
+    // views — one per block, and one text view per block however long that block
+    // is. Measured (`swift run ui-cost`, section 2c): a looping answer with blank
+    // lines leaves 2,573 blocks; one without blank lines leaves a single paragraph
+    // of 18,005 characters. Both are laid out whole, every 60 ms, for as long as
+    // the run does not stop.
+
+    // The 300 paragraphs above, drawn. The bound keeps the end, where the text is
+    // arriving, and counts the rest so the row can say what it left out.
+    let shown = midLine?.streamingBlocks ?? ShownBlocks()
+    checks.expect(
+        shown.shown.count <= Transcript.answerBlocksShown,
+        "a publish lays out at most \(Transcript.answerBlocksShown) blocks (\(shown.shown.count))"
+    )
+    checks.expect(
+        shown.hiddenBlocks == (midLine?.blocks.count ?? 0) - shown.shown.count,
+        "the hidden count is the difference and not a guess (\(shown.hiddenBlocks) hidden)"
+    )
+    // The newest committed block, which is the end of what the reducer has parsed.
+    // The newest of the *answer* is in the tail, and the tail is never cut.
+    let newestCommitted = blocksText(Array((midLine?.blocks ?? []).suffix(1)))
+    checks.expect(
+        shown.hiddenBlocks > 0,
+        "the bound is doing something here: \(shown.hiddenBlocks) blocks hidden"
+    )
+    checks.expect(
+        !newestCommitted.isEmpty && blocksText(shown.shown).contains(newestCommitted),
+        "the bound keeps the newest committed block — that is where the user is reading"
+    )
+    checks.expect(
+        !blocksText(shown.shown).contains(paragraphs[0]),
+        "and drops the top, which is off the screen anyway"
+    )
+    checks.expect(
+        (midLine?.tailText ?? "").contains("the last line, still arriving"),
+        "the bound never cuts the tail — the arriving text is the point"
+    )
+    checks.expect(
+        blocksText(midLine?.blocks ?? []).contains(paragraphs[0]),
+        "the stored blocks are untouched: the bound is on the drawing, not on the answer"
+    )
+
+    // The other shape a loop takes: no blank lines, so one paragraph, and the
+    // bound has to cut inside a block, not only between them.
+    var oneParagraph: [AgentEvent] = [
+        try ev(#"{"type":"run_started","run_id":"r1"}"#),
+        try ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+    ]
+    for _ in 0..<4_000 {
+        oneParagraph.append(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"apple\n"}"#))
+    }
+    let runOn = try fold(oneParagraph)
+    let runOnLine = runOn.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    let shownRunOn = runOnLine?.streamingBlocks ?? ShownBlocks()
+    checks.expect(
+        shownRunOn.shown.count == 1,
+        "one paragraph is one block, however long it is (\(shownRunOn.shown.count))"
+    )
+    checks.expect(
+        blocksText(shownRunOn.shown).utf8.count <= Transcript.answerBlockCharsShown,
+        "and the drawing of it is bounded: \(blocksText(shownRunOn.shown).utf8.count) characters"
+    )
+    checks.expect(
+        shownRunOn.cutChars > 10_000,
+        "the cut is counted, so the row can say what it dropped (\(shownRunOn.cutChars) characters)"
+    )
+
+    // A finished answer is drawn whole. One layout of the product is not this
+    // defect, and a bound answer in the pasteboard is a bound answer.
+    let finished = try fold([
+        ev(#"{"type":"run_started","run_id":"r1"}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        ev(#"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":"a whole answer, in full"}"#),
+    ])
+    let finishedLine = finished.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    checks.expect(
+        finishedLine?.streamingBlocks.isEmpty ?? false,
+        "a finished answer is drawn whole — the bound is for the stream, not the product"
+    )
 }
 
 /// The text a block shows, for the checks that ask what is on the screen.

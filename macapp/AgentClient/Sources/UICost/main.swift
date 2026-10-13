@@ -21,7 +21,15 @@ import Foundation
 //                   line, and 13 µs per delta with a newline in every one at 200k
 //                   characters — `answerTrimAt` bounds the string, `answerReparseEvery`
 //                   bounds the scans. Ungated and uncapped that last case was 57 ms
-//                   per delta and 719 s for the run, which is the app dying of it
+//                   per delta and 719 s for the run
+//   what a publish draws  the number that wedged the app, and it is not a fold
+//                   number (section 2c). A looping answer leaves 2,573 blocks with
+//                   blank lines, one paragraph of 18,005 characters without them,
+//                   or one bullet list of 11,245 — and a publish lays all of it out,
+//                   every 60 ms, for as long as the run does not stop. The fold of
+//                   the same 24k is 105 ms for the whole run, so the fold is not
+//                   where the core went. `streamingBlocks` bounds the drawing to 60
+//                   blocks of 2,000 characters and counts what the bound left out
 //   one publish     7 µs at 401 lines, 66 µs at 4001: the copy-on-write copy of the
 //                   lines array, paid on the next mutation, linear in line count,
 //                   ~0.1% of the 60 ms cadence
@@ -33,7 +41,10 @@ import Foundation
 // So the transcript is not what a long session costs the app. The views are: a
 // publish is a view-graph re-render, and the 60 ms buffer is what keeps the flood
 // of deltas from being one re-render each (see the HANDOFF note on published
-// writes). Nothing here is on the table.
+// writes). That last sentence is not a hypothesis any more — the live looping run
+// pinned a core with the fold at 386 ms, and `sample` named SwiftUI's layout and
+// nothing from here. So the fold numbers are the floor, and section 2c's drawn
+// counts are the thing to watch.
 
 func ev(_ s: String) -> AgentEvent { try! AgentEvent.decode(from: Data(s.utf8)) }
 
@@ -252,6 +263,79 @@ func foldAnswerParsed(chars: Int, chunk: Int) {
 foldAnswerParsed(chars: 20_000, chunk: 8)
 foldAnswerParsed(chars: 80_000, chunk: 8)
 foldAnswerParsed(chars: 200_000, chunk: 8)
+
+// 2c. What the looping answer leaves for the view.
+//
+// The cap bounds the answer's characters and the gate bounds the scans, and the
+// app *still* wedged on a live looping run: main thread pinned at 100%, RSS
+// climbing 6 MB/s (178 MB → 782 MB in two minutes), and `sample` putting the
+// main thread inside SwiftUI's attribute graph — `AG::Subgraph::update`,
+// `ViewLayoutEngine.sizeThatFits`, `SelectionOverlay.updateNSView` — with **no
+// frame from this codebase in it at all**. The reducer is not the cost.
+//
+// The reason is the unit. 32,000 characters of *list* is not one long string the
+// view draws once; it is a row per line, and the streaming answer draws its
+// finished blocks as a view per block. So the number that predicts the wedge is
+// not the character count, it is `blocks.count` — the count of views the 60 ms
+// publish lays out, every time.
+func loopAnswer(chars: Int, line: String, blank: Bool, label: String = "") {
+    var t = Transcript()
+    t.addUserMessage("do the thing")
+    t.apply(ev(#"{"type":"run_started","run_id":"r"}"#))
+    t.apply(ev(#"{"type":"message_started","run_id":"r","message_id":"m"}"#))
+    let payload = line + "\\n" + (blank ? "\\n" : "")
+    let event = ev(#"{"type":"message_delta","run_id":"r","message_id":"m","delta":"\#(payload)"}"#)
+    let n = chars / (line.utf8.count + 2 + (blank ? 2 : 0))
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    for _ in 0..<n { t.apply(event) }
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+    guard let out = t.lines.last(where: { if case .assistant = $0.kind { return true } else { return false } })
+    else { return }
+    var kept = 0
+    if case .assistant(let text) = out.kind { kept = text.utf8.count }
+    // The characters the view lays out as text views: one block is one view, and
+    // one paragraph block is one text view however long it is.
+    let shown = out.blocks.reduce(0) { $0 + blockChars($1) }
+    // What the bound leaves the view: the blocks it draws, and the characters in
+    // them. This is the row that matters — the fold was never the cost.
+    let drawn = out.streamingBlocks
+    print(String(
+        format: """
+            loop answer%@: %7d chars streamed: fold %6.1f ms; kept %6d chars, %5d blocks, \
+            %6d chars in them, tail %5d chars
+              drawn: %3d blocks of %5d chars (was %5d of %6d); %d blocks and %d chars left out
+            """,
+        label, chars, ms, kept, out.blocks.count, shown, out.tailText.utf8.count,
+        drawn.shown.count, drawn.shown.reduce(0) { $0 + blockChars($1) }, out.blocks.count, shown,
+        drawn.hiddenBlocks, drawn.cutChars
+    ))
+}
+
+/// The characters of a block, the way the view sees them: one text view per block.
+func blockChars(_ block: MarkdownBlock) -> Int {
+    switch block {
+    case .paragraph(let text): return text.utf8.count
+    case .heading(_, let text): return text.utf8.count
+    case .code(_, let text): return text.utf8.count
+    case .bullets(let items): return items.reduce(0) { $0 + $1.utf8.count }
+    case .numbered(let items): return items.reduce(0) { $0 + $1.text.utf8.count }
+    case .quote(let lines): return lines.reduce(0) { $0 + $1.utf8.count }
+    case .table(let rows): return rows.reduce(0) { r, row in r + row.reduce(0) { $0 + $1.utf8.count } }
+    case .rule: return 3
+    }
+}
+
+loopAnswer(chars: 8_000, line: "apple", blank: false)
+loopAnswer(chars: 24_000, line: "apple", blank: false)
+loopAnswer(chars: 64_000, line: "apple", blank: false)
+loopAnswer(chars: 8_000, line: "apple", blank: true)
+loopAnswer(chars: 24_000, line: "apple", blank: true)
+loopAnswer(chars: 64_000, line: "apple", blank: true)
+// The third shape, and the one a "list every file" answer takes: a bullet per
+// line, no blank lines, so one `.bullets` block of thousands of items — one block
+// to the counter above, thousands of rows to the view.
+loopAnswer(chars: 24_000, line: "- apple", blank: false, label: " (bullets)")
+loopAnswer(chars: 64_000, line: "- apple", blank: false, label: " (bullets)")
 
 // 3. One published write.
 //

@@ -9,10 +9,10 @@ own service and drives real runs, and `scripts/build_app.sh` produces a signed
 119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
 inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`, 28 commits ahead of origin — the phase 0–3i
-  commits, nothing pushed
+- Branch: `feat/computer-use-macos`, 29 commits ahead of origin — the phase 0–3i
+  commits plus the streaming-view bound, nothing pushed
 - Python suite: **602 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **371 checks passed** (`swift run agent-checks`), **384** with
+- Swift suite: **382 checks passed** (`swift run agent-checks`), **395** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
   it; add
@@ -31,14 +31,18 @@ inside it. `scripts/package_check.sh` is the gate that says so.
 - The sidebar names sessions and deletes them (phase 3i): a title stored once at
   the head of the file, `session.delete`, and the run's claim on a session id
   closing the delete-while-writing race
-- An answer is bounded, and the scan of it is gated (phase 3i): 12k head + 4k
-  tail with the count of what it dropped shown in the line, and one markdown
-  re-parse per 4k characters. An unbounded, ungated answer wedged the app at 100%
-  CPU — 200k streamed characters measured 719 s to fold, and it measures 386 ms now
-- Working tree: clean as of the phase 3i commit (2026-10-13). `.build/app/SoloCoder.app`
-  (120 MB) is rebuilt from it and passes the packaging gate, so it ships
-  `session.delete`; `/Applications/SoloCoder.app` is still the phase 3h build and
-  does not know that method — installing the new bundle is the step left
+- An answer is bounded, its scan is gated, and what a publish *draws* is bounded
+  too (phase 3i): 12k head + 4k tail with the count of what it dropped shown in
+  the line, one markdown re-parse per 4k characters, and at most 60 blocks of 2,000
+  characters on screen while it streams. An unbounded, ungated answer wedged the
+  app at 100% CPU — 200k streamed characters measured 719 s to fold, and it
+  measures 386 ms now. Fixing the fold did not stop the wedge: the live looping run
+  still pinned a core, and the cost was the 2,573 views a publish laid out
+- Working tree: clean as of the streaming-view-bound commit (2026-10-13).
+  `.build/app/SoloCoder.app` (120 MB) is rebuilt from it and passes the packaging
+  gate, so it ships `session.delete` and the bound;
+  `/Applications/SoloCoder.app` is still the phase 3h build and does not know that
+  method — installing the new bundle is the step left
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
   (`fastapi`); a `uv run` sync prunes extras, and it did mid-session
 
@@ -241,13 +245,69 @@ paragraph of a 300-paragraph streamed answer on the screen exactly once, the tai
 holding the newest text and what committed since the last scan, the blocks
 stopping short of it.
 
-**Not verified in the app, and that is the one open item.** The bound and the gate
-are measured in the harness and held by checks; the live re-run — resume
-`sess_31cd4c9ed29e412e91adcf4f`, stream an answer, watch CPU and RSS stay flat —
-is queued behind a display that will not wake. `caffeinate -u`, a CGEvent mouse
-move and a fresh launch all failed: capture answers *could not create image from
-window*, and accessibility answers `AXApplication` for a point inside the window,
-which is the sleeping-display signature, not a permission problem.
+**The reducer was fixed and the app still wedged, and only the live run said so.**
+With the display awake: a normal 21,997-character, 320-newline answer streamed
+clean — 29% CPU average, 93.5% peak, RSS 175 MB → 451 MB and flat after that,
+rendered as markdown, title stored. Then the looping prompt that had wedged
+before, with the cap and the gate both in: CPU pinned at 100%, RSS 178 MB → 782 MB
+in two minutes, 6.3 MB/s. `sample` put the main thread in
+`GraphHost.runTransaction` → `AG::Subgraph::update` → `ViewLayoutEngine.sizeThatFits`,
+`NSConstraintBasedLayoutInternal`, `NSControl setFont:`,
+`SelectionOverlay.updateNSView` — **no frame from `AgentAppCore` or `AgentAppUI`
+in the sample at all.** The 386 ms above is real, and it is not the cost.
+
+The unit was wrong. A publish lays the streaming answer out as **views**: one per
+block, and one text view per block however long that block is. Measured
+(`swift run ui-cost`, section 2c), a looping answer with blank lines leaves 2,573
+blocks; one without blank lines leaves a single paragraph of 18,005 characters; a
+bulleted loop leaves one `.bullets` block of 11,245 characters. All of it laid out,
+whole, every 60 ms, for as long as the run does not stop.
+
+So the **view** is bounded, on both axes, in the core: `answerBlocksShown = 60`
+(about three screens of answer — the reading position) and
+`answerBlockCharsShown = 2_000` (about one), applied by
+`TranscriptLine.streamingBlocks`, which returns the blocks to draw and counts what
+the bound left out (`hiddenBlocks`, `cutChars`) so the row can say *… 2,513 blocks
+above are not shown*. The last blocks, not the first, because a streaming answer
+is read where the text is arriving. The stored answer is untouched — the cap keeps
+12k head and 4k tail, `blocks` is never trimmed, and the tail is never cut. A
+**finished** answer is drawn whole: one layout of the product is not this defect,
+and a bounded answer in the pasteboard is a bounded answer.
+
+| loop shape, 24k streamed | what a publish laid out | now |
+|---|---|---|
+| no blank lines | 1 block of 18,005 chars | 1 block of 2,000 |
+| blank lines | 2,573 blocks of 12,865 chars | 60 blocks of 300 |
+| bullets, no blank lines | 1 block of 11,245 chars | 1 block of 2,000 |
+
+Twenty checks in `TranscriptChecks` cover all of it, eleven of them this last
+bound: the block count, the hidden count being the difference and not a guess, the
+newest committed block surviving the bound, the top dropped, the tail untouched,
+the stored blocks intact, one paragraph of 18k drawn as 2,000 characters with the
+cut counted, and a finished line drawing nothing from the bound because it is drawn
+whole.
+
+**The live re-run of the loop is still open, and it is open on a credential, not
+on a display.** The app streamed a normal 21,997-character answer clean with the
+bound in, and the harness says the drawing is bounded; the looping prompt that
+wedged needs a model the app can reach, and none is reachable right now:
+`lmstudio/qwen3-coder-32b` (the router's choice) is not serving, `ollama` and
+`mlx` are not running, and the app's sidecar answers
+`notAuthenticated (-33002)` for `gemini` and for `anthropic_oauth` — the
+subscription auth this CLI uses is not in the app's environment. The `lan`
+endpoint answers 401 (reachable, key needed) and is not in the app's model menu
+at all, because discovery of a `requires_key` endpoint with no key lists nothing.
+So: start LM Studio, or give the app a credential, and the run is two clicks.
+
+**A refused run leaves no row in the timeline, and that is a defect this run
+found.** Send a prompt with a model that has no credential: the app shows
+*The service said no — notAuthenticated (-33002)* as a modal, and dismissing it
+leaves the two prompts and nothing else. The app model does record the failure
+(`AppModelChecks`: "state after an unreachable run: Failed: Connection error."),
+and the transcript has a `.messageFailed` kind, so the row exists in the
+vocabulary; the view draws the modal and not the row. A failure the user can
+dismiss is a failure that never happened — the session file has no trace of it
+either.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 
@@ -632,8 +692,8 @@ cd /Users/taozeng/Projects/SoloCoder
 .venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
 
 cd macapp/AgentClient
-swift run agent-checks                              # 371 checks passed
-AGENT_REPO_ROOT=../.. swift run agent-checks        # 384, + the app-model checks
+swift run agent-checks                              # 382 checks passed
+AGENT_REPO_ROOT=../.. swift run agent-checks        # 395, + the app-model checks
 AGENT_REPO_ROOT=../.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s \
     swift run agent-checks                          # …and a real streamed run
 AGENT_REPO_ROOT=../.. swift run solocoder           # the app (see the note below)
@@ -756,6 +816,17 @@ and deletes them, through `session.delete`.
   162 s with a 32k cap; gating *how often* it scans is the other half. The
   length test is not the cost — `String.utf8.count` is O(1) on a Swift String,
   ASCII or not, measured on 200k of each — so the search does not go there.
+- **Bound the unit the screen pays, not only the unit the code pays.** With the
+  fold measured at 386 ms for a 200k-character answer, the live looping run still
+  pinned a core and grew RSS 6 MB/s, and `sample` named no frame from this
+  codebase: the cost was SwiftUI laying out the streaming answer's 2,573 blocks —
+  or one paragraph of 18,005 characters — every 60 ms. A character cap does not
+  bound a *view* count, and one block is not one view: a paragraph is a text view
+  of its whole length, and a bullet list is a row per item inside one block. So
+  the drawing is bounded on both axes (60 blocks, 2,000 characters each) and the
+  counts of what fell out are part of the core's answer, not invented by the view.
+  The probe that found it prints `blocks.count` and the drawn characters, not the
+  fold time (`ui-cost`, section 2c).
 - **Probe services accumulate in `/tmp`.** A sidecar's socket directory is named
   after its parent's pid, so a probe that uses `/tmp/probehome` leaves a service
   with a name that says nothing. `pgrep -f "serve --socket"` before concluding
