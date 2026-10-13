@@ -1,3 +1,4 @@
+import AgentAppCore
 import AgentClient
 import Foundation
 
@@ -308,6 +309,15 @@ func liveSession(
     checks.equal(info.server, "openagent", "handshake server name")
     checks.equal(Set(info.methods), Wire.methods, "the server's methods match this client's")
     checks.equal(Set(info.events), Wire.eventTypes, "the server's events match this client's")
+    checks.equal(
+        Set(info.terminalEventTypes ?? []),
+        Wire.terminalEventTypes,
+        "the server declares which events end a stream"
+    )
+    checks.expect(
+        await client.terminalEventTypes.isSuperset(of: Wire.terminalEventTypes),
+        "the client ends streams on the union of both sets"
+    )
     checks.expect(try await client.ping(), "ping")
 
     let tools = try await client.tools()
@@ -374,11 +384,14 @@ func liveSession(
     )
     checks.equal(started.model, model, "run.start reports the model it used")
 
+    var transcript = Transcript(terminalTypes: await client.terminalEventTypes)
+    transcript.addUserMessage("List the files here with a tool, then say how many there are.")
     var types: [String] = []
     var sawDelta = false
     var sawTool = false
     for await event in stream {
         types.append(event.type)
+        transcript.apply(event)
         if case .messageDelta = event { sawDelta = true }
         if case .toolCallCompleted = event { sawTool = true }
         if event.isTerminal { break }
@@ -391,6 +404,19 @@ func liveSession(
         types.last.map { Wire.terminalEventTypes.contains($0) } ?? false,
         "the stream ends on a terminal event"
     )
+
+    // The reducer, fed a real stream rather than a scripted one: this is what
+    // the app renders, and a protocol field the UI needs shows up here as a
+    // missing line, not as a compile error.
+    checks.expect((transcript.finalText ?? "").isEmpty == false, "the timeline holds the model's answer")
+    checks.expect(!transcript.toolRows.isEmpty, "the timeline shows the tool the model used")
+    checks.expect(
+        transcript.toolRows.allSatisfy({ if case .running = $0.state { return false } else { return true } }),
+        "no tool row is left running after the run ends"
+    )
+    checks.expect(!transcript.state.isRunning, "the timeline closes the run")
+    checks.expect(transcript.lines.count >= 3, "the timeline has the prompt, the answer and the tool")
+    checks.note("timeline: \(transcript.lines.count) lines, state \(transcript.state.label)")
 }
 
 
@@ -411,16 +437,19 @@ final class RawProbe {
         socket.close()
     }
 
+    @discardableResult
     func hello(version: Int) throws -> [String: Any] {
         try call(id: "r1", method: "hello", params: [
             "protocol_version": version, "client": "raw-probe", "client_version": "0",
         ])
     }
 
+    @discardableResult
     func pingFirst() throws -> [String: Any] {
         try call(id: "r1", method: "ping", params: nil)
     }
 
+    @discardableResult
     func call(afterHello method: String) throws -> [String: Any] {
         _ = try hello(version: Wire.protocolVersion)
         return try call(id: "r2", method: method, params: nil)
@@ -462,6 +491,8 @@ do {
     try manifestChecks(checks)
     stage = "framing"
     try framingChecks(checks)
+    stage = "transcript"
+    try transcriptChecks(checks)
     stage = "live"
     _ = await liveChecks(checks)
     status = checks.report()

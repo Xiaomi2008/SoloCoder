@@ -182,7 +182,9 @@ public struct ToolCallFailed: Decodable, Sendable, Equatable {
     public let runId: String
     public let messageId: String
     public let toolCallId: String
-    public let toolName: String
+    /// Optional, because the engine can fail a call whose name it never
+    /// resolved. A tool that fails before its name is known is a real case.
+    public let toolName: String?
     public let error: String
 }
 

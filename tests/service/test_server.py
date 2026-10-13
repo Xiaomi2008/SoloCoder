@@ -26,6 +26,7 @@ from openagent.provider.catalog import ModelCatalog
 from openagent.service.client import ServiceClient
 from openagent.service.protocol import (
     PROTOCOL_VERSION,
+    TERMINAL_EVENT_TYPES,
     ErrorCode,
     Method,
     RpcError,
@@ -189,6 +190,9 @@ async def test_hello_reports_the_contract(connected: ServiceClient):
     assert Method.RUN_START in info["methods"]
     assert "permission_requested" in info["events"]
     assert info["permission_modes"] == ["allow_all", "allow_readonly", "ask"]
+    # A client ends a stream on the union of its own terminal set and this one,
+    # which is what makes a terminal event added in a later version additive.
+    assert sorted(info["terminal_event_types"]) == sorted(TERMINAL_EVENT_TYPES)
 
 
 async def test_a_protocol_version_the_server_does_not_serve_is_refused(

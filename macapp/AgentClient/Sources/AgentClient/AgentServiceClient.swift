@@ -120,6 +120,14 @@ public struct Handshake: Decodable, Sendable, Equatable {
     public let serverVersion: String
     public let methods: [String]
     public let events: [String]
+    /// The events that end a run's stream, as this server defines them.
+    /// Optional because a server older than this field does not send it; a
+    /// client then falls back to its own set.
+    ///
+    /// The rule that makes a future terminal event additive rather than
+    /// breaking: a client ends a stream on the union of its own set and this
+    /// one. The connection stays open after a run, so nothing else ends it.
+    public let terminalEventTypes: [String]?
 }
 
 public struct RunStartResult: Decodable, Sendable, Equatable {
@@ -256,6 +264,34 @@ public enum PermissionMode: String, Sendable, CaseIterable {
     case allowAll = "allow_all"
 }
 
+/// A set shared between an actor and its socket-reading task.
+private final class TerminalSet: @unchecked Sendable {
+    private let lock = NSLock()
+    private var types: Set<String>
+
+    init(_ initial: Set<String>) {
+        types = initial
+    }
+
+    func formUnion(_ other: Set<String>) {
+        lock.lock()
+        types.formUnion(other)
+        lock.unlock()
+    }
+
+    func contains(_ type: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return types.contains(type)
+    }
+
+    var snapshot: Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return types
+    }
+}
+
 // MARK: - Client
 
 /// The client half of `dev_docs/agent-service-protocol.md`.
@@ -275,6 +311,10 @@ public actor AgentServiceClient {
     private let eventContinuation: AsyncStream<AgentEvent>.Continuation
     private var failure: (any Error)?
     private var handshakeValue: Handshake?
+    /// Shared with the reader task. The handshake answer arrives *after* the
+    /// reader starts (the reader is what delivers it), so the set grows while
+    /// the reader runs — a lock is the honest way to share it.
+    private let terminalTypes = TerminalSet(Wire.terminalEventTypes)
 
     public init(endpoint: ServiceEndpoint = ServiceEndpoint()) {
         self.endpoint = endpoint
@@ -310,9 +350,14 @@ public actor AgentServiceClient {
                 message: "server serves protocol \(info.protocolVersion); this client speaks \(Wire.protocolVersion)"
             )
         }
+        terminalTypes.formUnion(Set(info.terminalEventTypes ?? []))
         handshakeValue = info
         return info
     }
+
+    /// The terminal set in force for this connection: this client's set plus
+    /// whatever the server it is talking to declares.
+    public var terminalEventTypes: Set<String> { terminalTypes.snapshot }
 
     public func close() {
         for (_, continuation) in pending { continuation.resume(throwing: ClientError.closed) }
@@ -548,7 +593,10 @@ public actor AgentServiceClient {
                     switch message {
                     case .event(let event):
                         self.eventContinuation.yield(event)
-                        if event.isTerminal { self.eventContinuation.finish() }
+                        // The union, not the compiled-in set: a terminal event
+                        // this build has never heard of must still end the
+                        // stream, because the connection stays open after a run.
+                        if self.terminalTypes.contains(event.type) { self.eventContinuation.finish() }
                     case .response(let id, let result, let error):
                         Task { await self.resolve(id: id, result: result, error: error) }
                     case .serverRequest(let method, let id):

@@ -48,12 +48,20 @@ Client's first call **must** be `hello`:
 → {"jsonrpc":"2.0","id":"c1","method":"hello","params":{"protocol_version":1,"client":"solocoder-tui","client_version":"0.1.0"}}
 ← {"jsonrpc":"2.0","id":"c1","result":{"protocol_version":1,"min_protocol_version":1,
      "server":"openagent","server_version":"0.1.0",
-     "methods":["hello","run.start",…],"events":["run_started","message_delta",…]}}
+     "methods":["hello","run.start",…],"events":["run_started","message_delta",…],
+     "terminal_event_types":["run_cancelled","run_completed","run_failed"],
+     "permission_modes":["allow_all","allow_readonly","ask"]}}
 ```
 
 A `protocol_version` the server cannot serve is `PROTOCOL_MISMATCH` (-33008)
 and the connection closes. Every other method before `hello` is
 `INVALID_REQUEST`.
+
+`terminal_event_types` is the set of events that end a run's stream. A client
+treats **the union of its own set and the server's** as terminal: the
+connection stays open after a run (the client keeps using it), so a terminal
+event a client has never heard of would otherwise leave its stream waiting
+forever. A new terminal event type is therefore additive, not breaking.
 
 ## 3. Methods
 

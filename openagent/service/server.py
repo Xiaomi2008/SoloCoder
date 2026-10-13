@@ -59,6 +59,7 @@ from openagent.service.protocol import (
     MIN_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
     SERVER_NAME,
+    TERMINAL_EVENT_TYPES,
     ErrorCode,
     FrameReader,
     Method,
@@ -427,6 +428,11 @@ class AgentService:
             "server_version": SERVER_VERSION,
             "methods": sorted(str(m) for m in self._handlers()),
             "events": event_names(),
+            # A client treats the union of its own terminal set and this one as
+            # terminal. Without it, a terminal event added in a later protocol
+            # version leaves an older client's event stream waiting forever: the
+            # connection stays open after a run, so nothing else ends it.
+            "terminal_event_types": sorted(TERMINAL_EVENT_TYPES),
             "permission_modes": list(PERMISSION_MODES),
         }
 
