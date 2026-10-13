@@ -199,7 +199,15 @@ public final class AppModel: ObservableObject {
         transcript.apply(event)
         transcriptPublishes += 1
         promptToAnswer = transcript.pendingPermission
-        if event.isTerminal { busy = false }
+        if event.isTerminal {
+            busy = false
+            // The sidebar lists what is on disk, and this run has just put a
+            // session there. The refresh can arrive a moment before the service
+            // writes it — the terminal event is sent, then the file is saved —
+            // and that is self-healing: the row appears on the next refresh,
+            // which the sidebar does whenever it appears.
+            Task { await refreshSessions() }
+        }
     }
 
     /// Apply everything buffered so far. The checks use it; the app uses it
@@ -404,6 +412,41 @@ public final class AppModel: ObservableObject {
                 banner = Self.describe(error)
             }
         }
+    }
+
+    /// Whether the app may offer to delete a session.
+    ///
+    /// The server refuses a session with a run on it (`session_busy`), and it is
+    /// right to: the run saves its session when it ends, so a file the user
+    /// watched disappear would come back a second later. The app gets there first
+    /// for its own run — a row you are watching should not offer to remove the
+    /// thing writing it — and the server's refusal stays the backstop for a run
+    /// started on the CLI, which the app cannot see.
+    public func canDelete(_ sessionId: String) -> Bool {
+        SessionDeletion.isOffered(sessionId, openSessionId: sessionId, running: busy)
+    }
+
+    /// Remove a session, then read the list back from the service.
+    ///
+    /// The refresh is not a tidy-up of local state: the server is what knows
+    /// whether the file is gone. A sidebar that dropped the row itself would be
+    /// reporting a deletion the server refused.
+    public func delete(_ sessionId: String) async {
+        guard let client else { return }
+        let name = sessions.first { $0.sessionId == sessionId }.map(SessionTitle.label) ?? sessionId
+        do {
+            let removed = try await client.deleteSession(sessionId)
+            if self.sessionId == sessionId {
+                // The open conversation is gone, so the timeline goes with it.
+                // Leaving it on screen is a transcript the user cannot resume.
+                newRun()
+            }
+            sessions.removeAll { $0.sessionId == sessionId }
+            notice = removed ? "deleted \(name)" : "\(name) was already gone"
+        } catch {
+            banner = Self.describe(error)
+        }
+        await refreshSessions()
     }
 
     // MARK: helpers

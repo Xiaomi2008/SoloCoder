@@ -625,6 +625,102 @@ async def test_an_empty_session_id_starts_a_fresh_session(harness: Harness, work
     assert events[-1].type == "run_completed"
 
 
+# ------------------------------------------------------------------ delete
+#
+# The sidebar names sessions and removes them, and the two facts it needs are
+# the title and the refusal. A delete that lands during a run is the one that
+# can lose data: the run saves its session when it ends, so a file the user
+# watched disappear would come back a second later.
+
+
+async def test_the_list_names_each_session(harness: Harness, workdir: Path):
+    client = await harness.connect(await harness.serve())
+    started = await client.start_run(
+        "why the tests are flaky", workdir, permission_mode="allow_all"
+    )
+    await collect_events(client)
+
+    rows = await client.sessions()
+    ids = [row["session_id"] for row in rows]
+    row = rows[ids.index(started["session_id"])]
+    assert row["title"] == "why the tests are flaky"
+
+
+async def test_session_delete_removes_the_session(harness: Harness, workdir: Path):
+    client = await harness.connect(await harness.serve())
+    started = await client.start_run("a question worth naming", workdir, permission_mode="allow_all")
+    await collect_events(client)
+
+    assert await client.delete_session(started["session_id"]) is True
+    assert started["session_id"] not in [row["session_id"] for row in await client.sessions()]
+
+
+async def test_deleting_a_session_that_is_not_there_is_answered_not_refused(harness: Harness):
+    """A row another client deleted is a refresh, not an error."""
+    client = await harness.connect(await harness.serve())
+    assert await client.delete_session("sess_ghost") is False
+
+
+async def test_a_run_in_flight_holds_its_session(harness: Harness, workdir: Path):
+    service = await harness.serve(provider_factory=lambda ref: HangingProvider())
+    client = await harness.connect(service)
+    started = await client.start_run("go", workdir)
+
+    with pytest.raises(RpcError) as exc:
+        await client.delete_session(started["session_id"])
+    assert exc.value.code == ErrorCode.SESSION_BUSY
+    assert exc.value.data["run_id"] == started["run_id"]
+
+    await client.cancel(started["run_id"])
+    await collect_events(client)
+    assert await client.delete_session(started["session_id"]) is True, "the claim is released"
+
+
+async def test_a_run_on_another_connection_holds_the_session(harness: Harness, workdir: Path):
+    """The CLI and the app can resume the same id at once, and the guard is the
+    service's, not the connection's."""
+    service = await harness.serve(provider_factory=lambda ref: HangingProvider())
+    first = await harness.connect(service)
+    second = await harness.connect(service)
+    started = await first.start_run("go", workdir)
+
+    with pytest.raises(RpcError) as exc:
+        await second.delete_session(started["session_id"])
+    assert exc.value.code == ErrorCode.SESSION_BUSY
+
+    await first.cancel(started["run_id"])
+    await collect_events(first)
+
+
+async def test_session_delete_validates_the_id(connected: ServiceClient):
+    """The id is the only key a client may use; the row's `path` is a fact the
+    list reports for the human, never an input."""
+    for bad in ["../../etc/passwd", "a/b", "x" * 65, ".hidden"]:
+        with pytest.raises(RpcError) as exc:
+            await connected.delete_session(bad)
+        assert exc.value.code == ErrorCode.INVALID_PARAMS, bad
+
+
+async def test_session_save_after_a_run_says_the_service_already_saved_it(
+    connected: ServiceClient, workdir: Path
+):
+    """Pinned, because the message is the contract and no test covered it.
+
+    `_session_save` reads `conn.run`, and `_pump`'s `finally` clears it when the
+    run ends — so after a run the method answers with an error. That is honest:
+    the service saved the session in the same `finally`, so the client asking is
+    asking for a write that has happened. A client that treats the answer as a
+    failure is a client that shows an error for nothing.
+    """
+    await connected.start_run("go", workdir, permission_mode="allow_all")
+    await collect_events(connected)
+
+    with pytest.raises(RpcError) as exc:
+        await connected.call(Method.SESSION_SAVE)
+    assert exc.value.code == ErrorCode.INVALID_REQUEST
+    assert "session.save runs after a run" in exc.value.message
+
+
 async def test_model_list_reports_policy_and_selection(connected: ServiceClient):
     data = await connected.models()
     assert data["models"], "the catalog is static, so it is never empty"

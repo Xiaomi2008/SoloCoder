@@ -17,8 +17,11 @@ import Foundation
 //   one delta       6 µs, flat in timeline length — the delta is applied in place
 //   thinking stream flat: 0.2 ms per 1000 deltas at the end of a 480k-character stream,
 //                   which is the cap (`Transcript.reasoningKeep`) holding
-//   the answer      grows: 0.1 → 1.4 µs per delta as it reaches 80k characters, 7.3 ms
-//                   for the run — the O(n²) left in on purpose, and it is cheap
+//   the answer      flat, and bounded: 0.1 → 0.9 µs per delta streaming one long
+//                   line, and 13 µs per delta with a newline in every one at 200k
+//                   characters — `answerTrimAt` bounds the string, `answerReparseEvery`
+//                   bounds the scans. Ungated and uncapped that last case was 57 ms
+//                   per delta and 719 s for the run, which is the app dying of it
 //   one publish     7 µs at 401 lines, 66 µs at 4001: the copy-on-write copy of the
 //                   lines array, paid on the next mutation, linear in line count,
 //                   ~0.1% of the 60 ms cadence
@@ -208,6 +211,47 @@ func foldAnswer(chars: Int, chunk: Int) {
 foldAnswer(chars: 2_000, chunk: 6)
 foldAnswer(chars: 20_000, chunk: 6)
 foldAnswer(chars: 80_000, chunk: 6)
+
+// 2b. The same answer, with newlines in it.
+//
+// The probe above streams one long line, and `appendAnswerDelta` re-parses the
+// finished markdown prefix only when a newline lands — so it measures the append
+// and never reaches the parse. A real answer has newlines, and a model that
+// loops streams blank lines at it without stopping: the parse is O(n) in the
+// whole answer, once per newline, so the answer's cost is quadratic in the
+// answer, not linear.
+//
+// This is the shape that wedged the app: a run on a resumed session, main thread
+// pinned at 100% in `Markdown.blocks`, RSS climbing 19 MB/s, and the spin
+// continuing after the run was cancelled — the text was already there, and the
+// view lays it out on every publish.
+func foldAnswerParsed(chars: Int, chunk: Int) {
+    var t = Transcript()
+    t.addUserMessage("do the thing")
+    t.apply(ev(#"{"type":"run_started","run_id":"r"}"#))
+    t.apply(ev(#"{"type":"message_started","run_id":"r","message_id":"m"}"#))
+    // A JSON escape, not a raw newline: this goes into a JSON string literal.
+    let payload = String(repeating: "x", count: chunk - 2) + "\\n\\n"
+    let event = ev(#"{"type":"message_delta","run_id":"r","message_id":"m","delta":"\#(payload)"}"#)
+    let n = chars / chunk
+    var head = 0.0, tail = 0.0
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    for i in 0..<n {
+        let a = DispatchTime.now().uptimeNanoseconds
+        t.apply(event)
+        let dt = Double(DispatchTime.now().uptimeNanoseconds - a) / 1e3
+        if i < 1000 { head += dt } else if i >= n - 1000 { tail += dt }
+    }
+    let total = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+    print(String(
+        format: "answer fold, newline per delta: %6d deltas, %7d chars: %8.1f ms total; first 1000 %.1f ms, last 1000 %.1f ms",
+        n, chars, total, head / 1e3, tail / 1e3
+    ))
+}
+
+foldAnswerParsed(chars: 20_000, chunk: 8)
+foldAnswerParsed(chars: 80_000, chunk: 8)
+foldAnswerParsed(chars: 200_000, chunk: 8)
 
 // 3. One published write.
 //

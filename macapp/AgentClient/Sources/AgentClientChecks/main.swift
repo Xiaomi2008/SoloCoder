@@ -512,6 +512,8 @@ do {
     toolDisplayChecks(checks)
     stage = "rows"
     try rowChecks(checks)
+    stage = "sessions"
+    try sessionChecks(checks)
     stage = "composer"
     composerChecks(checks)
     stage = "live"

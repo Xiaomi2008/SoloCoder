@@ -207,6 +207,15 @@ class ServiceClient:
         result = await self.call(Method.SESSION_LOAD, {"session_id": session_id})
         return result["messages"]
 
+    async def delete_session(self, session_id: str) -> bool:
+        """Remove a stored session, and report whether there was a file to remove.
+
+        A session with a run in flight is refused (`session_busy`), not queued:
+        the run's post-run save would write the file straight back.
+        """
+        result = await self.call(Method.SESSION_DELETE, {"session_id": session_id})
+        return bool(result["deleted"])
+
     async def config(self, keys: list[str] | None = None) -> dict[str, Any]:
         return (await self.call(Method.CONFIG_GET, {"keys": keys or []}))["config"]
 

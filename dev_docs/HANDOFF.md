@@ -9,10 +9,10 @@ own service and drives real runs, and `scripts/build_app.sh` produces a signed
 119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
 inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`, ahead of origin by the phase 0–3f commits
-  (nothing pushed)
-- Python suite: **576 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **343 checks passed** (`swift run agent-checks`), **356** with
+- Branch: `feat/computer-use-macos`, 28 commits ahead of origin — the phase 0–3i
+  commits, nothing pushed
+- Python suite: **602 passed** (`.venv/bin/python -m pytest tests -q`)
+- Swift suite: **371 checks passed** (`swift run agent-checks`), **384** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
   it; add
@@ -28,7 +28,17 @@ inside it. `scripts/package_check.sh` is the gate that says so.
 - The window is on Bionic's visual language (phase 3h): hairline borders, one
   violet accent, neutral surfaces, a 760 pt reading column, and rows that say
   *Worked for 1m 35s ›* / *Reasoned for 12s* / *Ran npm test*
-- Working tree: clean as of the phase 3h commit (2026-10-12)
+- The sidebar names sessions and deletes them (phase 3i): a title stored once at
+  the head of the file, `session.delete`, and the run's claim on a session id
+  closing the delete-while-writing race
+- An answer is bounded, and the scan of it is gated (phase 3i): 12k head + 4k
+  tail with the count of what it dropped shown in the line, and one markdown
+  re-parse per 4k characters. An unbounded, ungated answer wedged the app at 100%
+  CPU — 200k streamed characters measured 719 s to fold, and it measures 386 ms now
+- Working tree: clean as of the phase 3i commit (2026-10-13). `.build/app/SoloCoder.app`
+  (120 MB) is rebuilt from it and passes the packaging gate, so it ships
+  `session.delete`; `/Applications/SoloCoder.app` is still the phase 3h build and
+  does not know that method — installing the new bundle is the step left
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
   (`fastapi`); a `uv run` sync prunes extras, and it did mid-session
 
@@ -117,9 +127,127 @@ The traps this phase hit are in *Things to know*: the `onSubmit` draft, the
 nil-proposal frame, the black capture of an occluded window, and `noService` from
 the package directory.
 
-**Not done, and not Swift:** the session browser's titles and delete.
-`session.list` has no title and there is no `session.delete`, so the sidebar
-shows ids. That is a protocol change in Python first — see *Next: the views*.
+Closed by phase 3i, below: the session browser's titles and delete.
+
+## Phase 3i: the session browser, and the answer that does not end
+
+**The protocol change the sidebar needed.** `session.list` rows carry a `title`,
+and `session.delete` exists. The protocol version stays **1**: a field added to a
+response and a method added to the table are additive, and the regenerated
+fixtures (`tests/service/fixtures/protocol.json`, via
+`scripts/gen_protocol_fixtures.py`) pin that.
+
+**The title is derived once and stored.** `derive_title` takes the first user
+message's first text block, collapses its whitespace, and cuts it at
+`TITLE_MAX = 200` — a payload bound, so a `session.list` frame stays one frame.
+`sessions.save` reads the title already in the target file (`stored_title`) and
+hands it to `Session.save(path, title=…)`, which writes it as the file's **first
+key**. Deriving it once is the whole point: a session that compacts its history
+keeps the name its first prompt gave it, and `session_title` (stored, else
+derived, bounded on the way out) cannot rename a conversation under the user. A
+session that opens with a screenshot has no title and shows its id — which is at
+least the string `--session` takes. `Session` owns no title; the writer decides
+it, and a test pins that `save` puts it at the head.
+
+**Delete never parses.** A damaged session file is still removable — the row in
+the sidebar is the way to delete the thing that will not open — and a missing
+file answers `False`, which the app shows as "*X* was already gone" rather than
+as a success.
+
+**The claim that closes the race.** `AgentService._live: dict[str, _Run | None]`
+claims a session id **before** `await self._build_provider(ref)` — the await
+where a second `run.start` can land — and refuses a claimed id with
+`session_busy` (`-33010`). The release happens after `sessions.save` with no
+await between, so a session is never deleted while a run is writing it. The app
+gets there first for its own run (`SessionDeletion.isOffered`: a row you are
+watching does not offer to remove the thing writing it); the server's refusal
+stays the backstop for a run started on the CLI, which the app cannot see.
+
+**Verified in the live app**, which is the only way to see the whole chain: a run
+whose session file begins `"title": "Reply with exactly the word TITLEPROBE and
+nothing else."`; a right-click → *Delete Session* → the confirmation naming the
+session **by that title** → the file gone from `~/.openagent/sessions/`, the row
+gone from the sidebar, the timeline back to *No run yet*, and the notice
+*deleted Reply with exactly the word TITLEPROBE and nothing else.*
+
+**Then the app died of an answer that never ends.** A run on a resumed session,
+sent from the composer: the window stopped answering, `sample` showed the main
+thread pinned inside SwiftUI's attribute graph with `Markdown.blocks` under it,
+and RSS climbed **19 MB a second** (331 MB → 1.68 GB) until the process was
+killed. Reproduced from a clean launch in 40 seconds, and it kept spinning after
+Cancel — cancelling stops the run, it does not take the text back out.
+
+The cause is the one place the app deliberately kept a bound away. The thinking
+stream is capped (`reasoningKeep`, a tail of 8k) because it is the longest text
+in the app and the least valuable. The answer was uncapped because it is the
+product, shown in full and copied out — right about an answer a model finishes,
+and the answers measured here are short. A quantized local model **loops**, and
+the answer becomes the longest text in the app, and two per-delta costs are
+O(n) in it: the markdown re-parse `appendAnswerDelta` runs whenever a newline
+lands, over the whole answer, and the publish that folds the next delta copies
+the transcript and lays the answer out again.
+
+The harness measured it, and the measurement needed a probe the harness did not
+have: `foldAnswer` streams one long line, and the re-parse only fires on a
+newline, so it measured the append and never reached the parse. With a newline
+per delta (`swift run ui-cost`, section 2b):
+
+| answer | fold cost, total | last 1000 deltas |
+|---|---|---|
+| 20,000 chars | 7.2 s | 1.16 s |
+| 80,000 chars | 114 s | 21.7 s |
+| 200,000 chars | **719 s** | **56.8 s** |
+
+Quadratic, in the phase the user is watching, at 57 ms per delta — one delta
+every 60 ms of stream is a full core.
+
+**The fix is the same bound, at both ends.** `Transcript.answerKeepHead = 12_000`
+and `answerKeepTail = 4_000`, trimmed at `answerTrimAt = 32_000` (the trigger is
+above the target, so the trim is not paid per delta, as with `reasoningKeep`).
+The head, because an answer is read from the top; the tail, because it is what is
+arriving and the user watches the stream move. Between them the line says what it
+dropped, in the words a tool result already uses — *… truncated: showing the
+first 12,000 and last 4,000 of 400,000 characters*. Nothing is lost: the service
+saves the full text and `--resume` reads it back.
+
+**The cap alone was not enough, and the harness said so.** Re-measured with the
+cap in, 200,000 characters went from 719 s to 162 s — 6.5 ms per delta, a dropped
+frame every time the model ends a line. The cap bounds the string; the scan is
+O(n) *in that bounded string, once per newline*, so the cost is still linear in
+the deltas, and a looping model's deltas never stop. (The length test is not the
+cost: `String.utf8.count` is O(1) on a Swift String, ASCII or not — measured on
+200k characters of each, ~0 ms.)
+
+So the scan is gated: free below `answerScanFreely = 2_000`, where a scan of a
+short answer costs nothing and a committed block should render as soon as it
+commits, and once per `answerReparseEvery = 4_000` characters above it.
+
+The gate opens a seam: the blocks stop at the last scan and the answer has grown
+since. The view closed that seam by asking `Markdown.split(text).tail` for its
+half — the **newest** boundary — so the text between the two boundaries was drawn
+by neither and disappeared mid-stream. The boundary therefore lives on the line
+(`TranscriptLine.tailText`), the reducer moves it at each scan, and the view draws
+`blocks` and `tailText` and parses nothing at all.
+
+| answer | uncapped | capped | capped + gated |
+|---|---|---|---|
+| 20,000 chars | 7.2 s | 7.3 s | 87 ms |
+| 80,000 chars | 114 s | 59.5 s | 194 ms |
+| 200,000 chars | **719 s** | 162 s | **386 ms** |
+
+Nine checks in `TranscriptChecks` hold it: the bound, the head, the tail, the
+marker, the block count that follows from the bound, and four on the seam — every
+paragraph of a 300-paragraph streamed answer on the screen exactly once, the tail
+holding the newest text and what committed since the last scan, the blocks
+stopping short of it.
+
+**Not verified in the app, and that is the one open item.** The bound and the gate
+are measured in the harness and held by checks; the live re-run — resume
+`sess_31cd4c9ed29e412e91adcf4f`, stream an answer, watch CPU and RSS stay flat —
+is queued behind a display that will not wake. `caffeinate -u`, a CGEvent mouse
+move and a fresh launch all failed: capture answers *could not create image from
+window*, and accessibility answers `AXApplication` for a point inside the window,
+which is the sleeping-display signature, not a permission problem.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 
@@ -504,11 +632,11 @@ cd /Users/taozeng/Projects/SoloCoder
 .venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
 
 cd macapp/AgentClient
-swift run agent-checks                              # 343 checks passed
-AGENT_REPO_ROOT=.. swift run agent-checks           # 356, + the app-model checks
-AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s \
+swift run agent-checks                              # 371 checks passed
+AGENT_REPO_ROOT=../.. swift run agent-checks        # 384, + the app-model checks
+AGENT_REPO_ROOT=../.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s \
     swift run agent-checks                          # …and a real streamed run
-AGENT_REPO_ROOT=.. swift run solocoder              # the app (see the note below)
+AGENT_REPO_ROOT=../.. swift run solocoder           # the app (see the note below)
 swift run ui-preview                                # the views, no service, no model
 UI_PREVIEW_SHORT=1 swift run ui-preview             # …top of the timeline
 swift run ui-cost                                   # streaming cost, measured
@@ -558,14 +686,8 @@ tool output beyond the preview, and scrolling; the restyle closed the list:
   prompt twice
 - the header has a Copy answer button over `Transcript.finalText`
 
-Left, and the only view work that is not Swift:
-
-- **the session browser: ids, no titles, no delete.** `session.list` answers
-  `sessionId`, `path`, `updatedAt`, `messageCount` — no title — and there is no
-  `session.delete`. A sidebar that names and removes sessions is a protocol
-  change first: a title on the list rows and a delete method in
-  `openagent/service/{protocol,server,sessions}.py`, fixtures regenerated with
-  `scripts/gen_protocol_fixtures.py`, then the Swift decode and the sidebar.
+The last item is done, by phase 3i: the sidebar names sessions by a stored title
+and deletes them, through `session.delete`.
 
 ## Things to know (verified the hard way)
 
@@ -589,8 +711,55 @@ Left, and the only view work that is not Swift:
 - **`swift run solocoder` from `macapp/AgentClient` fails `noService`.** The
   sidecar resolves the checkout from `AGENT_REPO_ROOT`, else the cwd if it has a
   `.venv`; from the Swift package there is none, so `resolveLaunch()` returns
-  nil and the window opens with nothing to talk to. `AGENT_REPO_ROOT=..` is the
-  command, and the app-model checks take the same variable for the same reason.
+  nil and the window opens with nothing to talk to. `AGENT_REPO_ROOT=../..` is
+  the command from there — **not `..`**, which is the trap: the variable is
+  resolved against the process cwd, the package is one directory deeper than
+  `macapp`, so `..` names `macapp`, which has no `.venv`. The app says
+  `noService`; the checks say `the root has an executable .venv/bin/python:
+  …/macapp` and then `the app connected to the service it spawned (not
+  connected)`. From the repository root itself, no variable is needed:
+  `swift run --package-path macapp/AgentClient agent-checks`.
+
+- **Screenshots are 2×, and `sips --cropOffset` is ignored.** A Retina capture of
+  a 1,240 pt window is 2,480 px, so a crop measured in points lands a quarter of
+  the way down the window and the reading is nonsense — rows looked duplicated,
+  subtitles looked stale, for exactly that reason. For a region, capture it
+  directly in points: `screencapture -x -R x,y,w,h`.
+- **A sleeping display breaks capture and accessibility together.** The
+  full-screen capture is black, `AXUIElementCopyElementAtPosition` answers
+  `cannotComplete`, and an app launched while the display is asleep creates a
+  window AppKit never exposes to the accessibility tree. `caffeinate -u` (and
+  then relaunch the app) before believing any of it.
+- **A killed app's window id keeps capturing.** The window server keeps a dead
+  instance's window, and `screencapture -l<id>` returns a complete, plausible UI
+  that produces nothing: no session file, no log line, no sidecar. Cross-check the
+  owner pid from `CGWindowListCopyWindowInfo` against `ps` before driving it.
+- **SwiftUI-hosted controls answer position queries, not child walks.** System
+  Events' `entire contents` of the window returns the sidebar's rows and none of
+  the composer's controls; `AXUIElementCopyElementAtPosition` finds them, with
+  frames. So drive that band by scanning for the frame and clicking inside it —
+  the footer's controls are 13 pt tall, and a click 3 pt above the frame is a
+  click on nothing. (This is what made the sidebar footer look unreachable; it
+  was 3 pt away.)
+- **An `NSOpenPanel` opened from a SwiftUI button is not the key window.** Every
+  keystroke goes to the main window, so the path typed into it vanishes.
+  `perform action "AXRaise" of window "Open"` first; then the go-to-folder sheet
+  (`Cmd-Shift-G`) takes its value set through accessibility, and `Return` is the
+  panel's default button.
+- **A per-delta cost that is O(n) in the text it appends to is a wedge, not a
+  slowdown.** The answer's markdown re-parse fires on every newline and scans the
+  whole answer: 57 ms per delta at 200k characters, one delta every 60 ms of
+  stream. Bounds are the fix, and the probe has to contain the trigger — the
+  harness's answer probe streamed one long line and measured 1.8 ms where the
+  real shape measures 719 s. **Capping the string is only half of it**: the scan
+  is O(n) in the capped string, once per newline, so 200k characters measured
+  162 s with a 32k cap; gating *how often* it scans is the other half. The
+  length test is not the cost — `String.utf8.count` is O(1) on a Swift String,
+  ASCII or not, measured on 200k of each — so the search does not go there.
+- **Probe services accumulate in `/tmp`.** A sidecar's socket directory is named
+  after its parent's pid, so a probe that uses `/tmp/probehome` leaves a service
+  with a name that says nothing. `pgrep -f "serve --socket"` before concluding
+  that a socket is in use.
 
 - **A `body` containing a `switch` must live in the struct, not an extension.**
   The result-builder transform is applied to a `body` in the type's own

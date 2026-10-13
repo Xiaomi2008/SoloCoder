@@ -397,4 +397,126 @@ func transcriptChecks(_ checks: Checks) throws {
         answerLine?.streaming == false,
         "a cancelled run closes its answer, so the answer renders as markdown and not as markup"
     )
+
+    // An answer a model never finishes.
+    //
+    // A quantized local model loops, and the answer becomes the longest text in
+    // the app. Two per-delta costs are O(n) in it — the markdown re-parse a
+    // newline triggers, and the publish that folds the next delta — so the run
+    // is quadratic in its own output. The app that did this held 100% CPU with
+    // its memory growing 19 MB a second, and kept spinning after Cancel: the
+    // text was already there. So the answer is bounded, at both ends.
+    var looping: [AgentEvent] = [
+        try ev(#"{"type":"run_started","run_id":"r1"}"#),
+        try ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+    ]
+    for chunk in 0..<20_000 {
+        looping.append(
+            try ev(
+                #"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"word\#(chunk) \n\n"}"#
+            )
+        )
+    }
+    let looped = try fold(looping)
+    let kept = assistantText(looped).last ?? ""
+    checks.expect(
+        kept.utf8.count <= Transcript.answerTrimAt + 200,
+        "a 20,000-delta answer is bounded in the transcript: \(kept.utf8.count) chars kept"
+    )
+    checks.expect(
+        kept.hasPrefix("word0 "),
+        "the head is kept — an answer is read from the top"
+    )
+    checks.expect(
+        kept.hasSuffix("word19999 \n\n"),
+        "the tail is kept — it is what is arriving, and the user watches it move"
+    )
+    checks.expect(
+        kept.contains("truncated: showing"),
+        "the line says what it dropped, in the words a tool result already uses"
+    )
+    // The bound is what the parse pays for: `blocks` is built from the kept text,
+    // so a cap that holds keeps the per-delta parse flat.
+    let blocks = looped.lines.last { if case .assistant = $0.kind { return true } else { return false } }?.blocks
+    checks.expect(
+        (blocks?.count ?? 0) > 0 && (blocks?.count ?? 0) < 20_000,
+        "the parsed blocks stay bounded with the text (\(blocks?.count ?? 0) blocks)"
+    )
+
+    // MARK: the gate, and the seam between the blocks and the tail
+
+    // The cap bounds the answer; the scan is O(n) in it all the same, so it runs
+    // once per `Transcript.answerReparseEvery` characters. That leaves a seam: the
+    // blocks stop at the last scan, and the answer has grown since. The view draws
+    // `blocks` and `tailText` and parses nothing, so between them is the screen —
+    // a paragraph in neither is a paragraph nobody sees, and one in both is
+    // printed twice. The old view asked `Markdown.split(text).tail` for its half,
+    // which is the newest boundary, and that is exactly the seam this breaks.
+    var paragraphs: [String] = []
+    var streamed: [AgentEvent] = [
+        try ev(#"{"type":"run_started","run_id":"r1"}"#),
+        try ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+    ]
+    for index in 0..<300 {
+        let paragraph = "paragraph \(index) is a sentence long enough to matter here"
+        paragraphs.append(paragraph)
+        streamed.append(
+            try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"\#(paragraph)"}"#)
+        )
+        streamed.append(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"\n\n"}"#))
+    }
+    // And it stops mid-paragraph, which is where a stream is when it is cancelled.
+    streamed.append(
+        try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"the last line, still arriving"}"#)
+    )
+    let mid = try fold(streamed)
+    let midLine = mid.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    let onScreen = blocksText(midLine?.blocks ?? []) + "\n" + (midLine?.tailText ?? "")
+    let missing = paragraphs.filter { onScreen.range(of: $0) == nil }
+    let doubled = paragraphs.filter { p in
+        guard let first = onScreen.range(of: p) else { return false }
+        return onScreen.range(of: p, range: first.upperBound..<onScreen.endIndex) != nil
+    }
+    checks.expect(
+        missing.isEmpty,
+        "every paragraph is on the screen: \(missing.count) missing, first «\(missing.first ?? "")»"
+    )
+    checks.expect(
+        doubled.isEmpty,
+        "none of them is drawn twice: \(doubled.count) doubled, first «\(doubled.first ?? "")»"
+    )
+    checks.expect(
+        (midLine?.tailText ?? "").contains("the last line, still arriving"),
+        "the tail is the text that is arriving"
+    )
+    checks.expect(
+        blocksText(midLine?.blocks ?? []).contains(paragraphs[0]),
+        "the blocks are the answer from the top"
+    )
+    checks.expect(
+        !blocksText(midLine?.blocks ?? []).contains(paragraphs[299]),
+        "the blocks stop short of the newest text — that is the gate, not a lost paragraph"
+    )
+    checks.expect(
+        (midLine?.tailText ?? "").contains(paragraphs[295]),
+        "the tail carries the paragraphs committed since the last scan, not just the last line"
+    )
+}
+
+/// The text a block shows, for the checks that ask what is on the screen.
+private func blockText(_ block: MarkdownBlock) -> String {
+    switch block {
+    case .paragraph(let text): return text
+    case .heading(_, let text): return text
+    case .code(_, let text): return text
+    case .bullets(let items): return items.joined(separator: "\n")
+    case .numbered(let items): return items.map(\.text).joined(separator: "\n")
+    case .quote(let lines): return lines.joined(separator: "\n")
+    case .table(let rows): return rows.map { $0.joined(separator: " ") }.joined(separator: "\n")
+    case .rule: return "---"
+    }
+}
+
+private func blocksText(_ blocks: [MarkdownBlock]) -> String {
+    blocks.map(blockText).joined(separator: "\n")
 }

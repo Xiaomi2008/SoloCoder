@@ -277,18 +277,26 @@ struct UIPreviewApp: App {
             ProcessInfo.processInfo.environment["UI_PREVIEW_NOSCOPE"] == nil
             ? "/Users/dev/Projects/SoloCoder" : ""
         model.modelPolicy = "local_first"
-        // The sidebar's states: a long id that has to truncate, a session the
-        // service cannot read, and the relative time. `UI_PREVIEW_EMPTY=1` also
-        // leaves the timeline empty, which is the state a fresh window opens in.
+        // The sidebar's states, one per shape the row has to handle: a title
+        // that has to truncate at the column's width, a file from before titles
+        // that falls back to its id, a session the service cannot read, and the
+        // relative time. `UI_PREVIEW_EMPTY=1` also leaves the timeline empty,
+        // which is the state a fresh window opens in.
         let now = Date().timeIntervalSince1970
         model.sessions = [
             SessionRow(
                 sessionId: "sess_49ae9e0102f8415691b745f6", path: "~/.openagent/sessions/a.json",
-                updatedAt: now - 2_500, messageCount: 2
+                updatedAt: now - 2_500, messageCount: 2,
+                title: "Why the fence parser drops the closing backticks in a nested code block"
             ),
             SessionRow(
                 sessionId: "sess_7c1f0b8d99a24e5f8b6d11aa", path: "~/.openagent/sessions/b.json",
-                updatedAt: now - 90_000, messageCount: 14
+                updatedAt: now - 90_000, messageCount: 14,
+                title: "Add a dmg target"
+            ),
+            SessionRow(
+                sessionId: "sess_7c1f0b8d99a24e5f8b6d11ab", path: "~/.openagent/sessions/d.json",
+                updatedAt: now - 3_000_000, messageCount: 6
             ),
             SessionRow(
                 sessionId: "sess_damaged", path: "~/.openagent/sessions/c.json",

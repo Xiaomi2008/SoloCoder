@@ -79,6 +79,7 @@ class Method(StrEnum):
     SESSION_LIST = "session.list"
     SESSION_LOAD = "session.load"
     SESSION_SAVE = "session.save"
+    SESSION_DELETE = "session.delete"
     CONFIG_GET = "config.get"
     CONFIG_SET = "config.set"
 
@@ -106,6 +107,7 @@ class ErrorCode:
     RUN_NOT_FOUND = -33007
     PROTOCOL_MISMATCH = -33008
     DEPENDENCY_MISSING = -33009
+    SESSION_BUSY = -33010
 
 
 ERROR_NAMES: dict[int, str] = {
@@ -125,6 +127,7 @@ ERROR_NAMES: dict[int, str] = {
     ErrorCode.RUN_NOT_FOUND: "run_not_found",
     ErrorCode.PROTOCOL_MISMATCH: "protocol_mismatch",
     ErrorCode.DEPENDENCY_MISSING: "dependency_missing",
+    ErrorCode.SESSION_BUSY: "session_busy",
 }
 
 

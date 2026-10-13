@@ -201,6 +201,12 @@ public struct SessionRow: Decodable, Sendable, Equatable {
     /// Seconds since the epoch, straight from the file's mtime.
     public let updatedAt: Double
     public let messageCount: Int
+    /// The session's name: its first prompt, stored the first time the session
+    /// was saved. Nil when there is nothing to name it with — a session that
+    /// opens with a screenshot has no words — and for a file that cannot be
+    /// read. The service bounds it at 200 characters; how it looks on a row of
+    /// a given width is the client's, and it has the width to answer with.
+    public let title: String?
     /// Set when the file exists but cannot be read. A damaged session is
     /// reported, not hidden.
     public let error: String?
@@ -209,12 +215,14 @@ public struct SessionRow: Decodable, Sendable, Equatable {
     // looking at — a long id, a damaged file, an empty list — are not all
     // reproducible against a service with real files.
     public init(
-        sessionId: String, path: String, updatedAt: Double, messageCount: Int, error: String? = nil
+        sessionId: String, path: String, updatedAt: Double, messageCount: Int,
+        title: String? = nil, error: String? = nil
     ) {
         self.sessionId = sessionId
         self.path = path
         self.updatedAt = updatedAt
         self.messageCount = messageCount
+        self.title = title
         self.error = error
     }
 }
@@ -501,6 +509,23 @@ public actor AgentServiceClient {
 
     public func tools() async throws -> [ToolRow] {
         try decode(ToolList.self, from: try await call("tool.list", params: nil)).tools
+    }
+
+    /// Remove a stored session, and report whether there was a file to remove.
+    ///
+    /// A session with a run on it is refused with `.sessionBusy` — the run saves
+    /// its session when it ends, so a file the user watched disappear would come
+    /// back a second later. A session that is not there is not an error: the
+    /// answer is `false`, and the sidebar refreshes.
+    @discardableResult
+    public func deleteSession(_ sessionId: String) async throws -> Bool {
+        let result = try await call(
+            "session.delete", params: .object(["session_id": .string(sessionId)])
+        )
+        guard case .object(let fields) = result, case .bool(let deleted)? = fields["deleted"] else {
+            throw ClientError.decoding("session.delete answered no `deleted` flag")
+        }
+        return deleted
     }
 
     public func sessions() async throws -> [SessionRow] {

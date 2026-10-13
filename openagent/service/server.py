@@ -298,6 +298,20 @@ class AgentService:
         #: wait on a model probe that has nothing to do with it.
         self._conn_tasks: set[asyncio.Task] = set()
         self._bg_tasks: set[asyncio.Task] = set()
+        #: Session ids a run has claimed, mapped to the run once it exists.
+        #:
+        #: `conn.run` cannot be the guard for "is this session in use". It is set
+        #: only after the provider is built — a network call to a model server —
+        #: and it is cleared when the run ends, so between runs it is None while
+        #: the session is still that connection's. A claim taken before the first
+        #: await is what makes `session.delete` safe: the delete is a sync block,
+        #: so on the event loop it either sees the claim or takes the file, never
+        #: both.
+        #:
+        #: Per service, not per connection: the CLI and the app can resume the
+        #: same id at the same time, and a delete from one should be refused while
+        #: the other is writing it.
+        self._live: dict[str, _Run | None] = {}
 
     @property
     def active_connections(self) -> int:
@@ -477,6 +491,7 @@ class AgentService:
             Method.SESSION_LIST: self._session_list,
             Method.SESSION_LOAD: self._session_load,
             Method.SESSION_SAVE: self._session_save,
+            Method.SESSION_DELETE: self._session_delete,
             Method.CONFIG_GET: self._config_get,
             Method.CONFIG_SET: self._config_set,
         }
@@ -566,28 +581,49 @@ class AgentService:
         ref = await self._resolve_model(params.get("model"))
         resume = params.get("session_id")
         session_id = sessions.check_session_id(resume) if resume else sessions.new_session_id()
-        session = (
-            sessions.load_or_start(session_id) if resume else Session(system_prompt=self._system_prompt())
-        )
-
-        provider = await self._build_provider(ref)
-        run_id = next_id("run")
-        runner = AgentRunner(
-            provider,
-            session=session,
-            tools=self._tools(),
-            tool_context=ToolContext(working_dir=str(working_dir)),
-            max_turns=max_turns,
-            permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
-            reasoning_effort=reasoning_effort,
-        )
-        run = _Run(
-            run_id=run_id,
-            runner=runner,
-            provider=provider,
-            session=session,
-            session_id=session_id,
-        )
+        if session_id in self._live:
+            busy = self._live[session_id]
+            raise RpcError(
+                ErrorCode.SESSION_BUSY,
+                "that session already has a run on it",
+                {"session_id": session_id, "run_id": busy.run_id if busy else None},
+            )
+        # Claimed here, before the provider is built: `_build_provider` is an
+        # await, and a `session.delete` landing in that window would find no run
+        # anywhere, unlink the file, and have this run's post-run save write it
+        # back. A session that returns from the dead after the user pressed
+        # Delete is the bug this line prevents.
+        self._live[session_id] = None
+        try:
+            session = (
+                sessions.load_or_start(session_id)
+                if resume
+                else Session(system_prompt=self._system_prompt())
+            )
+            provider = await self._build_provider(ref)
+            run_id = next_id("run")
+            runner = AgentRunner(
+                provider,
+                session=session,
+                tools=self._tools(),
+                tool_context=ToolContext(working_dir=str(working_dir)),
+                max_turns=max_turns,
+                permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
+                reasoning_effort=reasoning_effort,
+            )
+            run = _Run(
+                run_id=run_id,
+                runner=runner,
+                provider=provider,
+                session=session,
+                session_id=session_id,
+            )
+        except BaseException:
+            # The claim has to die with the run that never was, or the id is
+            # unrunnable and undeletable for the life of the service.
+            self._live.pop(session_id, None)
+            raise
+        self._live[session_id] = run
         conn.run = run
         run.task = asyncio.create_task(self._pump(conn, run, prompt, images))
         return {
@@ -621,6 +657,10 @@ class AgentService:
                 sessions.save(run.session, run.session_id)
             except OSError:
                 pass
+            # Released after the save, with no await between the two: a delete
+            # that unlinked while the save was in flight would be undone by it.
+            if self._live.get(run.session_id) is run:
+                self._live.pop(run.session_id, None)
             await _close_provider(run.provider)
             conn.deny_pending("run ended")
             if conn.run is run:
@@ -866,6 +906,26 @@ class AgentService:
             )
         target = sessions.save(run.session, run.session_id)
         return {"path": str(target), "session_id": run.session_id}
+
+    async def _session_delete(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
+        """Remove one session's file, and report whether there was one.
+
+        One id per call. A list would need partial-failure semantics — three
+        removed, one refused, and which of the four did the sidebar drop? — for a
+        client that can loop.
+
+        A missing file is not an error: the caller wants the session gone, and a
+        row another client already deleted should refresh, not complain.
+        """
+        session_id = sessions.check_session_id(params.get("session_id"))
+        busy = self._live.get(session_id)
+        if session_id in self._live:
+            raise RpcError(
+                ErrorCode.SESSION_BUSY,
+                "that session has a run on it; cancel the run first",
+                {"session_id": session_id, "run_id": busy.run_id if busy else None},
+            )
+        return {"session_id": session_id, "deleted": sessions.delete(session_id)}
 
     # ----------------------------------------------------------------- config
 

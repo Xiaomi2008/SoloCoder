@@ -145,16 +145,22 @@ class Session:
         self._messages.append(msg)
         return msg
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, *, title: str | None = None) -> None:
         """Save session to a JSON file.
 
         Args:
             path: Path to save the session to
+            title: A display name for the session, written first so a reader can
+                find it at the head of the file. `Session` does not own its name
+                — the service does, the way it owns the id — so this is a
+                pass-through, not a field: the caller reads the stored title,
+                derives a new one, and hands it back here.
         """
-        data = {
-            "system_prompt": self.system_prompt,
-            "messages": self.to_list(),
-        }
+        data = {}
+        if title:
+            data["title"] = title
+        data["system_prompt"] = self.system_prompt
+        data["messages"] = self.to_list()
         Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     @classmethod

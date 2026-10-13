@@ -19,7 +19,7 @@ public enum Wire {
         "permission.respond",
         "ping",
         "run.cancel", "run.start",
-        "session.list", "session.load", "session.save",
+        "session.delete", "session.list", "session.load", "session.save",
         "tool.list",
     ]
 
@@ -58,6 +58,10 @@ public enum ErrorCode: Sendable, Equatable {
     case runNotFound
     case protocolMismatch
     case dependencyMissing
+    /// The session has a run on it. Not a failure to show the user as one: the
+    /// app disables delete on a running row, so this is the backstop for a run
+    /// that started on another client — the CLI resuming the same id.
+    case sessionBusy
 
     /// An unrecognised code is not in the client's vocabulary; keep the number
     /// so a newer server is still reported faithfully.
@@ -68,7 +72,7 @@ public enum ErrorCode: Sendable, Equatable {
         .parseError, .invalidRequest, .methodNotFound, .invalidParams, .internalError,
         .notImplemented, .providerError, .modelUnavailable, .notAuthenticated,
         .permissionDenied, .cancelled, .workingDirDenied, .sessionNotFound,
-        .runNotFound, .protocolMismatch, .dependencyMissing,
+        .runNotFound, .protocolMismatch, .dependencyMissing, .sessionBusy,
     ]
 
     public init(code: Int) {
@@ -89,6 +93,7 @@ public enum ErrorCode: Sendable, Equatable {
         case -33007: .runNotFound
         case -33008: .protocolMismatch
         case -33009: .dependencyMissing
+        case -33010: .sessionBusy
         default: .unknown(code)
         }
     }
@@ -112,6 +117,7 @@ public enum ErrorCode: Sendable, Equatable {
         case .runNotFound: -33007
         case .protocolMismatch: -33008
         case .dependencyMissing: -33009
+        case .sessionBusy: -33010
         case .unknown(let code): code
         }
     }

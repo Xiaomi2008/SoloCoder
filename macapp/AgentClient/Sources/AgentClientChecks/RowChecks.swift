@@ -289,3 +289,95 @@ func rowChecks(_ checks: Checks) throws {
     checks.equal(failed.turns.first?.activity.count, 0, "a failed message is not hidden inside 'Worked'")
     checks.equal(failed.turns.first?.answers.count, 1, "…it is shown as the turn's result")
 }
+
+// MARK: - Sessions
+//
+// The sidebar names a session and removes it, and both are decisions: what a
+// row is called, what it answers to in the search box, and when delete is
+// offered at all. A view cannot be asked these questions, so they are here.
+
+func sessionChecks(_ checks: Checks) throws {
+    let named = SessionRow(
+        sessionId: "sess_abc123", path: "/home/u/.openagent/sessions/sess_abc123.json",
+        updatedAt: 1_700_000_000, messageCount: 3, title: "fix the flaky test in test_agent.py"
+    )
+    checks.equal(
+        SessionTitle.label(named), "fix the flaky test in test_agent.py",
+        "a titled row is named by its title"
+    )
+
+    let legacy = SessionRow(
+        sessionId: "sess_legacy", path: "/x", updatedAt: 0, messageCount: 3
+    )
+    checks.equal(
+        SessionTitle.label(legacy), "sess_legacy",
+        "a file written before titles existed is named by its id — the string `--session` takes"
+    )
+
+    let damaged = SessionRow(
+        sessionId: "sess_bad", path: "/x", updatedAt: 0, messageCount: 0,
+        error: "unreadable session file"
+    )
+    checks.equal(
+        SessionTitle.label(damaged), "Damaged session",
+        "the label says what the row's warning glyph means, because the row is also how you delete the file"
+    )
+
+    let multiline = SessionRow(
+        sessionId: "s", path: "/x", updatedAt: 0, messageCount: 0, title: "first line\nsecond line"
+    )
+    checks.equal(SessionTitle.label(multiline), "first line", "a sidebar row is one line")
+
+    let blank = SessionRow(sessionId: "sess_blank", path: "/x", updatedAt: 0, messageCount: 0, title: "   ")
+    checks.equal(SessionTitle.label(blank), "sess_blank", "a blank title is no title")
+
+    // The search box: the name, the id and the folder, case-insensitively.
+    checks.expect(SessionTitle.matches(named, query: "flaky"), "the name is searchable")
+    checks.expect(SessionTitle.matches(named, query: " SESS_ABC "), "the id is searchable, trimmed and case-free")
+    checks.expect(SessionTitle.matches(named, query: ".openagent"), "the folder is searchable")
+    checks.expect(SessionTitle.matches(named, query: ""), "an empty query filters nothing")
+    checks.expect(!SessionTitle.matches(named, query: "a conversation about fonts"), "a miss is a miss")
+
+    // The wire shape. The server's snake_case names are the contract, so this
+    // decoder mirrors `wireDecoder`: a property that drifts from them fails
+    // here, not as a sidebar with no names in it.
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let row = try decoder.decode(
+        SessionRow.self,
+        from: Data(
+            """
+            {"session_id":"sess_x","path":"/x/sess_x.json","updated_at":1.5,"message_count":3,\
+            "title":"fix the flaky test"}
+            """.utf8
+        )
+    )
+    checks.equal(row.title, "fix the flaky test", "the title decodes from the server's name")
+    checks.equal(row.updatedAt, 1.5, "…and the row is the rest of the row")
+
+    let preTitle = try decoder.decode(
+        SessionRow.self,
+        from: Data(#"{"session_id":"sess_y","path":"/y","updated_at":1,"message_count":0}"#.utf8)
+    )
+    checks.equal(preTitle.title, nil, "a file from before titles decodes with no title, not a failure")
+
+    // Delete: the app refuses the session it is writing, because the run saves
+    // its session when it ends and a file deleted now is written back a second
+    // later. The server's `session_busy` is the guarantee; this is the courtesy.
+    checks.expect(
+        !SessionDeletion.isOffered("sess_live", openSessionId: "sess_live", running: true),
+        "the session being written is not offered for deletion"
+    )
+    checks.expect(
+        SessionDeletion.isOffered("sess_other", openSessionId: "sess_live", running: true),
+        "…and the rest of them are: a run on one session does not freeze the sidebar"
+    )
+    checks.expect(
+        SessionDeletion.isOffered("sess_live", openSessionId: "sess_live", running: false),
+        "…and it is offered again when the run ends"
+    )
+    checks.expect(
+        SessionDeletion.isOffered("sess_live", openSessionId: nil, running: true),
+        "a run on an unnamed new session does not lock a stored row"
+    )
+}

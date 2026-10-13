@@ -151,6 +151,20 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     /// Not `private`: a private stored property makes the memberwise init private,
     /// and this struct is constructed by name from all over the reducer.
     var parsedPrefix: String = ""
+    /// The answer's in-progress tail, kept so the view splits nothing.
+    ///
+    /// The view used to ask `Markdown.split(text).tail` on every render, which is
+    /// O(n) in the answer. It also pins the view to a fresh boundary: parse the
+    /// finished prefix on a gate — see `answerReparseEvery` — and the view's tail
+    /// starts *after* the newest blank line while `blocks` stops at the oldest, so
+    /// everything between them is drawn by neither and vanishes mid-stream. The
+    /// boundary therefore lives here, and the view draws `blocks` and this.
+    ///
+    /// Between parses it is the plain text of blocks that have committed but not
+    /// been parsed yet, which is what a block that has not ended already looks like.
+    public var tailText: String = ""
+    /// The answer length `blocks` was last scanned at, the gate's floor.
+    var parsedLength: Int = 0
     /// When the line arrived.
     ///
     /// The turn's "Worked for 2m 50s" is the distance between the line that opened
@@ -186,6 +200,21 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     }
 
     /// Fold a delta into the answer, and re-parse the part of it that is finished.
+    ///
+    /// Two gates, because the answer is streamed and the parse is not free. The
+    /// first is the newline: the finished prefix can only move when a line ends.
+    /// The second is growth — `answerReparseEvery` — because a looping model
+    /// streams blank lines at the reducer without stopping, and each scan reads
+    /// the whole answer: a newline per delta is quadratic in the answer, and the
+    /// cap alone does not fix that, it only lowers the constant.
+    ///
+    /// Measured on the machine that died of it (`swift run ui-cost`, section 2b):
+    /// uncapped, 20 000 characters with a newline per delta cost 7.2 s to fold,
+    /// 200 000 cost 719 s. Capped, the same 200 000 cost 162 s — 6.5 ms per delta,
+    /// a dropped frame every time the model ends a line. Gated, the number of
+    /// scans stops growing with the deltas; `answerReparseEvery` carries that cost.
+    /// Below `answerScanFreely` the gate is off, because a scan of a short answer
+    /// costs nothing and a committed block should render as soon as it commits.
     mutating func appendAnswerDelta(_ delta: String) {
         guard case .assistant(let accumulated) = kind else { return }
         // The split can only move when a newline arrives, or when the text ended on
@@ -197,9 +226,28 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
         let canMove = delta.contains("\n") || accumulated.hasSuffix("\n")
         var text = accumulated
         text.append(delta)
+        // Bounded before the parse and before the publish, because both are O(n) in
+        // this string — see `Transcript.answerKeepHead`. The test is free:
+        // `utf8.count` is O(1) on a Swift String, ASCII or not.
+        var capped = false
+        if text.utf8.count > Transcript.answerTrimAt {
+            text = Transcript.capAnswer(text)
+            capped = true
+        } else {
+            tailText.append(delta)
+        }
         kind = .assistant(text)
-        guard canMove else { return }
-        let (complete, _) = Markdown.split(text)
+        // The cap bounds the string; this bounds the scans — see the constant.
+        guard canMove || capped else { return }
+        let length = text.utf8.count
+        guard capped || length < Transcript.answerScanFreely
+            || length >= parsedLength + Transcript.answerReparseEvery
+        else { return }
+        parsedLength = length
+        let (complete, tail) = Markdown.split(text)
+        // The boundary the view draws from, so `blocks` and `tailText` cover the
+        // answer between them with nothing missing and nothing twice.
+        tailText = tail
         guard complete != parsedPrefix else { return }
         parsedPrefix = complete
         blocks = Markdown.blocks(complete)
@@ -472,7 +520,13 @@ public struct Transcript: Equatable, Sendable {
                 // drop it. A missing message_started is the server's bug, and
                 // the user should see the text.
                 emit(
-                    TranscriptLine(id: e.messageId, kind: .assistant(e.delta), messageId: e.messageId, streaming: true)
+                    TranscriptLine(
+                        id: e.messageId,
+                        kind: .assistant(e.delta),
+                        messageId: e.messageId,
+                        streaming: true,
+                        tailText: e.delta
+                    )
                 )
                 return
             }
@@ -698,10 +752,74 @@ public struct Transcript: Equatable, Sendable {
     ///
     /// So the line keeps a tail. Trimming at exactly the cap would copy the tail
     /// on every delta that follows it, so the cap is the trim's target, not its
-    /// trigger. The answer has no cap: it is the product, shown in full and
-    /// copied out.
+    /// trigger.
     private static let reasoningKeep = 8_000
     private static let reasoningTrimAt = 16_000
+
+    /// The most an answer keeps, and the size it is cut back to.
+    ///
+    /// The answer was uncapped on purpose: it is the product, shown in full and
+    /// copied out. That is right about an answer a model *finishes*, and the
+    /// answers measured here are short enough for it. It is wrong about one a
+    /// model does not: a quantized local model loops, and the answer becomes the
+    /// longest text in the app — and two costs are O(n) in it, once per delta.
+    /// The first is the markdown re-parse `appendAnswerDelta` runs whenever a
+    /// newline lands, over the whole answer; a looping model streams blank lines
+    /// at it without stopping, so the answer's cost is quadratic in the answer.
+    /// The second is the publish: folding the next delta copies the transcript,
+    /// and the view lays the whole answer out again.
+    ///
+    /// Measured on the machine that died of it (`swift run ui-cost`, section 2b):
+    /// a 200,000-character answer with a newline per delta takes minutes to fold,
+    /// and the app running one sat at 100% CPU with its memory growing 19 MB a
+    /// second, still spinning after the run was cancelled — the text was already
+    /// there, and cancelling does not take it back out.
+    ///
+    /// So the answer is bounded, and bounded at both ends: the head, because an
+    /// answer is read from the top, and the tail, because it is what is arriving
+    /// and the user watches the stream move. Between them the line says how much
+    /// it dropped, in the words a tool result already uses. The full text is not
+    /// lost — the service saves it, and `--resume` reads it back.
+    public static let answerKeepHead = 12_000
+    public static let answerKeepTail = 4_000
+    public static let answerTrimAt = 32_000
+
+    /// Characters of answer between two scans of its finished prefix.
+    ///
+    /// The cap bounds the string; this bounds the number of scans. `Markdown.split`
+    /// reads the whole answer and `Markdown.blocks` re-parses the finished part of
+    /// it, so a newline per delta is O(n) per delta *at the cap too*: on the
+    /// harness, 25 000 deltas over a capped answer cost 162 s, 6.5 ms each. Once
+    /// per this many characters is O(n / gate) scans of O(n) each.
+    ///
+    /// 4 000 is the same trade the thinking line makes with its 8 000: the blocks
+    /// that have committed appear up to this many characters late, and in between
+    /// they are plain text, which is what a block that has not ended already looks
+    /// like. A finished answer is parsed whole by the view, so nothing is late at
+    /// the end, and the tail is never late — it is the text being written.
+    public static let answerReparseEvery = 4_000
+
+    /// The answer size below which every newline is scanned.
+    ///
+    /// The scan is O(n), so a short answer is cheap to scan and the gate would
+    /// only make it late: most answers are under this, and the first one that
+    /// commits should render as soon as it commits. Above it, the gate runs.
+    public static let answerScanFreely = 2_000
+
+    /// Cut an answer back to the cap. Above it, the line is the head, a visible
+    /// count of what is missing, and the tail.
+    static func capAnswer(_ text: String) -> String {
+        let total = text.utf8.count
+        guard total > answerTrimAt else { return text }
+        // `prefix`/`suffix` are character-based and O(n); the size test that
+        // guards them is O(1), so this walk runs once per cap and not once per
+        // delta. Same trade as `reasoningKeep`, and the same approximate bound.
+        let head = String(text.prefix(answerKeepHead))
+        let tail = String(text.suffix(answerKeepTail))
+        return head
+            + "\n\n… truncated: showing the first \(answerKeepHead) and last \(answerKeepTail) of \(total) characters\n\n"
+            + tail
+    }
 
     /// Add a delta to a line's accumulated text.
     private mutating func appendDelta(_ delta: String, toLine index: Int) {

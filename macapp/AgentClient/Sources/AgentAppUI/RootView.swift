@@ -98,6 +98,7 @@ struct Sidebar: View {
     @EnvironmentObject var model: AppModel
     @Binding var query: String
     @Binding var selection: String?
+    @State private var deleteTarget: SessionRow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -134,7 +135,17 @@ struct Sidebar: View {
 
             List(selection: $selection) {
                 ForEach(filtered, id: \.sessionId) { row in
-                    SessionRowView(row: row).tag(row.sessionId)
+                    SessionRowView(row: row)
+                        .tag(row.sessionId)
+                        .contextMenu {
+                            Button("Delete Session", role: .destructive) { deleteTarget = row }
+                                // The row you are watching writes itself: the run
+                                // saves its session when it ends, so a delete
+                                // now would be undone a second later. The server
+                                // refuses the same thing (`session_busy`) for a
+                                // run the app cannot see — one started on the CLI.
+                                .disabled(!model.canDelete(row.sessionId))
+                        }
                 }
                 // An empty list of files reads as a broken sidebar, and an empty
                 // search reads as a broken search — the two answers are different.
@@ -158,6 +169,25 @@ struct Sidebar: View {
                 guard let chosen, chosen != model.sessionId else { return }
                 model.open(chosen)
             }
+            // The name in the question, not the id: the user is about to remove
+            // the conversation they recognise, and a 28-character string is not
+            // a thing they can check.
+            .confirmationDialog(
+                deleteTarget.map { "Delete \u{201c}\(SessionTitle.label($0))\u{201d}?" } ?? "Delete Session?",
+                isPresented: deletePromptShown,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Session", role: .destructive) {
+                    if let row = deleteTarget {
+                        let gone = row.sessionId
+                        deleteTarget = nil
+                        Task { await model.delete(gone) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { deleteTarget = nil }
+            } message: {
+                Text("The conversation is removed from disk. This cannot be undone.")
+            }
 
             Footer(query: $query)
         }
@@ -166,19 +196,19 @@ struct Sidebar: View {
         .task { await model.refreshSessions() }
     }
 
-    /// The stored sessions, filtered by the search field.
-    ///
-    /// The protocol's `session.list` answers an id, a path, an mtime and a
-    /// message count — no title. So the searchable text is what there is, and
-    /// the row shows an id: a session browser that can name a session is a
-    /// protocol change (`session.list` gaining a title, and a `session.delete`
-    /// to go with it), not a view change.
+    /// The stored sessions, filtered by the search field. The rule is the core's
+    /// (`SessionTitle.matches`), so the check suite can say what a row answers
+    /// to; the view only applies it.
     private var filtered: [SessionRow] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return model.sessions }
-        return model.sessions.filter {
-            $0.sessionId.lowercased().contains(needle) || $0.path.lowercased().contains(needle)
-        }
+        model.sessions.filter { SessionTitle.matches($0, query: query) }
+    }
+
+    /// The binding the dialog wants.
+    ///
+    /// The state holds the *row*, not the id: the question names the session,
+    /// and answering it needs the title the user just read.
+    private var deletePromptShown: Binding<Bool> {
+        Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })
     }
 }
 
@@ -196,15 +226,31 @@ struct SessionRowView: View {
             // is a truncation case, not a layout case: the VStack has to be
             // offered the row's width for the Text to be able to cut itself.
             VStack(alignment: .leading, spacing: 1) {
-                Text(row.sessionId)
+                Text(SessionTitle.label(row))
                     .font(.callout)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    // The tail, not the middle: the name is a sentence, and the
+                    // end of a sentence is where its point is. The id row below
+                    // is the one that truncates in the middle, because a prefix
+                    // of an id is still an id you can type.
+                    .truncationMode(.tail)
                 Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(Theme.faint)
+                if row.title != nil {
+                    // The id stays visible under the name: it is what `--session`
+                    // takes, and a sidebar that hides it leaves the CLI user
+                    // reading a title they cannot type anywhere.
+                    Text(row.sessionId)
+                        .font(.caption2)
+                        .monospaced()
+                        .foregroundStyle(Theme.faint.opacity(0.75))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .help(row.sessionId)
             if row.error != nil {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.caption2)
@@ -539,7 +585,7 @@ struct AnswerLine: View {
     var body: some View {
         switch line.kind {
         case .assistant(let text):
-            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks)
+            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks, tail: line.tailText)
         case .messageFailed(let error):
             FailedLine(error: error)
         default:
@@ -556,18 +602,26 @@ extension AnswerLine: Equatable {}
 /// finished plus the block it is still writing; a finished one is markdown,
 /// selectable, parsed once.
 ///
-/// The streaming case draws `blocks`, which the transcript parsed once per block
-/// as the answer grew — never per character. That is what keeps the trap the
-/// thinking line proved: a selectable `Text` rebuilds its text-kit view on every
+/// The streaming case draws `blocks` and `tail`, both handed over by the
+/// transcript, and parses nothing: the reducer parsed the finished prefix at its
+/// own pace and says where it stopped. That is what keeps the trap the thinking
+/// line proved: a selectable `Text` rebuilds its text-kit view on every
 /// character, and the model streams ~1.5 characters per chunk, so a 2k-character
 /// answer is 1300 publishes; parsing the whole answer on each of them is O(n²) per
 /// run. So the finished prefix is structure, parsed at its own pace, and the tail
 /// — the block in progress, whose next character can turn `- it` into a rule — is
 /// plain text until its blank line arrives.
+///
+/// The split is not asked for here. It was `Markdown.split(text).tail`, O(n) in
+/// the answer on every publish, and it recomputed the boundary: with the reducer
+/// scanning on a gate, its `blocks` stop at the oldest blank line and a fresh
+/// split's tail starts after the newest, so the text between them was drawn by
+/// neither and disappeared while the answer streamed.
 struct AssistantLine: View {
     let text: String
     let streaming: Bool
     var blocks: [MarkdownBlock] = []
+    var tail: String = ""
 
     var body: some View {
         if text.isEmpty {
@@ -576,7 +630,6 @@ struct AssistantLine: View {
                 Text("thinking…").foregroundStyle(Theme.muted)
             }
         } else if streaming {
-            let tail = Markdown.split(text).tail
             VStack(alignment: .leading, spacing: 8) {
                 BlocksView(blocks: blocks)
                 if !tail.isEmpty {
@@ -621,7 +674,7 @@ struct LineView: View {
             // here so the switch is total and stays total when a kind is added.
             UserBubble(text: text)
         case .assistant(let text):
-            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks)
+            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks, tail: line.tailText)
         case .reasoning(let text):
             ReasoningLine(text: text, streaming: line.streaming, duration: reasoningDuration)
         case .messageFailed(let error):

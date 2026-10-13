@@ -247,6 +247,7 @@ func composerChecks(_ checks: Checks) {
     ] {
         checks.expect(!reason.reason.isEmpty, "every block has a reason the composer can show: \(reason)")
     }
+
 }
 
 @MainActor

@@ -15,6 +15,7 @@
     "ping",
     "run.cancel",
     "run.start",
+    "session.delete",
     "session.list",
     "session.load",
     "session.save",
@@ -41,7 +42,8 @@
     "session_not_found": -33006,
     "run_not_found": -33007,
     "protocol_mismatch": -33008,
-    "dependency_missing": -33009
+    "dependency_missing": -33009,
+    "session_busy": -33010
   },
   "events": [
     {
