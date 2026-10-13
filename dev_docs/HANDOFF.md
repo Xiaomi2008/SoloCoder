@@ -12,8 +12,10 @@ inside it. `scripts/package_check.sh` is the gate that says so.
 - Branch: `feat/computer-use-macos`, ahead of origin by the phase 0–3f commits
   (nothing pushed)
 - Python suite: **576 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **300 checks passed** (`swift run agent-checks`), **319** with
-  `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); add
+- Swift suite: **343 checks passed** (`swift run agent-checks`), **356** with
+  `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
+  the row vocabulary the restyle put in the core, where `agent-checks` can reach
+  it; add
   `AGENT_LIVE_MODEL` for a real streamed run with thinking off, a real thinking
   run, and the app model doing two runs on one connection
 - Installed at `/Applications/SoloCoder.app`, and `.build/SoloCoder-0.1.0.dmg`
@@ -23,10 +25,101 @@ inside it. `scripts/package_check.sh` is the gate that says so.
   `--self-test` against a relocated read-only copy, imports under a scrubbed
   environment, a real streamed run, parent death, and the seal intact after all
   of it
-- Working tree: **not clean** — the composer keys, the markdown fix,
-  `scripts/make_dmg.sh` and this file are uncommitted as of 2026-10-12
+- The window is on Bionic's visual language (phase 3h): hairline borders, one
+  violet accent, neutral surfaces, a 760 pt reading column, and rows that say
+  *Worked for 1m 35s ›* / *Reasoned for 12s* / *Ran npm test*
+- Working tree: clean as of the phase 3h commit (2026-10-12)
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
   (`fastapi`); a `uv run` sync prunes extras, and it did mid-session
+
+## Phase 3h: the UI, restyled on Bionic
+
+The brief was "the UI is ugly", with **Bionic** (`/Applications/Bionic.app`) as
+the reference — not LM Studio, which is what I opened first and quit. Its window
+is calmer for four reasons, and the values are read out of the installed bundle,
+not guessed at:
+
+1. **Borders are hairlines, not fills** — the foreground at 4%, 7% and 12%
+   alpha. A 12%-alpha rule reads as an edge without adding a grey rectangle,
+   which is why a screen of its rows does not read as a table.
+2. **One accent, sparingly** — violet `#6141FF` light, `#8C80FF` dark; the dark
+   value is lighter because a saturated violet on near-black vibrates.
+3. **Neutral surfaces** — `#F3F3F3`/`#E8E8E8` light, `#1E1E1E`/`#292929` dark. No
+   blue cast, so the accent stays the only coloured thing on screen and keeps its
+   meaning.
+4. **A reading column** — the transcript is ~760 pt wide and centred, not 1,400
+   characters per line.
+
+`AgentAppUI/Theme.swift` is those tokens, every one a dynamic `NSColor` so the
+window follows the appearance (and an external display in dark mode) with no
+`colorScheme` plumbing in any view.
+
+**The rule that made it testable: a view draws, the core decides.** Every label
+and every number on a row is decided in `AgentAppCore`, where `agent-checks` can
+reach it — a view's string is a screenshot to verify it. What that added:
+
+- `ToolDisplay.summary(tool:arguments:running:)` — verb then object: *Ran npm
+  test*, *Read src/agent.py*, *Searched "TODO" in …*, *Clicked (12, 30)*, and
+  *Ran frobnicate* for a tool the app does not know. Paths keep their tail at 46
+  characters with the home abbreviated to `~`; quotes are kept at 90.
+- `DurationFormat.short` — `12s`, `1m 30s`, `2m`, `1h 5m`, and **nil** under
+  half a second: a row that took 0.4s says nothing, because "0s" is a claim about
+  a thing that finished instantly.
+- `TranscriptLine.at` and `.isActivity`, `Turn` (a prompt, the work, the answers),
+  `Turn.activityLabel` — *Working* / *Worked for 1m 35s* — and the reasoning row's
+  *Reasoned for 12s*.
+- `ToolCallRow.startedAt`/`endedAt`, and `elapsed` reading only those stamps. A
+  running row's live count is the view's (`TimelineView(.periodic(from:
+  row.startedAt, by: 1))`), not the model's: a duration that depends on when it
+  was asked, on a clock the transcript was not stamped with, is not a fact.
+
+**The clock is injected.** `Transcript(terminalTypes:clock:)` takes the clock, so
+the checks stamp a scripted run at known instants and assert the words. That
+bought four defects the code had, all of them found by writing the expectation
+first:
+
+- the turn's duration was measured to the *start* of the last tool call, so a
+  22s turn reported 2s — `TranscriptLine.stoppedAt` (a tool row stops at its
+  result, not at its request) and `Transcript.finishedAt` → `Turn.runEndedAt`
+  fixed the end of the span;
+- an orphan tool result — a result with no call, the fallback-append path —
+  stamped both ends at "now" and claimed the call took no time. It now answers
+  nil, and the row shows no duration;
+- `turns` dropped the line that created a headless turn (a run that starts with
+  a tool call, no prompt), so that turn's answer count was 0;
+- a history loaded from disk stamps every line at one instant, so the first
+  `Turn` rebuilt its lines by sorting on `at` and rendered the history shuffled.
+  `Turn.lines` is arrival-ordered and `activity`/`answers` are filters of it.
+
+**The one number worth carrying.** The reasoning row's duration is the distance
+from its arrival to the next line's — nothing in the protocol says "the model
+stopped thinking". The first answer was `Turn.nextArrival(after:)`, a scan from
+the line to its successor: O(lines) per row, O(lines²) for a turn whose
+disclosure is open, and **10.532 ms** measured over the 500 activity rows of a
+1,000-line turn — a sixth of the 60 ms publish cadence, on every publish, growing
+with the square. `Turn.durations` answers the same question from one pass over
+the lines, keyed by line id, read once per turn render: **0.1231 ms**, 85×
+cheaper and linear. The lesson is the shape: a per-row accessor that walks the
+turn is invisible at 20 rows and is the cost of the app at 1,000, and the row
+cannot see it — it asks for one value and gets a loop. The view reads the
+dictionary once in the section and hands each row a `TimeInterval`, because a row
+that carried the dictionary would compare it in its `.equatable()` every publish.
+
+**Verified on screen, not only in checks.** `ui-preview` (no service, no model)
+for the populated timeline, the empty state, the permission sheet, and the
+composer draft; then a real run in the real app against the real service, which
+is the only way to see a live row: *Working for 1m 11s* → *Worked for 1m 35s ›*,
+*Reasoning…* → *Reasoned for 12s*, *Ran ls -la … 1s*, the stop button replacing
+send while the run is in flight, the prompt as the header title, the answer as
+markdown.
+
+The traps this phase hit are in *Things to know*: the `onSubmit` draft, the
+nil-proposal frame, the black capture of an occluded window, and `noService` from
+the package directory.
+
+**Not done, and not Swift:** the session browser's titles and delete.
+`session.list` has no title and there is no `session.delete`, so the sidebar
+shows ids. That is a protocol change in Python first — see *Next: the views*.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 
@@ -411,11 +504,11 @@ cd /Users/taozeng/Projects/SoloCoder
 .venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
 
 cd macapp/AgentClient
-swift run agent-checks                              # 300 checks passed
-AGENT_REPO_ROOT=.. swift run agent-checks           # 319, + the app-model checks
+swift run agent-checks                              # 343 checks passed
+AGENT_REPO_ROOT=.. swift run agent-checks           # 356, + the app-model checks
 AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s \
     swift run agent-checks                          # …and a real streamed run
-swift run solocoder                                 # the app
+AGENT_REPO_ROOT=.. swift run solocoder              # the app (see the note below)
 swift run ui-preview                                # the views, no service, no model
 UI_PREVIEW_SHORT=1 swift run ui-preview             # …top of the timeline
 swift run ui-cost                                   # streaming cost, measured
@@ -452,19 +545,52 @@ drags in the rest:
 
 ## Next: the views, with a screen
 
-Phase 3d did markdown rendering, tool output beyond the preview, and scrolling.
-What is left, worth doing with `swift run ui-preview` open:
+*Done by phase 3h, above, except the last item.* Phase 3d did markdown rendering,
+tool output beyond the preview, and scrolling; the restyle closed the list:
 
-- the permission sheet's argument rendering — a `bash` prompt shows a JSON
-  object, not the command; a `write` shows the whole content blob
-- what a long session does to a `LazyVStack` (a 200-line transcript, a 40k-char
-  answer, the `Equatable` row skip under real history)
-- the composer: `Return` submits a multi-line field, and `Send` is disabled with
-  no reason shown
-- a copy-answer affordance (`Transcript.finalText` exists; no view uses it)
-- the session browser: ids, no titles, no delete
+- the permission sheet renders the arguments as labelled sections — a `bash`
+  prompt shows its command, a `write` its path and its content, not a JSON object
+- the long session is measured (the `ui-cost` harness, sections 3–5) and is not
+  the app's cost: 0.43 ms to copy and apply 4,001 lines, 0.46 ms to group them
+  into turns, 0.12 ms for a 1,000-line turn's durations — 1.7% of the 60 ms
+  cadence together
+- the composer shows why `Send` is disabled, and `Return` no longer sends the
+  prompt twice
+- the header has a Copy answer button over `Transcript.finalText`
+
+Left, and the only view work that is not Swift:
+
+- **the session browser: ids, no titles, no delete.** `session.list` answers
+  `sessionId`, `path`, `updatedAt`, `messageCount` — no title — and there is no
+  `session.delete`. A sidebar that names and removes sessions is a protocol
+  change first: a title on the list rows and a delete method in
+  `openagent/service/{protocol,server,sessions}.py`, fixtures regenerated with
+  `scripts/gen_protocol_fixtures.py`, then the Swift decode and the sidebar.
 
 ## Things to know (verified the hard way)
+
+- **A vertical `TextField` keeps its text when its binding is written from
+  inside its own `onSubmit`.** The send lands — the prompt is in the timeline,
+  the run starts — and the field still holds the prompt, so the next `Return`
+  sends it a second time. Clear the draft where you read it *and* again on the
+  next main-actor turn (`Task { @MainActor in draft = "" }`). Reproduced in
+  `ui-preview` with a seeded draft; the fix is verified by the same test.
+- **A `maxWidth`-only frame under a `nil` size proposal collapses a
+  `NavigationSplitView`.** `.frame(maxWidth: 1240)` in a 1,240 pt window gave a
+  590 pt split view, content left-aligned in the remainder: the proposal is nil
+  for the root of a window, so only the ideal width is left. The frame needs
+  `maxWidth: .infinity` (and `maxHeight: .infinity`) to say "fill, up to this".
+- **An occluded window captures black.** `screencapture -l<id>` of a window
+  fully behind another returns a black rectangle, and the app is fine: main
+  thread idle in the run loop, `kCGWindowIsOnscreen` true, alpha 1, right
+  bounds. Before believing a black screenshot, bring the window forward — the
+  first black capture of the live app this session cost a `sample`, a
+  `CGWindowListCopyWindowInfo` dump and a full-screen shot to find it out.
+- **`swift run solocoder` from `macapp/AgentClient` fails `noService`.** The
+  sidecar resolves the checkout from `AGENT_REPO_ROOT`, else the cwd if it has a
+  `.venv`; from the Swift package there is none, so `resolveLaunch()` returns
+  nil and the window opens with nothing to talk to. `AGENT_REPO_ROOT=..` is the
+  command, and the app-model checks take the same variable for the same reason.
 
 - **A `body` containing a `switch` must live in the struct, not an extension.**
   The result-builder transform is applied to a `body` in the type's own

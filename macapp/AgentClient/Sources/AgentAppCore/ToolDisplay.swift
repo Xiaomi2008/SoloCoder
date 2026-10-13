@@ -43,6 +43,111 @@ public struct ToolDisplay: Equatable, Sendable {
         }
     }
 
+    /// The row's one-line label: a verb and its object.
+    ///
+    /// The row used to show the tool's name and a folded preview of its result —
+    /// `read  1. let line = lines[index] ⏎ 2. let line = …` — which names the
+    /// operation and then spends the line on the output the disclosure shows
+    /// again. What a timeline row has to answer is *what happened*, in the tense
+    /// the state is in: `Ran npm test`, `Read Parser.swift`, `Searching the
+    /// parser` while it goes.
+    ///
+    /// The verb is per tool, the object is the field that carries the meaning
+    /// (the command, the path, the pattern), and an unknown tool gets its own
+    /// name as the object: a tool the model invents next month shows as
+    /// `Ran frobnicate`, which is true, rather than nothing.
+    ///
+    /// Bounded at `summaryKeep` characters: the row is one line, and a command
+    /// of 4,000 characters is a disclosure, not a label.
+    public static func summary(tool: String, arguments: JSONValue, running: Bool) -> String {
+        let fields = arguments.objectValue ?? [:]
+        func field(_ key: String) -> String? {
+            guard let value = fields[key] else { return nil }
+            switch value {
+            case .null: return nil
+            case .string, .int, .double, .bool: break
+            default: return nil
+            }
+            let text = value.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+        /// The first line of a multi-line command: the row is one line.
+        func firstLine(_ text: String) -> String {
+            text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        }
+        func one(_ verb: String, _ object: String?) -> String {
+            guard let object, !object.isEmpty else { return verb }
+            return "\(verb) \(object)"
+        }
+        func path() -> String? { field("path").map(Self.shorten) }
+
+        let out: String
+        switch tool {
+        case "bash", "bash_background":
+            out = one(running ? "Running" : "Ran", field("command").map { firstLine($0) })
+        case "read":
+            out = one(running ? "Reading" : "Read", path())
+        case "write":
+            out = one(running ? "Writing" : "Wrote", path())
+        case "edit", "notebook_edit":
+            out = one(running ? "Editing" : "Edited", path())
+        case "glob", "grep", "awk", "sed":
+            let verb = running ? "Searching" : "Searched"
+            let pattern = field("pattern") ?? field("expression")
+            if let path = path(), let pattern {
+                out = "\(verb) \(Self.quote(pattern)) in \(Self.shorten(path))"
+            } else {
+                out = one(verb, pattern.map(Self.quote))
+            }
+        case "web_fetch":
+            out = one(running ? "Fetching" : "Fetched", field("url"))
+        case "web_search":
+            out = one(running ? "Searching the web for" : "Searched the web for", field("query").map(Self.quote))
+        case "bash_output", "kill_shell":
+            out = one(running ? "Reading the shell" : "Read the shell", field("session_id"))
+        case "ask_user_question":
+            out = one(running ? "Asking" : "Asked", field("question").map { Self.quote(firstLine($0)) })
+        case "todo_write", "todo_update":
+            out = running ? "Updating the task list" : "Updated the task list"
+        case "click", "double_click":
+            let at = (field("x").flatMap { x in field("y").map { y in "(\(x), \(y))" } }) ?? "the screen"
+            out = "\(running ? "Clicking" : "Clicked") \(tool == "double_click" ? "double " : "")\(at)"
+        case "move_mouse":
+            out = running ? "Moving the pointer" : "Moved the pointer"
+        case "scroll":
+            out = running ? "Scrolling" : "Scrolled"
+        case "type_text":
+            out = one(running ? "Typing" : "Typed", field("text").map(Self.quote))
+        case "key_combination":
+            out = one(running ? "Pressed" : "Pressed", field("keys"))
+        case "screenshot":
+            out = running ? "Taking a screenshot" : "Took a screenshot"
+        default:
+            out = one(running ? "Running" : "Ran", tool)
+        }
+        return out.count > summaryKeep ? String(out.prefix(summaryKeep - 1)) + "…" : out
+    }
+
+    /// A path with its home abbreviated, and the tail kept: a row that shows
+    /// `/Users/dev/Projects/SoloCoder/macapp/AgentClient/Source` is a row that
+    /// shows the directory over the file.
+    static func shorten(_ path: String) -> String {
+        var text = path
+        let home = NSHomeDirectory()
+        if text.hasPrefix(home) { text = "~" + text.dropFirst(home.count) }
+        guard text.count > pathKeep else { return text }
+        return "…" + text.suffix(pathKeep - 1)
+    }
+
+    /// A quoted fragment of prose — a pattern, a query, a command's first line —
+    /// so the object of the verb reads as an object.
+    static func quote(_ text: String) -> String {
+        "“\(text)”"
+    }
+
+    public static let summaryKeep = 90
+    static let pathKeep = 46
+
     /// The most characters a field shows, and the most lines.
     ///
     /// A `write` of a generated file is 400 lines; the sheet is 220 points of

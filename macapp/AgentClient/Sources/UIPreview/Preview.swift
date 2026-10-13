@@ -277,11 +277,31 @@ struct UIPreviewApp: App {
             ProcessInfo.processInfo.environment["UI_PREVIEW_NOSCOPE"] == nil
             ? "/Users/dev/Projects/SoloCoder" : ""
         model.modelPolicy = "local_first"
-        model.transcript.addUserMessage("Find and fix the bug in the fence parser.")
-        model.ingest(AsyncStream { continuation in
-            for event in script() { continuation.yield(event) }
-            continuation.finish()
-        })
+        // The sidebar's states: a long id that has to truncate, a session the
+        // service cannot read, and the relative time. `UI_PREVIEW_EMPTY=1` also
+        // leaves the timeline empty, which is the state a fresh window opens in.
+        let now = Date().timeIntervalSince1970
+        model.sessions = [
+            SessionRow(
+                sessionId: "sess_49ae9e0102f8415691b745f6", path: "~/.openagent/sessions/a.json",
+                updatedAt: now - 2_500, messageCount: 2
+            ),
+            SessionRow(
+                sessionId: "sess_7c1f0b8d99a24e5f8b6d11aa", path: "~/.openagent/sessions/b.json",
+                updatedAt: now - 90_000, messageCount: 14
+            ),
+            SessionRow(
+                sessionId: "sess_damaged", path: "~/.openagent/sessions/c.json",
+                updatedAt: now - 4_000_000, messageCount: 0, error: "not valid JSON"
+            ),
+        ]
+        if ProcessInfo.processInfo.environment["UI_PREVIEW_EMPTY"] == nil {
+            model.transcript.addUserMessage("Find and fix the bug in the fence parser.")
+            model.ingest(AsyncStream { continuation in
+                for event in script() { continuation.yield(event) }
+                continuation.finish()
+            })
+        }
         return model
     }()
 
@@ -289,7 +309,7 @@ struct UIPreviewApp: App {
         WindowGroup("SoloCoder preview") {
             RootView(prompt: draftSeed)
                 .environmentObject(model)
-                .frame(minWidth: 780, idealWidth: 900, minHeight: 560, idealHeight: 700)
+                .frame(minWidth: 780, idealWidth: 1240, minHeight: 560, idealHeight: 820)
         }
     }
 }

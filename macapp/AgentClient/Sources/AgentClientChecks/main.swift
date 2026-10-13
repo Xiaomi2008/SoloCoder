@@ -510,6 +510,8 @@ do {
     markdownChecks(checks)
     stage = "tool display"
     toolDisplayChecks(checks)
+    stage = "rows"
+    try rowChecks(checks)
     stage = "composer"
     composerChecks(checks)
     stage = "live"

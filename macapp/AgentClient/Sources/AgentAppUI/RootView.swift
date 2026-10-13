@@ -14,12 +14,24 @@ import SwiftUI
 // So: the views are here, `AgentApp` is the `@main` that opens a window on them,
 // and `ui-preview` opens a window on them with a transcript fed in by hand —
 // which is how a change to a row gets looked at before it gets shipped.
+//
+// The layout is Bionic's: a sidebar of sessions, a header naming the session, a
+// centred reading column of turns, and a composer that is a card with its
+// controls inside it. The colours and the hairlines are in `Theme`.
+//
+// The rule the whole file keeps is the one the package exists for: **a view
+// draws, and the core decides.** Every word a row shows — the verb of a tool
+// call, the duration of a turn, whether a line is process or result — is
+// computed in `AgentAppCore`, where `swift run agent-checks` can reach it. What
+// is left here is geometry.
 
 // MARK: - Root
 
 public struct RootView: View {
     @EnvironmentObject var model: AppModel
     @State private var draft: String
+    @State private var query = ""
+    @State private var selection: String?
 
     /// `prompt` seeds the composer, so a preview can show the field as the user
     /// left it: multi-line, with a reason under it, Send greyed out.
@@ -28,15 +40,19 @@ public struct RootView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            StatusBar()
-            Divider()
-            ChatScroll()
-            Divider()
-            Composer(draft: $draft)
+        NavigationSplitView {
+            Sidebar(query: $query, selection: $selection)
+                .navigationSplitViewColumnWidth(min: 190, ideal: Theme.sidebarWidth, max: 320)
+        } detail: {
+            Detail(draft: $draft)
         }
-        .frame(minWidth: 680, minHeight: 460)
-        .toolbar { toolbar }
+        .tint(Theme.accent)
+        // `maxWidth` and `maxHeight` and not only the minimums: a frame with a
+        // maximum and no minimum takes its child's ideal size when the window
+        // proposes nothing, and the split view then lays out at 590 points and
+        // sits in the top-left of a 1,240-point window. The window is the thing
+        // that has to win.
+        .frame(minWidth: 760, maxWidth: .infinity, minHeight: 460, maxHeight: .infinity)
         .sheet(item: $model.promptToAnswer) { request in
             PermissionSheet(request: request)
         }
@@ -52,76 +68,15 @@ public struct RootView: View {
             Text(model.banner ?? "")
         }
     }
-
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Picker("Model", selection: $model.selectedModel) {
-                Text("(router's choice)").tag("")
-                ForEach(model.modelRows, id: \.key) { row in
-                    Text(row.key).tag(row.key)
-                }
-            }
-            .frame(width: 165)
-            .labelsHidden()
-            .help("The model for the next run. \(model.modelPolicy)")
-
-            Picker("Thinking", selection: $model.reasoningEffort) {
-                // `nil` sends no `reasoning_effort` at all, which leaves the
-                // server's default alone. That default is the slow path: on one
-                // reasoning model it spent 686,439 characters on private
-                // reasoning and produced no answer, where "off" answered in 1.1
-                // seconds. So the app's own default is `nil` — the model's
-                // business — and the control exists to get off it.
-                Text("model default").tag(ReasoningEffort?.none)
-                ForEach(ReasoningEffort.allCases, id: \.self) { effort in
-                    Text(effort.label).tag(ReasoningEffort?.some(effort))
-                }
-            }
-            .frame(width: 118)
-            .labelsHidden()
-            .help(
-                "How much the model may think before answering. Off answers fastest; the model's own default is the slowest thing in this app."
-            )
-
-            Picker("Tools", selection: $model.permissionMode) {
-                Text("Ask").tag(PermissionMode.ask)
-                Text("Read-only").tag(PermissionMode.allowReadonly)
-                Text("Allow all").tag(PermissionMode.allowAll)
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .help("Ask prompts before a risky tool. Read-only refuses writes without asking. Allow all is for demos.")
-
-            Menu("Session") {
-                Button("New run") { model.newRun() }
-                Divider()
-                if model.sessions.isEmpty {
-                    Text("no stored sessions")
-                }
-                ForEach(model.sessions, id: \.sessionId) { row in
-                    Button {
-                        model.open(row.sessionId)
-                    } label: {
-                        Text("\(row.sessionId.prefix(16)) · \(row.messageCount) msgs")
-                    }
-                }
-                Divider()
-                Button("Refresh") { Task { await model.refreshSessions() } }
-            }
-
-        }
-    }
 }
 
 /// Choose the scope the agent works in.
 ///
-/// A free function, called from the status bar: the panel is AppKit's and modal,
-/// and the control that opens it is the one that shows the resulting path. It
-/// used to sit in the toolbar, which shares 900 points with the window title,
-/// two pickers, a segmented control and a menu — the group overflowed into the
-/// `>>` chevron, and a control hidden in an overflow menu is a control the user
-/// does not know they have.
+/// A free function, called from the sidebar's footer: the panel is AppKit's and
+/// modal. It used to sit in the toolbar, which shares 900 points with the window
+/// title, two pickers, a segmented control and a menu — the group overflowed
+/// into the `>>` chevron, and a control hidden in an overflow menu is a control
+/// the user does not know they have.
 @MainActor
 func chooseWorkingDir(_ model: AppModel) {
     let panel = NSOpenPanel()
@@ -135,74 +90,285 @@ func chooseWorkingDir(_ model: AppModel) {
     }
 }
 
-// MARK: - Status
+// MARK: - Sidebar
 
-struct StatusBar: View {
+/// The sessions, and the two things that are always true about the app: what it
+/// is connected to, and what directory it works in.
+struct Sidebar: View {
     @EnvironmentObject var model: AppModel
+    @Binding var query: String
+    @Binding var selection: String?
 
     var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(model.connected ? Color.green : Color.orange)
-                .frame(width: 8, height: 8)
-            Text(model.status)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Divider().frame(height: 12)
-            Text(model.transcript.state.label)
-                .font(.callout)
-                .fontWeight(.medium)
-            if model.busy {
-                ProgressView().controlSize(.small)
-            }
-            if let notice = model.notice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Button("OK") { model.notice = nil }.controlSize(.mini)
-            }
-            Spacer()
-            if let answer = model.transcript.finalText {
-                // The run's last answer, from anywhere in the timeline: the
-                // per-line copy is the answer being read, this is the one that
-                // was scrolled past to ask a follow-up. Labelled, not an icon —
-                // in a bar of icons, a word is the only thing that says what it
-                // copies.
-                Button("Copy answer") {
-                    let pasteboard = NSPasteboard.general
-                    pasteboard.clearContents()
-                    pasteboard.setString(answer, forType: .string)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                selection = nil
+                model.newRun()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "square.and.pencil")
+                    Text("New session")
+                    Spacer()
                 }
-                .controlSize(.small)
-                .help("Copy the last answer of this run")
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .help("Start a session with an empty timeline")
+
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(Theme.faint)
+                TextField("Search", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+
+            List(selection: $selection) {
+                ForEach(filtered, id: \.sessionId) { row in
+                    SessionRowView(row: row).tag(row.sessionId)
+                }
+                // An empty list of files reads as a broken sidebar, and an empty
+                // search reads as a broken search — the two answers are different.
+                if model.sessions.isEmpty {
+                    Text("No sessions yet")
+                        .font(.caption)
+                        .foregroundStyle(Theme.faint)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 12)
+                } else if filtered.isEmpty {
+                    Text("Nothing matches “\(query)”")
+                        .font(.caption)
+                        .foregroundStyle(Theme.faint)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 12)
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .onChange(of: selection) { _, chosen in
+                guard let chosen, chosen != model.sessionId else { return }
+                model.open(chosen)
+            }
+
+            Footer(query: $query)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .task { await model.refreshSessions() }
+    }
+
+    /// The stored sessions, filtered by the search field.
+    ///
+    /// The protocol's `session.list` answers an id, a path, an mtime and a
+    /// message count — no title. So the searchable text is what there is, and
+    /// the row shows an id: a session browser that can name a session is a
+    /// protocol change (`session.list` gaining a title, and a `session.delete`
+    /// to go with it), not a view change.
+    private var filtered: [SessionRow] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return model.sessions }
+        return model.sessions.filter {
+            $0.sessionId.lowercased().contains(needle) || $0.path.lowercased().contains(needle)
+        }
+    }
+}
+
+/// A stored session.
+///
+/// `AgentClient.SessionRow` is the protocol's row; this is its row on screen, so
+/// the two names stay apart — an unqualified `SessionRow` in this file would
+/// otherwise mean the view and not the payload.
+struct SessionRowView: View {
+    let row: AgentClient.SessionRow
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // The id is 28 characters and the sidebar is 232 points, so the row
+            // is a truncation case, not a layout case: the VStack has to be
+            // offered the row's width for the Text to be able to cut itself.
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.sessionId)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if row.error != nil {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.warning)
+                    .help(row.error ?? "")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var subtitle: String {
+        let when = Date(timeIntervalSince1970: row.updatedAt)
+        let text = Self.relativeFormatter.localizedString(for: when, relativeTo: Date())
+        return "\(text) · \(row.messageCount) msgs"
+    }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+}
+
+/// The connection and the scope: the two facts about the app itself, kept where
+/// they are always visible.
+struct Footer: View {
+    @EnvironmentObject var model: AppModel
+    @Binding var query: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider().overlay(Theme.hairline)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(model.connected ? Theme.success : Theme.warning)
+                    .frame(width: 7, height: 7)
+                Text(model.status)
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    Task { await model.refreshModels() }
+                } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.muted)
+                .help("Reload the models the service offers")
             }
             Button {
                 chooseWorkingDir(model)
             } label: {
-                Text(model.workingDir.isEmpty ? "choose a working directory" : model.workingDir)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 5) {
+                    Image(systemName: "folder").font(.system(size: 10))
+                    Text(model.workingDir.isEmpty ? "choose a working directory" : (model.workingDir as NSString).lastPathComponent)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .foregroundStyle(model.workingDir.isEmpty ? Theme.warning : Theme.muted)
             .help(
                 model.workingDir.isEmpty
                     ? "required — the scope the agent works in"
                     : "the scope the agent works in — click to change it\n\(model.workingDir)"
             )
-            Button("Models") { Task { await model.refreshModels() } }
-                .controlSize(.small)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 10)
     }
 }
 
-// MARK: - Chat
+// MARK: - Detail
 
-/// The timeline, following the stream.
+struct Detail: View {
+    @EnvironmentObject var model: AppModel
+    @Binding var draft: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Header()
+            TranscriptColumn()
+            ComposerCard(draft: $draft)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Theme.surface)
+    }
+}
+
+/// The session's name, and what the app is doing right now.
+struct Header: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                if model.transcript.state.isRunning || model.busy {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini)
+                        Text(model.transcript.state.label)
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Theme.fill, in: Capsule())
+                }
+                Spacer()
+                if let answer = model.transcript.finalText {
+                    // The run's last answer, from anywhere in the timeline: the
+                    // per-answer copy is the one being read, this is the one that
+                    // was scrolled past to ask a follow-up.
+                    CopyButton(text: answer, label: "the last answer")
+                }
+                Text(model.selectedModel.isEmpty ? "router" : model.selectedModel)
+                    .font(.caption)
+                    .foregroundStyle(Theme.faint)
+                    .lineLimit(1)
+                    .help("The model for the next run. \(model.modelPolicy)")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+
+            if let notice = model.notice {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle").font(.caption).foregroundStyle(Theme.warning)
+                    Text(notice).font(.caption).foregroundStyle(Theme.muted).lineLimit(2)
+                    Spacer()
+                    Button("OK") { model.notice = nil }.controlSize(.mini)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(Theme.fill)
+            }
+        }
+        // Opaque, and above a hairline: the timeline scrolls under the header,
+        // and a transparent header shows the answer's tops through the title.
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+    }
+
+    /// The first prompt, on one line. A session is named by what it asked for;
+    /// with no prompt yet, it is a new session.
+    private var title: String {
+        for line in model.transcript.lines {
+            if case .user(let text) = line.kind {
+                let first = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+                return first.isEmpty ? "New session" : String(first.prefix(80))
+            }
+        }
+        return "New session"
+    }
+}
+
+// MARK: - Transcript
+
+/// The turns, following the stream.
 ///
 /// The old rule was "scroll when the line count changes", which is the wrong
 /// signal twice over: a 2k-character answer is one line, so its 1,300 deltas
@@ -213,68 +379,176 @@ struct StatusBar: View {
 /// So the signal is the **last line's value** — it changes when a line is
 /// appended and when the text in it grows — and it is acted on only while the
 /// view is pinned to the bottom. `LazyVStack` gives the pin for free: the last
-/// line's `onAppear`/`onDisappear` is exactly "the user is at the bottom" /
-/// "the user has scrolled away", with no geometry reader per row to pay for.
-struct ChatScroll: View {
+/// turn's `onAppear`/`onDisappear` is exactly "the user is at the bottom" / "the
+/// user has scrolled away", with no geometry reader per row to pay for.
+struct TranscriptColumn: View {
     @EnvironmentObject var model: AppModel
     @State private var pinned = true
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    if model.transcript.lines.isEmpty {
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    if model.transcript.turns.isEmpty {
                         ContentUnavailable(
                             title: "No run yet",
                             detail: "Choose a working directory and a model, then ask for something."
                         )
                     }
-                    ForEach(model.transcript.lines) { line in
+                    ForEach(model.transcript.turns) { turn in
                         // `.equatable()` is the difference between re-running
-                        // every visible line's body on every publish and
-                        // re-running only the lines that changed.
-                        LineView(line: line)
+                        // every visible turn's body on every publish and
+                        // re-running only the turns that changed.
+                        TurnView(turn: turn)
                             .equatable()
-                            .id(line.id)
-                            .onAppear { if isLast(line) { pinned = true } }
-                            .onDisappear { if isLast(line) { pinned = false } }
+                            .id(turn.id)
+                            .onAppear { if isLast(turn) { pinned = true } }
+                            .onDisappear { if isLast(turn) { pinned = false } }
                     }
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 18)
+                .frame(maxWidth: Theme.columnWidth)
+                // The column, centred: the window is wider than a paragraph.
+                .frame(maxWidth: .infinity, alignment: .center)
             }
+            .background(Theme.surface)
             .overlay(alignment: .bottomTrailing) {
-                if !pinned, let last = model.transcript.lines.last {
+                if !pinned, let last = model.transcript.turns.last {
                     Button {
                         pinned = true
                         proxy.scrollTo(last.id, anchor: .bottom)
                     } label: {
-                        Label("Latest", systemImage: "arrow.down")
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
                     }
-                    .padding(10)
+                    .buttonStyle(.plain)
+                    .background(Theme.surfaceRaised, in: Circle())
+                    .hairline(14, color: Theme.edge)
+                    .padding(14)
                 }
             }
             .onChange(of: model.transcript.lines.last) { before, after in
-                guard let after else { return }
+                guard let after, let last = model.transcript.turns.last else { return }
                 // The user's own message is always worth scrolling to: they just
                 // typed it, and a view left scrolled up would hide it.
                 if case .user = after.kind { pinned = true }
                 guard pinned else { return }
                 if before?.id != after.id {
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(after.id, anchor: .bottom) }
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) }
                 } else {
-                    // Text growth in the line already on screen: follow it
+                    // Text growth in the turn already on screen: follow it
                     // without an animation per publish.
-                    proxy.scrollTo(after.id, anchor: .bottom)
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
         }
     }
 
-    private func isLast(_ line: TranscriptLine) -> Bool {
-        line.id == model.transcript.lines.last?.id
+    private func isLast(_ turn: Turn) -> Bool {
+        turn.id == model.transcript.turns.last?.id
     }
 }
+
+/// One prompt, the work, and the answers.
+struct TurnView: View {
+    let turn: Turn
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let user = turn.user, case .user(let text) = user.kind {
+                UserBubble(text: text)
+            }
+            if !turn.activity.isEmpty {
+                ActivitySection(turn: turn)
+            }
+            ForEach(turn.answers) { line in
+                AnswerLine(line: line).equatable()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+extension TurnView: Equatable {}
+
+/// The process, collapsed: "Worked for 2m 50s ›".
+///
+/// Open while the turn is running — a run that shows nothing for two minutes
+/// reads as a hang — and collapsed once it finishes, because the result is what
+/// the person came for and the process is what they scroll past on the way to
+/// the next prompt. The default is `turn.running`, and a click overrides it for
+/// good: `expanded ?? turn.running`.
+struct ActivitySection: View {
+    let turn: Turn
+
+    @State private var expanded: Bool?
+
+    private var open: Bool { expanded ?? turn.running }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: Binding(
+            get: { open },
+            set: { expanded = $0 }
+        )) {
+            // The durations are read once for the turn and handed to each row as
+            // a value: a row that carried the dictionary would compare it in its
+            // `.equatable()` on every publish.
+            VStack(alignment: .leading, spacing: 8) {
+                let durations = turn.durations
+                ForEach(turn.activity) { line in
+                    LineView(line: line, reasoningDuration: durations[line.id]).equatable()
+                }
+            }
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            HStack(spacing: 6) {
+                if turn.running { ProgressView().controlSize(.mini) }
+                Text(turn.activityLabel)
+                    .font(.callout)
+                    .foregroundStyle(Theme.muted)
+            }
+            .contentShape(Rectangle())
+        }
+        .tint(Theme.muted)
+        .padding(.leading, 2)
+    }
+}
+
+/// The prompt, as the user's own words: on the right, on a surface, in a bubble.
+struct UserBubble: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.body)
+            .textSelection(.enabled)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: 560, alignment: .trailing)
+            .background(Theme.fillRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+/// The result of a turn: an answer, or a failure.
+struct AnswerLine: View {
+    let line: TranscriptLine
+
+    var body: some View {
+        switch line.kind {
+        case .assistant(let text):
+            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks)
+        case .messageFailed(let error):
+            FailedLine(error: error)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+extension AnswerLine: Equatable {}
 
 /// The assistant text, split by how far along it is.
 ///
@@ -299,7 +573,7 @@ struct AssistantLine: View {
         if text.isEmpty {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("thinking…").foregroundStyle(.secondary)
+                Text("thinking…").foregroundStyle(Theme.muted)
             }
         } else if streaming {
             let tail = Markdown.split(text).tail
@@ -324,8 +598,11 @@ struct AssistantLine: View {
     }
 }
 
+/// A line of the process, inside the turn's disclosure.
 struct LineView: View {
     let line: TranscriptLine
+    /// The thinking's duration, from the turn's one pass over its lines.
+    let reasoningDuration: TimeInterval?
 
     // `body` must be declared here, not in an extension: Swift applies the
     // result-builder transform to a `body` in the type's own declaration and
@@ -340,11 +617,13 @@ struct LineView: View {
         // did not change is skipped only if the row is a view of its own.
         switch line.kind {
         case .user(let text):
-            UserLine(text: text)
+            // A prompt is never activity, so this branch is unreachable; it is
+            // here so the switch is total and stays total when a kind is added.
+            UserBubble(text: text)
         case .assistant(let text):
             AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks)
         case .reasoning(let text):
-            ReasoningLine(text: text, streaming: line.streaming)
+            ReasoningLine(text: text, streaming: line.streaming, duration: reasoningDuration)
         case .messageFailed(let error):
             FailedLine(error: error)
         case .tool(let row):
@@ -363,17 +642,6 @@ struct LineView: View {
 /// instead of re-running every visible line's body on every publish.
 extension LineView: Equatable {}
 
-struct UserLine: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 /// The model thinking out loud, as progress.
 ///
 /// Open while it streams — ten seconds of a spinner that has not moved reads as
@@ -383,6 +651,9 @@ struct UserLine: View {
 struct ReasoningLine: View {
     let text: String
     let streaming: Bool
+    /// How long it ran, from the turn's stamps. A history loaded from disk
+    /// answers 0, which is the "Reasoned" label with the number left out.
+    var duration: TimeInterval? = nil
 
     @State private var expanded: Bool?
 
@@ -419,13 +690,13 @@ struct ReasoningLine: View {
         if streaming {
             Text(shown)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
         } else {
             Text(text)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.muted)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
@@ -441,12 +712,19 @@ struct ReasoningLine: View {
         } label: {
             HStack(spacing: 6) {
                 if streaming { ProgressView().controlSize(.mini) }
-                Text(streaming ? "thinking…" : "thought for a moment")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(label).font(.callout).foregroundStyle(Theme.muted)
             }
+            .contentShape(Rectangle())
         }
-        .tint(.secondary)
+        .tint(Theme.muted)
+    }
+
+    /// "Reasoned for 12s", "Reasoning…" while it goes, and "Reasoned" for a
+    /// history whose lines all arrived at one instant.
+    private var label: String {
+        if streaming { return "Reasoning…" }
+        guard let text = DurationFormat.short(duration) else { return "Reasoned" }
+        return "Reasoned for \(text)"
     }
 }
 
@@ -454,9 +732,20 @@ struct FailedLine: View {
     let error: String
 
     var body: some View {
-        Label(error, systemImage: "exclamationmark.triangle.fill")
-            .foregroundStyle(.orange)
-            .font(.callout)
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(Theme.danger)
+            Text(error)
+                .font(.callout)
+                .foregroundStyle(Theme.danger)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+        .hairline(Theme.radiusSmall, color: Theme.edge)
     }
 }
 
@@ -469,12 +758,12 @@ struct CompactionLine: View {
             Text("compacting context — \(row.reason)")
             switch row.state {
             case .running: ProgressView().controlSize(.small)
-            case .done: Text("done").foregroundStyle(.secondary)
-            case .failed(let error): Text("failed: \(error)").foregroundStyle(.orange)
+            case .done: Text("done").foregroundStyle(Theme.muted)
+            case .failed(let error): Text("failed: \(error)").foregroundStyle(Theme.danger)
             }
         }
-        .font(.callout)
-        .foregroundStyle(.secondary)
+        .font(.caption)
+        .foregroundStyle(Theme.muted)
     }
 }
 
@@ -484,19 +773,31 @@ struct NoteLine: View {
     var body: some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(Theme.faint)
     }
 }
 
+/// A tool call: a verb, its object, and how long it took.
+///
+/// The row used to show the tool's name and a folded preview of its result —
+/// `read  1. let line = lines[index] ⏎ 2. let line = …` — which named the
+/// operation and then spent the line on the output the disclosure shows again.
+/// The label is now the core's (`ToolDisplay.summary`): `Read Parser.swift`,
+/// `Running npm test`. The result is only ever in the disclosure, which is where
+/// the user opens the row to look.
 struct ToolLine: View {
     let row: ToolCallRow
 
+    @State private var expanded = false
+
+    private var running: Bool { row.state == .running }
+
     var body: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("arguments")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.muted)
                 ArgumentSections(sections: ToolDisplay.sections(tool: row.name, arguments: row.arguments))
 
                 // The output. The row used to store only a 240-character
@@ -505,7 +806,7 @@ struct ToolLine: View {
                 if case .done(let text) = row.state, !text.isEmpty {
                     Text("result")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.muted)
                     ScrollView(.vertical, showsIndicators: true) {
                         Text(text)
                             .font(.system(.caption, design: .monospaced))
@@ -518,31 +819,55 @@ struct ToolLine: View {
                 if case .failed(let error) = row.state {
                     Text(error)
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Theme.danger)
                         .textSelection(.enabled)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
         } label: {
-            HStack(spacing: 6) {
-                switch row.state {
-                case .running:
-                    ProgressView().controlSize(.small)
-                case .done:
-                    Image(systemName: "checkmark.circle").foregroundStyle(.green)
-                case .failed:
-                    Image(systemName: "xmark.circle").foregroundStyle(.red)
-                }
-                Text(row.name).font(.body.monospaced())
-                Text(preview(of: row.state))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 7) {
+                glyph
+                Text(ToolDisplay.summary(tool: row.name, arguments: row.arguments, running: running))
+                    .font(.callout)
+                    .foregroundStyle(running ? Color.primary : Theme.muted)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                Spacer(minLength: 8)
+                elapsed
             }
+            .contentShape(Rectangle())
         }
-        .padding(8)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+        .tint(Theme.muted)
+    }
+
+    @ViewBuilder private var glyph: some View {
+        switch row.state {
+        case .running: ProgressView().controlSize(.mini)
+        case .done: Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.success)
+        case .failed: Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.danger)
+        }
+    }
+
+    /// The call's own clock, ticking once a second while it runs.
+    ///
+    /// `TimelineView` and not a timer in the model: the transcript's stamps are
+    /// the record, and a live count is a view's business — it is the one piece of
+    /// the screen that changes with no event, and it must not cost a publish.
+    @ViewBuilder private var elapsed: some View {
+        if running {
+            TimelineView(.periodic(from: row.startedAt, by: 1)) { context in
+                Text(DurationFormat.short(context.date.timeIntervalSince(row.startedAt)) ?? "…")
+                    .font(.caption)
+                    .foregroundStyle(Theme.faint)
+                    .monospacedDigit()
+            }
+        } else if let text = DurationFormat.short(row.elapsed) {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(Theme.faint)
+                .monospacedDigit()
+        }
     }
 }
 
@@ -552,18 +877,27 @@ struct PermissionLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: outcome.granted ? "hand.raised.beam.fill" : "hand.raised.slash.fill")
-                .foregroundStyle(outcome.granted ? .green : .red)
-            Text("\(outcome.request.toolName) \(outcome.granted ? "allowed" : "refused")")
-                .font(.callout)
-            Text("(\(outcome.scope.rawValue))").font(.caption).foregroundStyle(.secondary)
-            Text(outcome.reason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                .font(.caption)
+                .foregroundStyle(outcome.granted ? Theme.success : Theme.danger)
+            Text(
+                ToolDisplay.summary(
+                    tool: outcome.request.toolName, arguments: outcome.request.arguments, running: false
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(Theme.muted)
+            Text(outcome.granted ? "allowed" : "refused")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
+            Text("(\(outcome.scope.rawValue))").font(.caption2).foregroundStyle(Theme.faint)
+            Text(outcome.reason).font(.caption2).foregroundStyle(Theme.faint).lineLimit(2)
         }
     }
 }
 
 // MARK: - Composer
 
-/// The prompt field.
+/// The prompt field, as a card with its controls inside it.
 ///
 /// **Return sends; ⇧Return and ⌘Return write a newline.** It used to be the other
 /// way round, on the reasoning that prompts are multi-line — a stack trace, a list
@@ -578,33 +912,76 @@ struct PermissionLine: View {
 /// working directory in the status bar. The rule lives in `AppModel.sendBlock`,
 /// which is also `send`'s own guard, so the button cannot claim a thing the call
 /// does not enforce.
-struct Composer: View {
+///
+/// **The controls are in the card, not the toolbar.** Model, thinking and
+/// permission mode are the three settings of *this* prompt, and the toolbar put
+/// them 60 points above the field they apply to, in a strip that overflowed into
+/// a chevron.
+struct ComposerCard: View {
     @EnvironmentObject var model: AppModel
     @Binding var draft: String
 
+    private var enabled: Bool { model.sendBlock(draft) == nil }
+
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             TextField("Ask for something…", text: $draft, axis: .vertical)
-                .lineLimit(1...6)
+                .lineLimit(1...8)
+                .font(.body)
                 .onSubmit(submit)
                 .disabled(model.busy)
-            if let reason = visibleReason {
-                Text(reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 240, alignment: .trailing)
-            }
-            if model.transcript.state.isRunning {
-                Button("Cancel") { model.cancel() }
-            } else {
-                Button("Send") { send() }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(model.sendBlock(draft) != nil)
-                    .help(model.sendBlock(draft).map { $0.reason } ?? "↵ sends, ⇧↵ writes a new line")
+
+            HStack(spacing: 8) {
+                ModelMenu()
+                ThinkingMenu()
+                ModeMenu()
+                if let reason = visibleReason {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                trailing
             }
         }
-        .padding(10)
+        .padding(12)
+        .frame(maxWidth: Theme.columnWidth)
+        .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .hairline(Theme.radius, color: Theme.edge)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    @ViewBuilder private var trailing: some View {
+        if model.transcript.state.isRunning {
+            Button {
+                model.cancel()
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 30, height: 30)
+                    .background(Theme.fillRaised, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Cancel this run")
+        } else {
+            Button {
+                send()
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(enabled ? Color.white : Theme.faint)
+                    .frame(width: 30, height: 30)
+                    .background(enabled ? Theme.accent : Theme.fillRaised, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!enabled)
+            .help(model.sendBlock(draft).map(\.reason) ?? "↵ sends, ⇧↵ writes a new line")
+        }
     }
 
     /// The reason worth showing.
@@ -646,7 +1023,126 @@ struct Composer: View {
     private func send() {
         let text = draft
         draft = ""
+        // …and again on the next main-actor turn.
+        //
+        // Measured on this box: a vertical `TextField` keeps its text when its
+        // binding is written from inside its own `onSubmit`. The send lands — the
+        // prompt is in the timeline, the run starts — and the field still holds
+        // the prompt, so the next Return sends it a second time. The immediate
+        // write is the one that is correct in principle; the deferred one is the
+        // one SwiftUI honours, and the pair costs nothing.
+        Task { @MainActor in draft = "" }
         model.send(text)
+    }
+}
+
+/// A setting of this prompt, shown as its current value.
+///
+/// A `Menu` and not a `Picker`: three of these in a toolbar `Picker` row is a
+/// strip of 165-point boxes, and the value that matters is the one currently
+/// chosen, which a label states and a `Picker` with `labelsHidden` does not.
+struct SettingMenu: View {
+    let title: String
+    let systemImage: String
+    let value: String
+    let help: String
+    let options: [String]
+    let chosen: String
+    let choose: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    choose(option)
+                } label: {
+                    if option == chosen {
+                        Label(option, systemImage: "checkmark")
+                    } else {
+                        Text(option)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: systemImage).font(.system(size: 10))
+                Text(value).font(.caption).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(Theme.muted)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        // The window's accent is violet, and a borderless menu tints its label
+        // with the accent: these are the settings of the prompt, not the
+        // window's one coloured thing, so they take the muted ink.
+        .tint(Theme.muted)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(help)
+    }
+}
+
+struct ModelMenu: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        SettingMenu(
+            title: "Model",
+            systemImage: "cube.box",
+            value: model.selectedModel.isEmpty ? "router's choice" : model.selectedModel,
+            help: "The model for the next run. \(model.modelPolicy)",
+            options: ["(router's choice)"] + model.modelRows.map(\.key),
+            chosen: model.selectedModel.isEmpty ? "(router's choice)" : model.selectedModel
+        ) { choice in
+            model.chooseModel(choice == "(router's choice)" ? "" : choice)
+        }
+    }
+}
+
+struct ThinkingMenu: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        SettingMenu(
+            title: "Thinking",
+            systemImage: "brain",
+            value: model.reasoningEffort?.label ?? "model default",
+            help:
+                "How much the model may think before answering. Off answers fastest; the model's own default is the slowest thing in this app.",
+            options: ["model default"] + ReasoningEffort.allCases.map(\.label),
+            chosen: model.reasoningEffort?.label ?? "model default"
+        ) { choice in
+            // "model default" sends no `reasoning_effort` at all, which leaves
+            // the server's default alone. That default is the slow path: on one
+            // reasoning model it spent 686,439 characters on private reasoning
+            // and produced no answer, where "off" answered in 1.1 seconds.
+            model.reasoningEffort = ReasoningEffort.allCases.first { $0.label == choice }
+        }
+    }
+}
+
+struct ModeMenu: View {
+    @EnvironmentObject var model: AppModel
+
+    private let names: [(PermissionMode, String)] = [
+        (.ask, "Ask"), (.allowReadonly, "Read-only"), (.allowAll, "Allow all"),
+    ]
+
+    var body: some View {
+        SettingMenu(
+            title: "Tools",
+            systemImage: "hand.raised",
+            value: names.first { $0.0 == model.permissionMode }?.1 ?? "Ask",
+            help: "Ask prompts before a risky tool. Read-only refuses writes without asking. Allow all is for demos.",
+            options: names.map(\.1),
+            chosen: names.first { $0.0 == model.permissionMode }?.1 ?? "Ask"
+        ) { choice in
+            if let mode = names.first(where: { $0.1 == choice })?.0 { model.permissionMode = mode }
+        }
     }
 }
 
@@ -662,7 +1158,7 @@ struct PermissionSheet: View {
                 .font(.title3)
             Text(request.reason)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.muted)
             ScrollView {
                 ArgumentSections(
                     sections: ToolDisplay.sections(tool: request.toolName, arguments: request.arguments),
@@ -671,6 +1167,9 @@ struct PermissionSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 260)
+            .padding(10)
+            .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+            .hairline(Theme.radiusSmall, color: Theme.hairline)
 
             HStack {
                 Button("Deny") { model.answer(granted: false, scope: .once) }
@@ -697,9 +1196,10 @@ struct ContentUnavailable: View {
     var body: some View {
         VStack(spacing: 6) {
             Text(title).font(.headline)
-            Text(detail).font(.callout).foregroundStyle(.secondary)
+            Text(detail).font(.callout).foregroundStyle(Theme.muted)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
     }
 }
 
@@ -719,14 +1219,14 @@ struct ArgumentSections: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if sections.isEmpty {
-                Text("(no arguments)").font(.caption).foregroundStyle(.secondary)
+                Text("(no arguments)").font(.caption).foregroundStyle(Theme.muted)
             }
             ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
                 VStack(alignment: .leading, spacing: 2) {
                     if !section.label.isEmpty {
                         Text(section.label)
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Theme.faint)
                     }
                     switch section.style {
                     case .code:
@@ -742,7 +1242,7 @@ struct ArgumentSections: View {
                     case .note:
                         Text(section.text)
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(Theme.faint)
                     }
                 }
             }
@@ -774,29 +1274,10 @@ struct CopyButton: View {
             }
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .foregroundStyle(copied ? Theme.success : Theme.muted)
         }
         .buttonStyle(.borderless)
         .controlSize(.mini)
         .help("Copy \(label)")
-    }
-}
-
-func pretty(_ value: JSONValue) -> String {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    guard let data = try? encoder.encode(value), let text = String(data: data, encoding: .utf8) else {
-        return "\(value)"
-    }
-    return text
-}
-
-/// A tool row's label: the state in one line. The row keeps the full result and
-/// the disclosure shows it; a label folds it, in the core, where a check can
-/// reach the folding.
-func preview(of state: ToolCallRow.State) -> String {
-    switch state {
-    case .running: return "running…"
-    case .done(let text): return Transcript.oneLine(text)
-    case .failed(let error): return Transcript.oneLine(error)
     }
 }

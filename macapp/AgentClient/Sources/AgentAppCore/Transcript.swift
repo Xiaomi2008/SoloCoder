@@ -42,12 +42,37 @@ public struct ToolCallRow: Identifiable, Equatable, Sendable {
     public var name: String
     public var arguments: JSONValue
     public var state: State
+    /// When the call started, and when it stopped.
+    ///
+    /// The row shows the elapsed time while it runs and after it ends: a tool row
+    /// with no clock is a row that cannot tell a 2-second `read` from a 90-second
+    /// `bash` that is still going, which is the difference between "working" and
+    /// "stuck". `endedAt` is nil while running, and nil for a row folded from a
+    /// history that has no arrival times.
+    public var startedAt: Date
+    public var endedAt: Date?
 
-    public init(id: String, name: String, arguments: JSONValue, state: State = .running) {
+    public init(
+        id: String, name: String, arguments: JSONValue, state: State = .running,
+        startedAt: Date = Date(), endedAt: Date? = nil
+    ) {
         self.id = id
         self.name = name
         self.arguments = arguments
         self.state = state
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+    }
+
+    /// How long the call took, once it stopped.
+    ///
+    /// Nil while it runs. A running row's live count is the view's — a
+    /// `TimelineView` ticking once a second from `startedAt` — and not this
+    /// property's: reading the wall clock here would make the row's duration
+    /// depend on when it was asked, and on a clock the transcript was not
+    /// stamped with.
+    public var elapsed: TimeInterval? {
+        DurationFormat.between(startedAt, endedAt)
     }
 }
 
@@ -126,6 +151,39 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     /// Not `private`: a private stored property makes the memberwise init private,
     /// and this struct is constructed by name from all over the reducer.
     var parsedPrefix: String = ""
+    /// When the line arrived.
+    ///
+    /// The turn's "Worked for 2m 50s" is the distance between the line that opened
+    /// it and the line that closed it, so the arrival times have to be on the
+    /// lines. A history loaded from disk stamps every line with the same instant,
+    /// and `DurationFormat` answers nil for that interval — the row then says
+    /// "Worked" and leaves the number out, which is the truth.
+    public var at: Date = Date()
+
+    /// True for the process, false for the result.
+    ///
+    /// What the "Worked for 2m 50s ›" disclosure collects, and what stays in the
+    /// column: thinking, tool calls, compactions, permission decisions and events
+    /// this client does not model are the process. The prompt, the answers and a
+    /// failed message are the result — a failure is a result, because an error
+    /// inside a collapsed disclosure is an error the user never sees.
+    public var isActivity: Bool {
+        switch kind {
+        case .reasoning, .tool, .compaction, .permission, .note: return true
+        case .user, .assistant, .messageFailed: return false
+        }
+    }
+
+    /// The last instant this line speaks about.
+    ///
+    /// For most lines, the arrival. For a tool call, the moment the call stopped
+    /// when that is later: a 90-second `bash` arrives when it starts, and a turn
+    /// that ends its clock at the arrival says "Worked for 2s" about a run that
+    /// took a minute and a half.
+    public var stoppedAt: Date {
+        guard case .tool(let row) = kind, let ended = row.endedAt, ended > at else { return at }
+        return ended
+    }
 
     /// Fold a delta into the answer, and re-parse the part of it that is finished.
     mutating func appendAnswerDelta(_ delta: String) {
@@ -145,6 +203,97 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
         guard complete != parsedPrefix else { return }
         parsedPrefix = complete
         blocks = Markdown.blocks(complete)
+    }
+}
+
+/// One prompt and everything the run did about it.
+///
+/// The transcript is a flat event log; a person reads it as a question and the
+/// work that answered it. The split is the one the screen makes: the prompt, the
+/// answer, and in between everything that happened on the way — thinking, tool
+/// calls, compactions, permission decisions — which is collapsed behind
+/// "Worked for 2m 50s ›" because it is the process, not the result.
+///
+/// The grouping rule is the user line: it opens a turn, and the next one closes
+/// it. That makes the rule the protocol's own — `run.start` is one prompt — and
+/// not a guess over event types. A history that opens with an answer, with no
+/// prompt before it, is a turn with `user == nil`.
+public struct Turn: Identifiable, Equatable, Sendable {
+    public let id: String
+    public var user: TranscriptLine?
+    /// Everything after the prompt, in arrival order.
+    ///
+    /// Arrival order and nothing else. The activity and the answers interleave —
+    /// a tool call lands between two answers — and a session loaded from disk
+    /// stamps every line with the same instant, so any sort by time is a sort
+    /// over equal keys and shuffles the history. The view walks this list and
+    /// asks each line `isActivity`.
+    public var lines: [TranscriptLine] = []
+
+    public init(id: String, user: TranscriptLine? = nil) {
+        self.id = id
+        self.user = user
+    }
+
+    public var activity: [TranscriptLine] { lines.filter(\.isActivity) }
+
+    /// How long each line of the turn ran: its arrival to the next one's, keyed
+    /// by line id, and 0 for a history whose lines all arrived at once.
+    ///
+    /// The thinking has no end stamp — nothing in the protocol says "the model
+    /// stopped thinking" — so "Reasoned for 12s" is the distance to the next
+    /// thing that arrived, which is the answer the thinking produced.
+    ///
+    /// One pass, and the view reads it once per turn render. The first version
+    /// was a `nextArrival(after:)` that scanned from the line to its successor:
+    /// the same answer, O(lines) per row, and 10.5 ms measured over the 500
+    /// activity rows of a 1,000-line turn — paid again on every publish while
+    /// that disclosure is open.
+    public var durations: [String: TimeInterval] {
+        var out: [String: TimeInterval] = [:]
+        out.reserveCapacity(lines.count)
+        var previous: TranscriptLine?
+        for line in lines {
+            if let previous {
+                out[previous.id] = max(0, line.at.timeIntervalSince(previous.at))
+            }
+            previous = line
+        }
+        return out
+    }
+    public var answers: [TranscriptLine] { lines.filter { !$0.isActivity } }
+
+    /// The run's terminal event, set on the last turn of a finished transcript.
+    ///
+    /// `run_completed` closes a run and appends no line, so the last line of a
+    /// turn is not where the turn ended: the answer finished, the model thought
+    /// some more, and the run stopped. Without this, "Worked for" stops at the
+    /// last thing that rendered.
+    var runEndedAt: Date?
+
+    public var start: Date? { user?.at ?? lines.first?.at }
+    public var end: Date? {
+        var last = lines.map(\.stoppedAt).max() ?? user?.at
+        if let runEndedAt, last.map { runEndedAt > $0 } ?? true { last = runEndedAt }
+        return last
+    }
+    public var elapsed: TimeInterval? { DurationFormat.between(start, end) }
+
+    /// True while something in the turn is still going.
+    public var running: Bool {
+        lines.contains {
+            if case .tool(let row) = $0.kind, row.state == .running { return true }
+            if case .compaction(let row) = $0.kind, row.state == .running { return true }
+            return $0.streaming
+        }
+    }
+
+    /// The activity line's label: "Worked for 2m 50s", "Worked for 12s", and
+    /// "Worked" when the clock was not running (a session loaded from disk, "Worked").
+    public var activityLabel: String {
+        let verb = running ? "Working" : "Worked"
+        guard let text = DurationFormat.short(elapsed) else { return verb }
+        return "\(verb) for \(text)"
     }
 }
 
@@ -196,13 +345,48 @@ public struct Transcript: Equatable, Sendable {
     /// a timeout was a timeout and not a hang.
     public private(set) var outcomes: [PermissionOutcome] = []
     public private(set) var finished = false
+    /// The instant the run ended, from the same clock as the line stamps.
+    public private(set) var finishedAt: Date?
     /// The events that end a run. Defaults to this build's set; a client passes
     /// the union with the server's handshake set, so a terminal event added in
     /// a later protocol version ends the timeline instead of leaving it open.
     private let terminalTypes: Set<String>
+    /// The clock the arrival stamps come from.
+    ///
+    /// Injectable, so a check can step it and assert a turn's duration instead of
+    /// sleeping for it. Not compared: a stored closure makes the derived `==`
+    /// impossible, and two transcripts that differ only in whose clock they use
+    /// are the same timeline.
+    private let clock: @Sendable () -> Date
 
-    public init(terminalTypes: Set<String> = Wire.terminalEventTypes) {
+    public init(
+        terminalTypes: Set<String> = Wire.terminalEventTypes,
+        clock: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.terminalTypes = terminalTypes
+        self.clock = clock
+    }
+
+    public static func == (lhs: Transcript, rhs: Transcript) -> Bool {
+        lhs.lines == rhs.lines && lhs.state == rhs.state && lhs.runId == rhs.runId
+            && lhs.pendingPermission == rhs.pendingPermission && lhs.outcomes == rhs.outcomes
+            && lhs.finished == rhs.finished && lhs.finishedAt == rhs.finishedAt
+            && lhs.terminalTypes == rhs.terminalTypes
+    }
+
+    /// A line as it arrives: stamped with the clock, and appended.
+    private mutating func emit(_ line: TranscriptLine) {
+        var stamped = line
+        stamped.at = clock()
+        lines.append(stamped)
+    }
+
+    /// The same, inserted at an index — the thinking line goes above the answer
+    /// it produced, not after it.
+    private mutating func emit(_ line: TranscriptLine, at index: Int) {
+        var stamped = line
+        stamped.at = clock()
+        lines.insert(stamped, at: index)
     }
 
     private func isTerminal(_ event: AgentEvent) -> Bool {
@@ -211,7 +395,7 @@ public struct Transcript: Equatable, Sendable {
 
     /// The client's own prompt. Not in the stream; the caller inserts it.
     public mutating func addUserMessage(_ text: String) {
-        lines.append(TranscriptLine(id: "user-\(lines.count)", kind: .user(text), messageId: nil))
+        emit(TranscriptLine(id: "user-\(lines.count)", kind: .user(text), messageId: nil))
     }
 
     /// A past assistant message, for a session loaded from disk.
@@ -220,7 +404,7 @@ public struct Transcript: Equatable, Sendable {
     /// events to fold, and inventing fake `message_completed` payloads to render
     /// it would make the transcript lie about what it saw.
     public mutating func addAssistantMessage(_ text: String) {
-        lines.append(TranscriptLine(id: "history-\(lines.count)", kind: .assistant(text), messageId: nil))
+        emit(TranscriptLine(id: "history-\(lines.count)", kind: .assistant(text), messageId: nil))
     }
 
     /// A run that never reached the service.
@@ -230,6 +414,7 @@ public struct Transcript: Equatable, Sendable {
     /// run itself, with the reason the call returned.
     public mutating func failLocally(_ reason: String) {
         finished = true
+        finishedAt = clock()
         pendingPermission = nil
         state = .failed(reason)
     }
@@ -237,6 +422,7 @@ public struct Transcript: Equatable, Sendable {
     public mutating func beginRun(runId: String) {
         self.runId = runId
         finished = false
+        finishedAt = nil
         state = .starting
     }
 
@@ -250,10 +436,11 @@ public struct Transcript: Equatable, Sendable {
         case .runStarted(let e):
             runId = e.runId
             finished = false
+            finishedAt = nil
             state = .streaming
 
         case .messageStarted(let e):
-            lines.append(
+            emit(
                 TranscriptLine(id: e.messageId, kind: .assistant(""), messageId: e.messageId, streaming: true)
             )
             state = .streaming
@@ -272,9 +459,9 @@ public struct Transcript: Equatable, Sendable {
                 // appended the assistant line, so appending here would put the
                 // thinking underneath the reply it produced.
                 if let answer = indexOfMessage(e.messageId) {
-                    lines.insert(line, at: answer)
+                    emit(line, at: answer)
                 } else {
-                    lines.append(line)
+                    emit(line)
                 }
             }
             state = .streaming
@@ -284,7 +471,7 @@ public struct Transcript: Equatable, Sendable {
                 // A delta for a message that never started: render it, do not
                 // drop it. A missing message_started is the server's bug, and
                 // the user should see the text.
-                lines.append(
+                emit(
                     TranscriptLine(id: e.messageId, kind: .assistant(e.delta), messageId: e.messageId, streaming: true)
                 )
                 return
@@ -297,26 +484,30 @@ public struct Transcript: Equatable, Sendable {
         case .messageCompleted(let e):
             closeReasoning(for: e.messageId)
             // Authoritative. Deltas are the progress; this is the answer.
-            let line = TranscriptLine(id: e.messageId, kind: .assistant(e.outputText), messageId: e.messageId)
+            var line = TranscriptLine(id: e.messageId, kind: .assistant(e.outputText), messageId: e.messageId)
             if let index = indexOfMessage(e.messageId) {
+                line.at = lines[index].at
                 lines[index] = line
             } else {
-                lines.append(line)
+                emit(line)
             }
 
         case .messageFailed(let e):
-            let line = TranscriptLine(id: e.messageId, kind: .messageFailed(e.error), messageId: e.messageId)
+            var line = TranscriptLine(id: e.messageId, kind: .messageFailed(e.error), messageId: e.messageId)
             if let index = indexOfMessage(e.messageId) {
+                line.at = lines[index].at
                 lines[index] = line
             } else {
-                lines.append(line)
+                emit(line)
             }
 
         case .toolCallStarted(let e):
-            lines.append(
+            emit(
                 TranscriptLine(
                     id: e.toolCallId,
-                    kind: .tool(ToolCallRow(id: e.toolCallId, name: e.toolName, arguments: e.arguments)),
+                    kind: .tool(
+                        ToolCallRow(id: e.toolCallId, name: e.toolName, arguments: e.arguments, startedAt: clock())
+                    ),
                     messageId: e.messageId
                 )
             )
@@ -330,13 +521,26 @@ public struct Transcript: Equatable, Sendable {
             if let index = indexOfTool(e.toolCallId) {
                 if case .tool(var row) = lines[index].kind {
                     row.state = preview
+                    row.endedAt = clock()
                     lines[index].kind = .tool(row)
                 }
             } else {
-                lines.append(
+                emit(
                     TranscriptLine(
                         id: e.toolCallId,
-                        kind: .tool(ToolCallRow(id: e.toolCallId, name: e.toolName, arguments: .null, state: preview)),
+                        kind: .tool(
+                            // A result with no start: the row is done, and the
+                            // elapsed time is unknown, so both stamps are "now"
+                            // and `elapsed` answers nil.
+                            // A result with no start: the row is done and its
+                            // duration is unknown, so `endedAt` stays nil and
+                            // `elapsed` answers nil. Stamping both to "now" would
+                            // claim the call took no time at all.
+                            ToolCallRow(
+                                id: e.toolCallId, name: e.toolName, arguments: .null, state: preview,
+                                startedAt: clock()
+                            )
+                        ),
                         messageId: e.messageId
                     )
                 )
@@ -347,14 +551,18 @@ public struct Transcript: Equatable, Sendable {
             if let index = indexOfTool(e.toolCallId) {
                 if case .tool(var row) = lines[index].kind {
                     row.state = failure
+                    row.endedAt = clock()
                     lines[index].kind = .tool(row)
                 }
             } else {
-                lines.append(
+                emit(
                     TranscriptLine(
                         id: e.toolCallId,
                         kind: .tool(
-                            ToolCallRow(id: e.toolCallId, name: e.toolName ?? "?", arguments: .null, state: failure)
+                            ToolCallRow(
+                                id: e.toolCallId, name: e.toolName ?? "?", arguments: .null, state: failure,
+                                startedAt: clock()
+                            )
                         ),
                         messageId: e.messageId
                     )
@@ -378,13 +586,13 @@ public struct Transcript: Equatable, Sendable {
             if pendingPermission?.id == e.requestId { pendingPermission = nil }
             // The refusal has no tool row of its own: a denied tool never
             // starts. The permission line is the record.
-            lines.append(
+            emit(
                 TranscriptLine(id: "permission-\(e.requestId)", kind: .permission(outcome), messageId: nil)
             )
             if state == .awaitingPermission(e.requestId) { state = .streaming }
 
         case .contextCompactionStarted(let e):
-            lines.append(
+            emit(
                 TranscriptLine(
                     id: "compaction-\(lines.count)",
                     kind: .compaction(
@@ -403,26 +611,30 @@ public struct Transcript: Equatable, Sendable {
         case .runCompleted(let e):
             runId = e.runId
             finished = true
+            finishedAt = clock()
             pendingPermission = nil
             state = .finished(e.result.stopReason)
             closeStreamingLines()
 
         case .runFailed(let e):
             finished = true
+            finishedAt = clock()
             pendingPermission = nil
             state = .failed(e.error)
             closeStreamingLines()
 
         case .runCancelled(let e):
             finished = true
+            finishedAt = clock()
             pendingPermission = nil
             state = .cancelled(e.reason)
             closeStreamingLines()
 
         case .unknown(let type, _):
-            lines.append(TranscriptLine(id: "unknown-\(lines.count)", kind: .note("event: \(type)"), messageId: nil))
+            emit(TranscriptLine(id: "unknown-\(lines.count)", kind: .note("event: \(type)"), messageId: nil))
             if isTerminal(event) {
                 finished = true
+                finishedAt = clock()
                 pendingPermission = nil
                 state = .finished(.other(type))
                 closeStreamingLines()
@@ -440,6 +652,30 @@ public struct Transcript: Equatable, Sendable {
 
     public var toolRows: [ToolCallRow] {
         lines.compactMap { if case .tool(let row) = $0.kind { return row } else { return nil } }
+    }
+
+    /// The timeline grouped into turns: a prompt, and everything the run did about it.
+    public var turns: [Turn] {
+        var out: [Turn] = []
+        for line in lines {
+            if case .user = line.kind {
+                out.append(Turn(id: line.id, user: line))
+            } else if out.isEmpty {
+                // A run with no prompt in front of it: a session loaded from disk
+                // that opens with the assistant, or a stream that starts before the
+                // client echoes itself. It still needs a turn to render inside — and
+                // the line has to go in it, not only name it.
+                var turn = Turn(id: line.id)
+                turn.lines.append(line)
+                out.append(turn)
+            } else {
+                out[out.count - 1].lines.append(line)
+            }
+        }
+        if finished, let finishedAt, !out.isEmpty {
+            out[out.count - 1].runEndedAt = finishedAt
+        }
+        return out
     }
 
     // MARK: helpers

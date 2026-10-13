@@ -204,6 +204,19 @@ public struct SessionRow: Decodable, Sendable, Equatable {
     /// Set when the file exists but cannot be read. A damaged session is
     /// reported, not hidden.
     public let error: String?
+
+    // Public, so the preview can put a sidebar on screen: the states worth
+    // looking at — a long id, a damaged file, an empty list — are not all
+    // reproducible against a service with real files.
+    public init(
+        sessionId: String, path: String, updatedAt: Double, messageCount: Int, error: String? = nil
+    ) {
+        self.sessionId = sessionId
+        self.path = path
+        self.updatedAt = updatedAt
+        self.messageCount = messageCount
+        self.error = error
+    }
 }
 
 public struct SessionList: Decodable, Sendable, Equatable {

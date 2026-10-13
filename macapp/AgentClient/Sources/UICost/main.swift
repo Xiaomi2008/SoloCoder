@@ -24,6 +24,8 @@ import Foundation
 //                   ~0.1% of the 60 ms cadence
 //   the row skip    O(1) per row per publish, because an unchanged row's string
 //                   shares its buffer and `==` starts with an identity check
+//   the turns       0.45 ms to group 4,001 lines, and 0.12 ms for the durations
+//                   of a 1,000-line turn — 2% of the 60 ms cadence together
 //
 // So the transcript is not what a long session costs the app. The views are: a
 // publish is a view-graph re-render, and the 60 ms buffer is what keeps the flood
@@ -218,7 +220,7 @@ foldAnswer(chars: 80_000, chunk: 6)
 // the HANDOFF notes on.
 //
 // Measured at two sizes, because a cost that does not move with the size of its
-// input is measuring nothing (see section 4). The first version of this loop was
+// input is measuring nothing (see section 5). The first version of this loop was
 // `let copy = t; t = copy`, which is a no-op the optimizer drops: it read 0.000 ms
 // at every size.
 func publishCost(_ base: Transcript, times: Int) -> (lines: Int, ms: Double) {
@@ -241,7 +243,56 @@ for (turns, lines, chunks) in [(4, 50, 40), (40, 50, 40)] {
     print(String(format: "one publish (copy + apply) on %d lines: %.3f ms", count, ms))
 }
 
-// 4. The row skip.
+// 4. The turn grouping.
+//
+// The timeline is grouped into turns for the screen (a prompt, the work, the
+// answers), and the grouping is computed, not stored: `transcript.turns` walks
+// the lines, and the view calls it once per publish. Two costs follow, and the
+// second is the one worth measuring:
+//
+//   a. `turns` itself — O(lines) per publish;
+//   b. the durations the reasoning row answers "Reasoned for 12s" from.
+//
+// b. is the one that was measured first, and it was quadratic. The first version
+// was `Turn.nextArrival(after:)`, a scan from a line to the next one: O(lines)
+// per reasoning row, so 10.532 ms over the 500 activity rows of a 1,000-line
+// turn, paid again on every publish while that disclosure is open — a sixth of
+// the 60 ms cadence, growing with the square. `Turn.durations` answers the same
+// question from one pass over the lines, keyed by line id, and the view reads it
+// once per turn render: 0.1231 ms on the same shape, 85× cheaper and linear.
+//
+// The lesson is the shape, not the number. A per-row accessor that walks the
+// turn is fine at 20 rows and is the cost of the app at 1,000, and the view has
+// no way to see it — the row asks for one value and gets a loop.
+func turnCost(_ base: Transcript, times: Int) -> (turns: Int, lines: Int, ms: Double) {
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    var sink = 0
+    for _ in 0..<times { sink += base.turns.count }
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6 / Double(times)
+    precondition(sink > 0)
+    return (sink / times, base.lines.count, ms)
+}
+for (turns, lines, chunks) in [(4, 50, 40), (40, 50, 40)] {
+    let (base, _) = fold(turns: turns, lines: lines, chunks: chunks)
+    let (t, l, ms) = turnCost(base, times: 1000)
+    print(String(format: "turns: %d turns over %d lines: %.4f ms per call", t, l, ms))
+}
+
+// b. The reasoning row's scan, over the worst turn the shape allows.
+let (wide, _) = fold(turns: 1, lines: 500, chunks: 1)
+if let turn = wide.turns.first {
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    var found = 0
+    for _ in 0..<100 { found += turn.durations.count }
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6 / 100
+    precondition(found > 0)
+    print(String(
+        format: "durations of a %d-line turn: %.4f ms per render",
+        turn.lines.count, ms
+    ))
+}
+
+// 5. The row skip.
 //
 // `.equatable()` on a row asks "did this line change?" for every visible row on
 // every publish. The question is what that costs for a row holding a 40k-character
