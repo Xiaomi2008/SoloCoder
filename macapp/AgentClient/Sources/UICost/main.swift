@@ -54,3 +54,47 @@ for _ in 0..<1000 {
 }
 let ms = Double(DispatchTime.now().uptimeNanoseconds - t1) / 1e6
 print(String(format: "one delta on a %d-line timeline: %.3f ms", transcript.lines.count, ms / 1000))
+
+// MARK: - The thinking stream
+
+// A reasoning model's private tokens arrive *before* the answer, and there are
+// far more of them than of the answer: measured on `lan/swift-1.5-iq3_s`,
+// ~1,900 reasoning tokens before the first answer character, and one run
+// produced 686,439 characters of reasoning with no answer at all. So the answer
+// path is not the interesting one — the thinking path is where a run is long,
+// and it is the path the 60 ms buffer never covered.
+//
+// The number that matters is the per-delta cost as the accumulated text grows.
+// A string read out of an array element is shared with it, so appending to a
+// line's text copies the whole accumulated thinking: O(n) per delta, O(n²) per
+// run, and every publish copies and compares the same string. The line therefore
+// keeps a tail, not the whole stream — `Transcript.reasoningKeep`. A flat
+// head/tail pair is that cap holding; the growth this measured before it was
+// 0.4 ms for the first 1,000 deltas and 5.8 ms for the last 1,000 of a 480k
+// character stream, 267 ms of memcpy for the run.
+func foldReasoning(chars: Int, chunk: Int) {
+    var t = Transcript()
+    t.addUserMessage("do the thing")
+    t.apply(ev(#"{"type":"run_started","run_id":"r"}"#))
+    t.apply(ev(#"{"type":"message_started","run_id":"r","message_id":"m"}"#))
+    let payload = String(repeating: "x", count: chunk)
+    let event = ev(#"{"type":"reasoning_delta","run_id":"r","message_id":"m","delta":"\#(payload)"}"#)
+    let n = chars / chunk
+    var head = 0.0, tail = 0.0
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    for i in 0..<n {
+        let a = DispatchTime.now().uptimeNanoseconds
+        t.apply(event)
+        let dt = Double(DispatchTime.now().uptimeNanoseconds - a) / 1e3 // µs
+        if i < 1000 { head += dt } else if i >= n - 1000 { tail += dt }
+    }
+    let total = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+    print(String(
+        format: "reasoning fold: %d deltas, %d chars: %.1f ms total; first 1000 %.1f ms, last 1000 %.1f ms",
+        n, chars, total, head / 1e3, tail / 1e3
+    ))
+}
+
+foldReasoning(chars: 12_000, chunk: 6)
+foldReasoning(chars: 120_000, chunk: 6)
+foldReasoning(chars: 480_000, chunk: 6)

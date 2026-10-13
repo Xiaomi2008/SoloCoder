@@ -9,6 +9,8 @@ import PackageDescription
 //
 //   AgentClient     wire protocol: framing, events, the socket client
 //   AgentAppCore    event stream -> the timeline/state a view renders
+//   AgentAppUI      the views, as a library: an executable's types cannot be
+//                   imported, so a target that holds them holds them shut
 //
 // Two suites, because the toolchains differ:
 //
@@ -24,14 +26,21 @@ let package = Package(
     products: [
         .library(name: "AgentClient", targets: ["AgentClient"]),
         .library(name: "AgentAppCore", targets: ["AgentAppCore"]),
+        .library(name: "AgentAppUI", targets: ["AgentAppUI"]),
         .executable(name: "solocoder", targets: ["AgentApp"]),
+        .executable(name: "ui-preview", targets: ["UIPreview"]),
         .executable(name: "ui-cost", targets: ["UICost"]),
         .executable(name: "agent-checks", targets: ["AgentClientChecks"]),
     ],
     targets: [
         .target(name: "AgentClient"),
         .target(name: "AgentAppCore", dependencies: ["AgentClient"]),
-        .executableTarget(name: "AgentApp", dependencies: ["AgentClient", "AgentAppCore"]),
+        .target(name: "AgentAppUI", dependencies: ["AgentClient", "AgentAppCore"]),
+        .executableTarget(name: "AgentApp", dependencies: ["AgentClient", "AgentAppCore", "AgentAppUI"]),
+        .executableTarget(
+            name: "UIPreview",
+            dependencies: ["AgentClient", "AgentAppCore", "AgentAppUI"]
+        ),
         .executableTarget(name: "UICost", dependencies: ["AgentClient", "AgentAppCore"]),
         .executableTarget(
             name: "AgentClientChecks",

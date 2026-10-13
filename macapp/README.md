@@ -1,11 +1,15 @@
 # macapp — the Mac client
 
-`AgentClient/` is one SwiftPM package with four targets: the wire protocol, the
-app's state machine, the SwiftUI shell, and a contract suite that runs without
-Xcode. It speaks the protocol in
+`AgentClient/` is one SwiftPM package: the wire protocol, the app's state
+machine and the views as libraries, and three executables over them — the app, a
+contract suite that runs without Xcode, and a preview that puts the views on
+screen with no service and no model. It speaks the protocol in
 [`dev_docs/agent-service-protocol.md`](../dev_docs/agent-service-protocol.md)
-over a Unix socket. The protocol and the state machine are libraries a test can
-import; the views are the only part that is not.
+over a Unix socket.
+
+Everything with logic in it is a library, including the views: a SwiftPM
+executable's types cannot be imported, so a target that holds them holds them
+shut — no check, no preview, no second app can reach them.
 
 ## Layout
 
@@ -19,16 +23,26 @@ AgentClient/
     ContractFixtures.swift        loads the fixtures the Python side generates
   Sources/AgentAppCore/           the app, minus the pixels
     Transcript.swift              event stream -> the timeline a view renders
+    Markdown.swift                the answer's block structure (headings, fences,
+                                  lists, tables) — parsed here, checked headless
     AppModel.swift                runs, permissions, models, sessions
     Sidecar.swift                 spawns the service in development
-  Sources/AgentApp/               the SwiftUI shell (chat, tools, permission sheet)
+  Sources/AgentAppUI/             the views, as a library
+    RootView.swift                chat, tool rows, permission sheet, pickers
+    MarkdownView.swift            the blocks, drawn
+  Sources/AgentApp/               the @main: a window on the views
+  Sources/UIPreview/              `swift run ui-preview` — the views on screen,
+                                  fed by a scripted event stream
+  Sources/UICost/                 `swift run ui-cost` — the streaming-cost numbers
   Sources/AgentClientChecks/      `swift run agent-checks` — the contract suite
   Tests/AgentClientTests/         the same checks as a Swift Testing suite
 ```
 
 The split is deliberate: `AgentAppCore` is the app's logic and a test can import
-it, so the state machine and the app model are checked headless. `AgentApp` is
-views, and views are the only thing left that no automated check reaches.
+it, so the state machine and the app model are checked headless. `AgentAppUI` is
+the views, and a screenshot harness can import *it* — the pixels are still the
+only thing no automated check reaches, and `ui-preview` is how they get looked
+at.
 
 ## Running the checks
 
@@ -38,7 +52,17 @@ swift run agent-checks                        # fixtures, framing, live service,
 AGENT_REPO_ROOT=.. swift run agent-checks     # enable the app-model checks
 AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s swift run agent-checks
 swift run solocoder                           # the app itself
+swift run ui-preview                          # the views, on a scripted transcript
+UI_PREVIEW_SHORT=1 swift run ui-preview       # …top of the timeline in one window
+swift run ui-cost                             # the streaming-cost numbers
 ```
+
+`ui-preview` spawns no service and needs no model: it builds the events a run
+produces, feeds them through the real `AppModel` — the real state machine, the
+real delta buffer, the real `Transcript` — and opens the real `RootView` on the
+result. What is on screen is what the service's events say, not a drawing of it,
+and it can show the cases a model may not produce today: a failed tool, a
+refused permission, a 40-line result, a table.
 
 `solocoder` spawns its own service (`Sidecar`), so it needs a repository to run
 it from: `AGENT_REPO_ROOT` pointing at the SoloCoder checkout, or a working
@@ -88,6 +112,17 @@ the run writes a session into `~/.openagent/sessions`.
 - **Live model run** (with `AGENT_LIVE_MODEL`): a streamed run that calls tools,
   produces deltas, and ends on a terminal event, folded through `Transcript` —
   the timeline the app renders, checked against a real stream.
+- **Markdown.** The block parser's rules: heading levels, `#tag` is not a
+  heading, a fenced block keeps its indentation and its `**` verbatim, an
+  unterminated fence is code to the end, a `~~~` fence is closed by `~~~` so a
+  ```` ``` ```` inside it is content, a continuation line joins the list item
+  above it, `1.5 miles` is not a list, a shell pipe is not a table (a table needs
+  its `---` row), a numbered list keeps the model's own number. And the property
+  the parser is written to guarantee: run a whole messy answer through it and
+  every line reaches a block.
+- **Tool output.** The row keeps the result — 40 lines stay 40 lines — and the
+  label folds it to one bounded line; a 100k result is bounded at the head and
+  says it was truncated.
 - **App model** (with `AGENT_REPO_ROOT`): the real `AppModel` and `Sidecar` —
   spawn the service, connect, read the policy, refuse a run with no working
   directory, close a run whose model is unreachable, reset on a new run, and
@@ -104,7 +139,8 @@ AGENT_REPO_ROOT=/path/to/SoloCoder swift run solocoder
 A window opens: a chat over the event stream, a tool timeline, a permission
 sheet driven by `permission_requested`, a model picker from `model.list`, and a
 session browser from `session.list` / `session.load`. Choose a working directory
-from the toolbar — a run needs one, and the app refuses to send without it.
+from the status bar (it shows the path, and clicking it changes it) — a run
+needs one, and the app refuses to send without it.
 
 ## The ten seconds of nothing
 
@@ -126,10 +162,11 @@ that had not moved for ten seconds. Two changes:
   `ReasoningLine` in the timeline, open while it streams and collapsed once the
   answer starts. It is progress, never history: the model is not shown its own
   reasoning, and a test pins that.
-- **The toolbar has a Thinking picker** (`model decides` / off / minimal / low /
+- **The toolbar has a Thinking picker** (`model default` / off / minimal / low /
   medium / high), sent as `run.start`'s `reasoning_effort`. The server default is
   the slow path: one run produced **686,439 characters of private reasoning and
-  no answer at all**, while `none` answered in **1.1 s**.
+  no answer at all**, while `none` answered in **1.1 s**. The app's own default is
+  `nil` — the model's business — and this control exists to get off it.
 
 ## Why a streamed answer feels slow (measured, not guessed)
 
@@ -162,8 +199,48 @@ The floor that remains is the model: at 20 tok/s a 400-word answer is ~30 s, and
 every tool round trip re-sends the whole context (~18k chars of system prompt
 and tool schema, plus every prior tool result).
 
+## The answer is markdown, and it is parsed once
+
+The model answers in markdown and a plain `Text` shows the markup: `## Cause`,
+`**bold**`, a fenced block whose alignment depends on leading spaces. So
+`Markdown.blocks` (in `AgentAppCore`, checked) turns an answer into headings,
+paragraphs, fenced code, both list kinds, a quote, a pipe table and a rule, and
+`MarkdownView` draws them. Inline runs (`**bold**`, `` `code` ``, a link) are
+`AttributedString(markdown:)`'s, run on a block's text and never on the whole
+answer — a fenced block's `**` would be eaten by an inline parser, which is why
+the fence is a block.
+
+**A streaming answer is not parsed.** `Markdown.blocks` is O(n) in an answer that
+grows per publish, so parsing per publish is O(n²) per run — the same trap that
+made the thinking stream crawl. The stream shows plain text; the finished line is
+markdown, parsed once.
+
+The rule that governs the parser: **no input line is ever dropped.** A
+mis-classified line renders as text. Where the real grammar and this one differ
+(setext headings, nested lists, indented code) the difference is in a comment.
+
 ## Things to know
 
+- **A SwiftPM executable's types cannot be imported.** The views lived in the
+  executable target, which made them unreachable: the only way to see a change
+  to a row was to launch the app, spawn the service, choose a directory and get
+  a model to produce the answer shape you were rendering. `AgentAppUI` is a
+  library, and `ui-preview` is the ten-second round trip.
+- **`.none` on an optional enum property is `nil`, not the enum's `.none` case.**
+  `model.reasoningEffort = .none` compiles, warns, and sets "model decides" —
+  the slow path — where the check meant to ask for `ReasoningEffort.none`, "off".
+  The live check measured the fast half of a reasoning model while its comment
+  said it asked for `none`. Spell the case in full.
+- **A toolbar group wider than the window overflows into a `>>` chevron.**
+  Silently: the controls are gone and the window looks fine. The group shares the
+  window's 900 points with the title, so the count is what matters, not each
+  control's size.
+- **`LazyVStack` gives a chat its scroll pin for free.** The last line's
+  `onAppear`/`onDisappear` is exactly "the user is at the bottom" / "the user has
+  scrolled away", with no `GeometryReader` per row to pay for. Follow the
+  **last line's value** (it changes on a new line and on text growth), not the
+  line count: a 2k-character answer is one line, so a count-based rule leaves the
+  view still while the answer runs off the bottom.
 - **A `body` with a `switch` must be declared in the struct, not an
   extension.** Swift applies the result-builder transform to a `body` in the
   type's own declaration and not to one in an extension; in an extension a

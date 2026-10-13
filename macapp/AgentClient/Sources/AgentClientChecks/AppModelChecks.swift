@@ -95,6 +95,114 @@ private func streamingCostChecks(_ checks: Checks) async throws {
     checks.note("200 deltas -> \(model.transcriptPublishes) publishes")
 }
 
+/// The cost of a streamed *thinking* phase — the phase that felt slow.
+///
+/// A reasoning model's private tokens arrive before the answer and far outnumber
+/// it: ~1,900 reasoning tokens before the first answer character, and one run
+/// streamed 686,439 characters of thinking with no answer at all. The 60 ms
+/// buffer was written for `message_delta` and left `reasoning_delta` publishing
+/// one write per delta, so the fix covered the short half of the run and the app
+/// went back to ~1,300 view invalidations a turn exactly when the model started
+/// to think. These checks pin the long half: the thinking stream is coalesced
+/// like the answer, coalescing loses no characters, the thinking line sits above
+/// the answer it produced, and the answer's first delta collapses it.
+@MainActor
+private func reasoningCostChecks(_ checks: Checks) async throws {
+    let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+    let model = AppModel()
+    model.ingest(stream)
+
+    continuation.yield(try ev(#"{"type":"run_started","run_id":"r"}"#))
+    continuation.yield(try ev(#"{"type":"message_started","run_id":"r","message_id":"m1"}"#))
+    await settle(model)
+    let publishesAtStart = model.transcriptPublishes
+
+    var expected = ""
+    for chunk in 0..<400 {
+        let delta = "think\(chunk) "
+        expected += delta
+        continuation.yield(
+            try ev(#"{"type":"reasoning_delta","run_id":"r","message_id":"m1","delta":"\#(delta)"}"#)
+        )
+    }
+    await settle(model)
+
+    func thinkingLine(_ model: AppModel) -> TranscriptLine? {
+        model.transcript.lines.first {
+            if case .reasoning = $0.kind { return true } else { return false }
+        }
+    }
+    let thinking = thinkingLine(model)
+    let text: String
+    if case .reasoning(let accumulated) = thinking?.kind { text = accumulated } else { text = "" }
+    checks.expect(
+        text == expected,
+        "coalescing the thinking stream loses nothing: \(text.count) chars of \(expected.count)"
+    )
+    checks.expect(thinking?.streaming == true, "the thinking line is streaming while the model thinks")
+    let publishes = model.transcriptPublishes - publishesAtStart
+    checks.expect(publishes < 100, "400 reasoning deltas cost \(publishes) publishes, not 400")
+    checks.note("400 reasoning deltas -> \(publishes) publishes")
+
+    continuation.yield(
+        try ev(#"{"type":"message_delta","run_id":"r","message_id":"m1","delta":"so "}"#)
+    )
+    await settle(model)
+    let ids = model.transcript.lines.map(\.id)
+    if let thinking {
+        checks.expect(
+            ids.firstIndex(of: thinking.id)! < ids.firstIndex(of: "m1")!,
+            "the thinking line stays above the answer it produced"
+        )
+    }
+    checks.expect(
+        thinkingLine(model)?.streaming == false,
+        "the answer's first delta collapses the thinking"
+    )
+    continuation.finish()
+}
+
+/// The thinking stream is bounded, and bounding it loses nothing the app uses.
+///
+/// One run streamed 686,439 characters of private reasoning. Kept whole, that is
+/// a string every delta copies and every publish copies and compares, so the line
+/// keeps a tail (see `Transcript.reasoningKeep`). The tail has to be the *end* of
+/// the thinking — the part arriving, the part the view shows — and the bound has
+/// to hold, or the cap is a comment.
+@MainActor
+private func reasoningCapChecks(_ checks: Checks) async throws {
+    let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+    let model = AppModel()
+    model.ingest(stream)
+
+    continuation.yield(try ev(#"{"type":"run_started","run_id":"r"}"#))
+    continuation.yield(try ev(#"{"type":"message_started","run_id":"r","message_id":"m1"}"#))
+
+    let chunks = 3_000
+    for chunk in 0..<chunks {
+        continuation.yield(
+            try ev(#"{"type":"reasoning_delta","run_id":"r","message_id":"m1","delta":"think\#(chunk) "}"#)
+        )
+    }
+    await settle(model)
+
+    let text: String
+    if case .reasoning(let kept) = model.transcript.lines.first(where: {
+        if case .reasoning = $0.kind { return true } else { return false }
+    })?.kind { text = kept } else { text = "" }
+
+    checks.expect(
+        text.hasSuffix("think\(chunks - 1) "),
+        "the kept tail is the end of the thinking, not its beginning (\(text.utf8.count) chars kept)"
+    )
+    checks.expect(
+        text.utf8.count <= 20_000,
+        "a \(chunks * 12)-character thinking stream is bounded in the transcript: \(text.utf8.count) chars kept"
+    )
+    checks.note("thinking stream: \(chunks * 12) chars streamed, \(text.utf8.count) kept")
+    continuation.finish()
+}
+
 @MainActor
 func appChecks(_ checks: Checks) async {
     print("app model")
@@ -102,6 +210,12 @@ func appChecks(_ checks: Checks) async {
         try await streamingCostChecks(checks)
     } catch {
         checks.expect(false, "streaming cost checks ran: \(error)")
+    }
+    do {
+        try await reasoningCostChecks(checks)
+        try await reasoningCapChecks(checks)
+    } catch {
+        checks.expect(false, "reasoning cost checks ran: \(error)")
     }
     guard Sidecar.repositoryRoot() != nil else {
         checks.note("skipped: no repository with .venv/bin/python (set AGENT_REPO_ROOT)")
@@ -175,7 +289,11 @@ func appChecks(_ checks: Checks) async {
         // server default spent ~10s on private thinking before the first answer
         // character, and in one run 686,439 characters of it with no answer at
         // all; "none" answers in ~1s. The app has to be able to ask for that.
-        model.reasoningEffort = .none
+        //
+        // Spelled in full, on purpose: `.none` here is `Optional.none` — nil,
+        // "model decides" — which is the slow path this check exists to avoid.
+        // The compiler warns and picks the wrong one.
+        model.reasoningEffort = ReasoningEffort.none
         // Wall clock and publishes for a real streamed answer: the number that
         // says what the user waits for, and the number that says what the UI
         // does while they wait.
@@ -199,6 +317,37 @@ func appChecks(_ checks: Checks) async {
         // The answer to a prompt the app never asked for is a bug the sheet
         // cannot recover from; the transcript is the only source of truth.
         checks.expect(model.promptToAnswer == nil, "nothing is left waiting for an answer")
+
+        // The thinking path, on a real model. The run above asks for `none`, so
+        // it measures the fast half of a reasoning model and never streams a
+        // private token — which is how the thinking path came to be the slow one
+        // with the answer path's checks green. This is the phase the user waits
+        // through, so it gets the same two numbers: what they wait for, and what
+        // the UI does while they wait.
+        model.newRun()
+        model.reasoningEffort = ReasoningEffort.medium
+        let thinkingPublishesBefore = model.transcriptPublishes
+        let t1 = DispatchTime.now().uptimeNanoseconds
+        model.send("Think this through carefully before answering: how many times does the letter 'p' appear in 'supercalifragilisticexpialidocious'?")
+        let thought = await settled(model, timeout: 240)
+        let thinkingSeconds = Double(DispatchTime.now().uptimeNanoseconds - t1) / 1e9
+        let thinking = model.transcript.lines.first {
+            if case .reasoning = $0.kind { return true } else { return false }
+        }
+        let kept: Int
+        if case .reasoning(let accumulated) = thinking?.kind { kept = accumulated.utf8.count } else { kept = 0 }
+        let thinkingPublishes = model.transcriptPublishes - thinkingPublishesBefore
+        checks.expect(thought, "a thinking run finishes")
+        checks.expect(kept > 0, "the app shows the model thinking, not a still spinner (\(kept) chars kept)")
+        checks.expect(
+            thinkingPublishes < 200,
+            "a thinking run costs \(thinkingPublishes) publishes, not one per reasoning delta"
+        )
+        checks.note(
+            "thinking run: \(String(format: "%.1f", thinkingSeconds))s, \(kept) chars of thinking kept, "
+            + "\(thinkingPublishes) publishes, \(model.transcript.lines.count) lines"
+        )
+        model.reasoningEffort = ReasoningEffort.none
     }
 
     model.stop()

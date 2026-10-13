@@ -144,6 +144,10 @@ public final class AppModel: ObservableObject {
     /// ~1300 invalidations a turn to ~17, which is the difference between a
     /// stream that looks like typing and one that stutters.
     ///
+    /// Both delta kinds go in the buffer. The thinking stream is the longer flood
+    /// — see `isDelta` — and a buffer that covers only the answer is a buffer
+    /// that covers the short half of the run.
+    ///
     /// Order is preserved: any non-delta event flushes the buffer first, so a
     /// `message_completed` (authoritative text), a permission request, a tool
     /// row, and the terminal event are all applied after the deltas they follow.
@@ -163,8 +167,25 @@ public final class AppModel: ObservableObject {
         consume(stream)
     }
 
+    /// The two delta kinds, and why they share one buffer.
+    ///
+    /// `message_delta` is the answer: ~1.5 characters per chunk. `reasoning_delta`
+    /// is the model's private thinking, which arrives *before* the answer and is
+    /// far longer than it — measured on `lan/swift-1.5-iq3_s`, ~1,900 reasoning
+    /// tokens before the first answer character, and one run streamed 686,439
+    /// characters of thinking and no answer at all. Buffering only the answer
+    /// leaves the thinking at one published write per delta: thousands of view
+    /// invalidations a turn, on the path that is longest. That is why a run felt
+    /// fast while answering and slow while thinking.
+    private static func isDelta(_ event: AgentEvent) -> Bool {
+        switch event {
+        case .messageDelta, .reasoningDelta: return true
+        default: return false
+        }
+    }
+
     private func applyEvent(_ event: AgentEvent) {
-        if case .messageDelta = event {
+        if Self.isDelta(event) {
             pendingDeltas.append(event)
             if flushTask == nil {
                 flushTask = Task { @MainActor [weak self] in

@@ -225,9 +225,7 @@ public struct Transcript: Equatable, Sendable {
 
         case .reasoningDelta(let e):
             if let index = lines.lastIndex(where: { $0.messageId == e.messageId && isReasoning($0.kind) }) {
-                if case .reasoning(let text) = lines[index].kind {
-                    lines[index].kind = .reasoning(text + e.delta)
-                }
+                appendDelta(e.delta, toLine: index)
             } else {
                 let line = TranscriptLine(
                     id: "\(e.messageId)·thinking",
@@ -256,9 +254,7 @@ public struct Transcript: Equatable, Sendable {
                 )
                 return
             }
-            if case .assistant(let text) = lines[index].kind {
-                lines[index].kind = .assistant(text + e.delta)
-            }
+            appendDelta(e.delta, toLine: index)
             // The answer has started: the thinking that produced it is finished,
             // and the view collapses it.
             closeReasoning(for: e.messageId)
@@ -291,7 +287,11 @@ public struct Transcript: Equatable, Sendable {
             )
 
         case .toolCallCompleted(let e):
-            let preview = ToolCallRow.State.done(Self.preview(of: e.result))
+            // The row keeps the result, not its preview: the label folds it to a
+            // line, and the disclosure shows what the tool actually returned.
+            // Truncating here is what made an expanded tool row show its
+            // arguments and never its output.
+            let preview = ToolCallRow.State.done(Self.resultText(of: e.result))
             if let index = indexOfTool(e.toolCallId) {
                 if case .tool(var row) = lines[index].kind {
                     row.state = preview
@@ -409,6 +409,45 @@ public struct Transcript: Equatable, Sendable {
         lines.lastIndex { $0.messageId == messageId && isAssistant($0.kind) }
     }
 
+    /// The most thinking a line keeps, and where it trims back to.
+    ///
+    /// The thinking stream is the longest text in the app and the least valuable
+    /// one: it is never sent back to the model, never part of the answer, never
+    /// saved as history, and the view shows only its tail. Measured on
+    /// `lan/swift-1.5-iq3_s`, one run streamed 686,439 characters of it. Kept
+    /// whole, every delta pays for the whole accumulated string — a string read
+    /// out of an array element is shared with it, so appending copies: 3.4 µs per
+    /// delta at 480k characters, 267 ms of memcpy per run, on the main actor, in
+    /// the phase the user is watching — and every publish copies and compares the
+    /// same string. `swift run ui-cost` reproduces the growth.
+    ///
+    /// So the line keeps a tail. Trimming at exactly the cap would copy the tail
+    /// on every delta that follows it, so the cap is the trim's target, not its
+    /// trigger. The answer has no cap: it is the product, shown in full and
+    /// copied out.
+    private static let reasoningKeep = 8_000
+    private static let reasoningTrimAt = 16_000
+
+    /// Add a delta to a line's accumulated text.
+    private mutating func appendDelta(_ delta: String, toLine index: Int) {
+        switch lines[index].kind {
+        case .reasoning(let accumulated):
+            var text = accumulated
+            text.append(delta)
+            if text.utf8.count > Self.reasoningTrimAt {
+                // `utf8.count` is O(1); `count` walks the string.
+                text = String(text.suffix(Self.reasoningKeep))
+            }
+            lines[index].kind = .reasoning(text)
+        case .assistant(let accumulated):
+            var text = accumulated
+            text.append(delta)
+            lines[index].kind = .assistant(text)
+        default:
+            break
+        }
+    }
+
     private func isReasoning(_ kind: TranscriptLine.Kind) -> Bool {
         if case .reasoning = kind { return true }
         return false
@@ -442,10 +481,22 @@ public struct Transcript: Equatable, Sendable {
             ?? PermissionRequest(id: event.requestId, toolName: "?", arguments: .null, reason: "")
     }
 
-    /// One-line preview of a tool result. The result is whatever the tool
-    /// returned — a string, a dict, a list — and a timeline row shows a line,
-    /// not a dump.
-    public static func preview(of result: JSONValue) -> String {
+    /// The text of a tool result, for the row to show.
+    ///
+    /// A result is whatever the tool returned — a string, a `{content: …}` dict,
+    /// a block list, a JSON value — so it needs one string.
+    ///
+    /// Bounded, at the **head**, and the bound is visible. A tool result is the
+    /// longest text in a run (a `read` of a source file, a `bash` of a build log)
+    /// and every published write copies the transcript, so an unbounded one is a
+    /// per-publish cost paid for text the user opens once. The head is the part
+    /// worth keeping: a file starts at the top, a command's summary is at the
+    /// top. The thinking stream is bounded at its *tail* for the opposite reason —
+    /// there the part that matters is the part that is arriving.
+    ///
+    /// The cap is approximate: the size test is `utf8.count`, which is O(1), and
+    /// the cut is in characters. Same trade as `reasoningKeep`.
+    public static func resultText(of result: JSONValue) -> String {
         let text: String
         switch result {
         case .string(let value): text = value
@@ -455,12 +506,35 @@ public struct Transcript: Equatable, Sendable {
                let content = object["content"]?.stringValue ?? object["text"]?.stringValue,
                !content.isEmpty {
                 text = content
+            } else if let blocks = result.arrayValue {
+                // A block list: `[{type: "text", text: "…"}, …]`.
+                text = blocks.compactMap { block in
+                    block.stringValue ?? block.objectValue?["text"]?.stringValue
+                        ?? block.objectValue?["content"]?.stringValue
+                }.joined(separator: "\n")
             } else {
                 let encoded = (try? JSONEncoder().encode(result)) ?? Data()
                 text = String(data: encoded, encoding: .utf8) ?? "\(result)"
             }
         }
-        let oneLine = text.split(whereSeparator: \.isNewline).joined(separator: " ⏎ ")
-        return oneLine.count > 240 ? String(oneLine.prefix(240)) + "…" : oneLine
+        guard text.utf8.count > toolResultKeep else { return text }
+        return String(text.prefix(toolResultKeep))
+            + "\n\n… truncated: showing \(toolResultKeep) of \(text.utf8.count) characters"
+    }
+
+    /// The most a tool row keeps. Above it, the row says so rather than lying
+    /// about having shown everything.
+    public static let toolResultKeep = 8_000
+
+    /// A timeline row's label: one line, bounded. The full text stays in the row
+    /// for the disclosure; a label is a label.
+    public static func oneLine(_ text: String) -> String {
+        let folded = text.split(whereSeparator: \.isNewline).joined(separator: " ⏎ ")
+        return folded.count > 240 ? String(folded.prefix(240)) + "…" : folded
+    }
+
+    /// One-line preview of a tool result.
+    public static func preview(of result: JSONValue) -> String {
+        oneLine(resultText(of: result))
     }
 }

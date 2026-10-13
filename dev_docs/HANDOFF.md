@@ -10,10 +10,12 @@ sidecar binary inside a `.app`.
 
 - Branch: `feat/computer-use-macos`
 - Python suite: **575 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **186 checks passed** (`swift run agent-checks`), **196** with
-  `AGENT_REPO_ROOT` + `AGENT_LIVE_MODEL` (a real streamed run, and the app model
-  doing two runs on one connection with a real model)
-- Working tree: clean
+- Swift suite: **235 checks passed** (`swift run agent-checks`), **246** with
+  `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); add
+  `AGENT_LIVE_MODEL` for a real streamed run with thinking off, a real thinking
+  run, and the app model doing two runs on one connection
+- Working tree: the phase 3d view work (markdown, tool output, scrolling, the
+  reasoning control, the target split) is uncommitted
 
 ## Phase 3b+: the app on screen, and why the stream felt slow
 
@@ -74,6 +76,81 @@ Publishes in a real tool loop run ~50/s, not the 17/s the 60 ms cadence implies:
 every non-delta event flushes the delta buffer to preserve order, and a tool loop
 is mostly non-delta events. The synthetic 200-deltas-→-4-publishes number is the
 no-interleaving case.
+
+## Phase 3c+: the thinking path was the slow one
+
+"Token generation gets very slow once it's in thinking" was not the model. The
+60 ms buffer covered `message_delta` and not `reasoning_delta`, so every thinking
+token was a published write — and the thinking stream is the long one: ~7,500
+chars before ~1,300 chars of answer, one run at 686,439 chars. The answer-path fix
+covered the short half of the run, which is why a run felt fast while answering
+and slow while thinking. Three costs, all on that path:
+
+| What | Before | After |
+|---|---|---|
+| 400 reasoning deltas | 400 publishes | 1 publish |
+| Folding a 480k-char thinking stream | 267 ms, per-delta cost 0.4 µs → 5.8 µs | 49 ms, 0.4 µs → 0.5 µs |
+| Streaming `Text` of the whole thinking | O(n) layout per publish, O(n²) per run | a 1,200-char tail, constant |
+
+- `AppModel.isDelta` covers both delta kinds: one buffer, one cadence.
+- `Transcript` keeps a **tail** of the thinking (`reasoningKeep` 8k, trimmed at
+  16k) instead of the whole stream. The thinking is never sent back to the model,
+  never part of the answer, never saved as history, and the view shows its tail;
+  the answer stays uncapped, because it is the product.
+- The copy-on-write trap, measured: appending to a string read out of an array
+  element copies the whole string, because the element still shares it. The
+  take-out-and-put-back idiom that fixes this under `-O` is **worse** in a debug
+  build — 253 ms against 7 ms for 80k appends — because the `let` keeps the string
+  shared. Bounding the string is the fix that holds in both builds.
+- Checks: 400 reasoning deltas → 1 publish; a 36k-char thinking stream is bounded
+  (12,870 chars kept) and keeps its **end**, not its beginning; the live app check
+  now runs a *thinking* run on a real model. It did not before — the live run
+  asked for `reasoning_effort: none`, so the suite measured the fast half of a
+  reasoning model and stayed green while the slow half got slow.
+
+## Phase 3d: the views
+
+The views were the only code no check reached, and the only way to see them was
+to launch the app. Four gaps, and a way to look.
+
+- **The answer is markdown.** `Markdown.blocks` (in `AgentAppCore`, 52 checks)
+  turns an answer into headings, paragraphs, fenced code, both list kinds, a
+  quote, a pipe table and a rule; `MarkdownView` draws them, with inline runs
+  left to `AttributedString(markdown:)` on a block's text — never on the whole
+  answer, because a fenced block's `**` would be eaten by an inline parser. A
+  streaming answer is **not** parsed: O(n) per publish on a growing string is
+  O(n²) per run, the thinking stream's trap again. The parser's rule is that no
+  input line is ever dropped.
+- **The tool row kept its own preview.** `Transcript.preview(of:)` folded
+  newlines and cut at 240 characters, so expanding a row showed the arguments
+  and never the output. The row keeps the result now — bounded at the **head**
+  (8k, and it says so), where the thinking stream is bounded at its **tail**:
+  a file starts at the top, and the part of the thinking that matters is the
+  part that is arriving.
+- **Scrolling followed the line count.** A 2k-character answer is one line, so
+  its 1,300 deltas changed no count and the view sat still while the answer ran
+  off the bottom; and it scrolled even when the user had scrolled up to read
+  something. The signal is now the last line's *value*, acted on only while
+  pinned, and `LazyVStack` gives the pin for free through the last line's
+  `onAppear`/`onDisappear`. A "Latest" button appears when the user is away.
+- **The reasoning control did not exist.** HANDOFF said "the toolbar exposes
+  `reasoning_effort`"; no view set it, so the one control that turns the
+  ten-seconds-of-nothing into 1.1 s was unreachable. It is in the toolbar now.
+  The same bug was in the live check: `model.reasoningEffort = .none` is
+  `Optional.none` — nil, "model decides" — so the run the check called the fast
+  one was asking for the server default. The compiler warns and picks the wrong
+  one; the case is spelled in full now.
+- **The views are a library, and there is a preview.** `AgentAppUI` is a target;
+  `AgentApp` is the `@main` that opens a window on it; `swift run ui-preview`
+  feeds a scripted event stream through the real `AppModel` and opens the real
+  `RootView`. No service, no model, no working-directory panel, and it can show
+  a failed tool, a refused permission, a 40-line result and a table. Every
+  screenshot in this phase came from it.
+- **A toolbar group wider than the window overflows into a `>>` chevron**, and
+  the window looks fine while the controls are gone. The model picker, the
+  Thinking picker, the segmented permission control, the Session menu and the
+  window title together exceeded 900 points; the working-directory control moved
+  to the status bar, which already shows the path.
 
 ## What Phase 2 built
 
@@ -151,11 +228,13 @@ cd /Users/taozeng/Projects/SoloCoder
 .venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
 
 cd macapp/AgentClient
-swift run agent-checks                              # 165 checks passed
+swift run agent-checks                              # 235 checks passed
 AGENT_REPO_ROOT=.. swift run agent-checks           # + the app-model checks
 AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s \
     swift run agent-checks                          # 180, real model
 swift run solocoder                                 # the app
+swift run ui-preview                                # the views, no service, no model
+UI_PREVIEW_SHORT=1 swift run ui-preview             # …top of the timeline
 ```
 
 ## Next: Phase 3b — packaging the sidecar
@@ -176,12 +255,19 @@ drags in the rest:
 5. **Code signing + notarization**, icon, `Info.plist`, `.app` bundle assembly
    (SwiftPM executables are not bundles).
 
-## Next: Phase 3c — the views, once they have a screen
+## Next: the views, with a screen
 
-The views are the only code no automated check reaches. Worth doing with the
-window open: markdown rendering for assistant text, tool output beyond the
-one-line preview, the permission sheet's argument rendering, scrolling behaviour,
-and what a long session does to a `LazyVStack`.
+Phase 3d did markdown rendering, tool output beyond the preview, and scrolling.
+What is left, worth doing with `swift run ui-preview` open:
+
+- the permission sheet's argument rendering — a `bash` prompt shows a JSON
+  object, not the command; a `write` shows the whole content blob
+- what a long session does to a `LazyVStack` (a 200-line transcript, a 40k-char
+  answer, the `Equatable` row skip under real history)
+- the composer: `Return` submits a multi-line field, and `Send` is disabled with
+  no reason shown
+- a copy-answer affordance (`Transcript.finalText` exists; no view uses it)
+- the session browser: ids, no titles, no delete
 
 ## Things to know (verified the hard way)
 
@@ -280,6 +366,11 @@ and what a long session does to a `LazyVStack`.
 - **`Sidecar` redirects the service's stderr to a file, not a `Pipe`.** A full
   pipe buffer blocks the writer: a service that blocks on its own stderr is a
   service that stops serving.
+- **A SwiftPM executable's types cannot be imported.** That is why `AgentAppCore`
+  is a library, and why the views moved to `AgentAppUI`: with them in the
+  executable, nothing — not a check, not a preview — could put them on screen.
+- **`.none` on an optional enum property is `nil`, not the enum's `.none` case.**
+  `model.reasoningEffort = .none` compiles, warns, and means "model decides".
 - **`hello` reports `terminal_event_types`** and a client ends a *run* on the
   union of its own set and the server's, so a terminal event added in a later
   protocol version closes an older client's timeline instead of leaving it open.

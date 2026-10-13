@@ -289,6 +289,54 @@ func transcriptChecks(_ checks: Checks) throws {
     )
     checks.equal(Transcript.preview(of: .null), "", "a null result previews as empty")
 
+    // MARK: tool output
+    //
+    // The row used to store its own 240-character preview, so expanding a tool
+    // row showed the arguments and never the output — the half the user opens it
+    // for. The row keeps the result now; the label folds it.
+
+    func toolRow(_ result: String) throws -> ToolCallRow? {
+        let encoded = String(data: try JSONEncoder().encode(result), encoding: .utf8) ?? #""""#
+        let folded = try fold([
+            ev(#"{"type":"tool_call_started","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"read","arguments":{}}"#),
+            ev(#"{"type":"tool_call_completed","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"read","result":\#(encoded)}"#),
+        ])
+        return folded.toolRows.first
+    }
+
+    let manyLines = (1...40).map { "line \($0)" }.joined(separator: "\n")
+    let forty = try toolRow(manyLines)?.state
+    if case .done(let text) = forty {
+        checks.equal(
+            text.split(separator: "\n").count,
+            40,
+            "the row keeps all 40 lines of a result — a disclosure shows a file, not a fold"
+        )
+        checks.expect(Transcript.oneLine(text).count <= 241, "and the label is one bounded line")
+    } else {
+        checks.expect(false, "a completed tool row is done, got \(String(describing: forty))")
+    }
+
+    let huge = try toolRow(String(repeating: "x", count: 100_000))?.state
+    if case .done(let text) = huge {
+        checks.expect(text.utf8.count < 9_000, "a 100k result is bounded (\(text.utf8.count) kept)")
+        checks.expect(text.hasPrefix("xxxx"), "the head is what is kept — a file starts at the top")
+        checks.expect(text.contains("truncated"), "and the row says so, rather than lying about the whole")
+    } else {
+        checks.expect(false, "a huge result still lands in the row, got \(String(describing: huge))")
+    }
+
+    checks.equal(
+        Transcript.resultText(
+            of: .array([
+                .object(["type": .string("text"), "text": .string("first block")]),
+                .object(["type": .string("text"), "text": .string("second")]),
+            ])
+        ),
+        "first block\nsecond",
+        "a block-list result is its text, not its JSON"
+    )
+
     // MARK: the whole event set
 
     var all = Transcript()

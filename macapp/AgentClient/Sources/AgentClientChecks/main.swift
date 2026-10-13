@@ -493,6 +493,8 @@ do {
     try framingChecks(checks)
     stage = "transcript"
     try transcriptChecks(checks)
+    stage = "markdown"
+    markdownChecks(checks)
     stage = "live"
     _ = await liveChecks(checks)
     stage = "app"
