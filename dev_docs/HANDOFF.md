@@ -9,10 +9,10 @@ own service and drives real runs, and `scripts/build_app.sh` produces a signed
 119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
 inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`, 30 commits ahead of origin — the phase 0–3i
+- Branch: `feat/computer-use-macos`, 31 commits ahead of origin — the phase 0–3i
   commits plus the streaming and finished-answer bounds, nothing pushed
 - Python suite: **609 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **416 checks passed** (`swift run agent-checks`), **429** with
+- Swift suite: **419 checks passed** (`swift run agent-checks`), **432** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
   it; add
@@ -41,10 +41,10 @@ inside it. `scripts/package_check.sh` is the gate that says so.
   same bound now covers the answer a run **leaves behind** — the row outlives the
   stream, and every later publish laid out all of it — with the rest of the answer
   behind a "Show all 4,000 blocks and 26,999 characters" button (phase 3i+)
-- Working tree: clean as of the finished-answer-bound commit (2026-10-13).
-  `.build/app/SoloCoder.app` (120 MB) is one commit behind it — it ships
+- Working tree: clean as of the send-refusal commit (2026-10-13).
+  `.build/app/SoloCoder.app` (120 MB) is two commits behind it — it ships
   `session.delete` and the streaming bound, not the finished-answer bound, the
-  remembered scope or the in-window refusal;
+  remembered scope, the in-window refusal or the prompt a refusal leaves behind;
   `/Applications/SoloCoder.app` is still the phase 3h build and does not know
   `session.delete` at all — installing the new bundle is the step left
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
@@ -453,8 +453,10 @@ in-memory only, so *every* launch began with that modal, and the first prompt of
 every session was the one refused. It is stored when set and restored at launch,
 and `AppModel.restorableWorkingDir` drops a stored path that is not a directory —
 a folder deleted over the weekend is not a scope, and a status bar naming a folder
-that is gone is worse than one that asks for a folder. The open panel is driven
-from the command line with `cmd+shift+g`, the path, and two Returns.
+that is gone is worse than one that asks for a folder. Driving the panel from the
+command line is `cmd+shift+g`, the path, `cmd+Return` — and then Choose, with the
+trap below. For a test that only needs *a* scope, `defaults write solocoder
+openagent.workingDir <path>` and relaunch is the honest way to set it.
 
 Traps this phase added:
 
@@ -477,6 +479,14 @@ Traps this phase added:
   head -1` samples `/bin/zsh`. Use `pgrep -x solocoder`.
 - **Setting `AXValue` on the composer does not drive the SwiftUI binding** — the
   field shows the text and the send button stays disabled. Real keystrokes work.
+- **The open panel chooses the *highlighted row*, not the folder you navigated
+  into.** Typing the repo root in the `cmd+shift+g` field and clicking Choose set
+  the scope to `__pycache__`, then to `frontend` — the row the arrow keys had
+  landed on. Clicking in the list to "deselect" selects a row; there is no click
+  that clears the selection. And the Return that closes the panel lands in the
+  composer, so the typed path went out as a prompt. `cmd+Return` in the go-to
+  field navigates without a second Return; Choose with nothing highlighted takes
+  the folder.
 
 **A refusal stopped wearing a modal.** The system `.alert` — a card with a bold
 title "The service said no" and a full-width blue OK — blocks the composer, and
@@ -487,14 +497,16 @@ text was **"notConnected"**: `AppModel.describe` rendered `"\(error)"`, the enum
 mirror name. It now reads `LocalizedError.errorDescription` — the sentence every
 client error already carries — and keeps the mirror name for an error that chose
 no sentence, because a plain `NSError`'s `localizedDescription`
-("The operation couldn't be completed. (…)") is worse, not better.
+("The operation couldn't be completed. (…)") is worse, not better. Its first
+live test found the other half of the defect: the card said "choose a working
+directory", the timeline stayed at "No run yet", and the words were gone from the
+composer, so there was no record of what was refused. `send` now returns the
+reason and the composer clears only when the prompt went — a run the *service*
+refuses already leaves a row (`failLocally`); a send the composer blocks leaves
+the prompt in the field, which is the record.
 
 Open defects, all seen on screen:
 
-- **A refused run leaves no row.** The modal said "the service said no", the
-  timeline stayed at "No run yet", and the prompt was gone from the composer — so
-  the user has no record of what was refused. `.messageFailed` already exists in
-  the transcript vocabulary; the view does not draw it.
 - **Cancel is delivered only when the main thread is free.** The bound removes the
   pin that made the Stop click undeliverable; it does not remove the class. A run
   that wedges the main thread in some other way swallows the click again.
@@ -502,7 +514,7 @@ Open defects, all seen on screen:
   launch takes the sidecar's `default_model` and `Ask` — the scope is remembered
   now, the rest of the session's settings are not.
 
-Gates: **412 checks** (`swift run agent-checks`), **425** with `AGENT_REPO_ROOT`.
+Gates: **419 checks** (`swift run agent-checks`), **432** with `AGENT_REPO_ROOT`.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 

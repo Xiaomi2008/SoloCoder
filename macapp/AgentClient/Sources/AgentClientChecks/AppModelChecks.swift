@@ -268,6 +268,19 @@ func composerChecks(_ checks: Checks) {
     struct Bare: Error {}
     checks.equal(AppModel.describe(Bare()), "\(Bare())", "an error with no sentence of its own keeps the mirror name")
 
+    // A refused send hands its reason back, because the composer has to keep the
+    // words. It used to clear the field on its way out, so the card explained a
+    // prompt that was already gone and the timeline had no row for it.
+    let refused = coldModel()
+    refused.connected = true
+    checks.equal(refused.send("hi"), .noWorkingDir, "a refused send hands its reason back")
+    checks.equal(
+        refused.banner, "choose a working directory — it is the scope the agent works in",
+        "…and shows the same words the button uses: \(refused.banner ?? "nil")"
+    )
+    let unconnected = coldModel()
+    checks.equal(unconnected.send("hi"), .notConnected, "a send with no service is refused too, not swallowed")
+
     // The scope is remembered between launches. It used not to be: every launch
     // started with no scope, and the first prompt of a session was refused by a
     // modal — "choose a working directory — it is the scope the agent works in" —

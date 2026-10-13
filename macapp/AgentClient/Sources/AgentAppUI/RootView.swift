@@ -1171,6 +1171,10 @@ struct ComposerCard: View {
 
     private func send() {
         let text = draft
+        // Ask the core first, and clear only when the prompt went. A refused send
+        // used to eat the words on its way out: the card explained a prompt that
+        // was already gone, and the timeline had no row for it either.
+        guard model.send(text) == nil else { return }
         draft = ""
         // …and again on the next main-actor turn.
         //
@@ -1181,7 +1185,6 @@ struct ComposerCard: View {
         // write is the one that is correct in principle; the deferred one is the
         // one SwiftUI honours, and the pair costs nothing.
         Task { @MainActor in draft = "" }
-        model.send(text)
     }
 }
 

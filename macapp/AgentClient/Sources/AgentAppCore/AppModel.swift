@@ -305,16 +305,28 @@ public final class AppModel: ObservableObject {
         return nil
     }
 
-    public func send(_ prompt: String) {
-        guard let client, !busy else { return }
+    /// Send a prompt. Returns the reason it was refused, or nil when it went.
+    ///
+    /// The answer is returned, not just shown, because the composer has to keep
+    /// the words: a refused send used to clear the field on its way out, so the
+    /// card named a prompt that was already gone and the timeline stayed at "No
+    /// run yet" — no record of what was refused, and nothing to fix.
+    @discardableResult
+    public func send(_ prompt: String) -> SendBlock? {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
         if let block = sendBlock(trimmed) {
             // The composer disables Send for this, so arriving here means the
             // keyboard shortcut went past a disabled button. Say why, in the same
             // words the button uses.
             banner = block.reason
-            return
+            return block
+        }
+        // `sendBlock` has already ruled out "not connected" and "a run is going";
+        // this is the connection object itself, which only exists once there is a
+        // connection to hold.
+        guard let client else {
+            banner = SendBlock.notConnected.reason
+            return .notConnected
         }
 
         transcript.addUserMessage(trimmed)
@@ -343,6 +355,7 @@ public final class AppModel: ObservableObject {
                 self.log("run.start refused: \(Self.describe(error))")
             }
         }
+        return nil
     }
 
     public func cancel() {
