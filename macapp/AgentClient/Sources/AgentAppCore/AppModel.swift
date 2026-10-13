@@ -225,12 +225,53 @@ public final class AppModel: ObservableObject {
 
     // MARK: runs
 
+    /// Why the composer cannot send.
+    public enum SendBlock: Equatable, Sendable {
+        case notConnected
+        case busy
+        case noWorkingDir
+        case emptyDraft
+
+        /// The user's words, shown next to the button. A greyed-out Send beside a
+        /// typed prompt teaches the user that the app is broken; the same words
+        /// teach them what to click.
+        public var reason: String {
+            switch self {
+            case .notConnected: return "not connected to the service"
+            case .busy: return "a run is already going"
+            case .noWorkingDir: return "choose a working directory — it is the scope the agent works in"
+            case .emptyDraft: return "nothing to send"
+            }
+        }
+    }
+
+    /// The reason Send is disabled, or nil when it is not.
+    ///
+    /// This is `send`'s own rule, in one place, so the button and the call cannot
+    /// disagree about what is sendable. The composer used to disable Send with no
+    /// explanation: a greyed button next to a finished prompt, and the way to
+    /// learn why was to go looking for the empty working directory in the status
+    /// bar.
+    ///
+    /// Order is the order of what the user can act on: a dead service, a run in
+    /// flight, the scope nothing can run in, then an empty field.
+    public func sendBlock(_ draft: String) -> SendBlock? {
+        if !connected { return .notConnected }
+        if busy { return .busy }
+        if workingDir.isEmpty { return .noWorkingDir }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .emptyDraft }
+        return nil
+    }
+
     public func send(_ prompt: String) {
         guard let client, !busy else { return }
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard !workingDir.isEmpty else {
-            banner = "Choose a working directory first — it is the scope the agent works in."
+        if let block = sendBlock(trimmed) {
+            // The composer disables Send for this, so arriving here means the
+            // keyboard shortcut went past a disabled button. Say why, in the same
+            // words the button uses.
+            banner = block.reason
             return
         }
 

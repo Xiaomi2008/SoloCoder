@@ -19,9 +19,13 @@ import SwiftUI
 
 public struct RootView: View {
     @EnvironmentObject var model: AppModel
-    @State private var draft = ""
+    @State private var draft: String
 
-    public init() {}
+    /// `prompt` seeds the composer, so a preview can show the field as the user
+    /// left it: multi-line, with a reason under it, Send greyed out.
+    public init(prompt: String = "") {
+        _draft = State(initialValue: prompt)
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -528,6 +532,18 @@ struct PermissionLine: View {
 
 // MARK: - Composer
 
+/// The prompt field.
+///
+/// **Return writes a newline; ⌘Return sends.** The field is one to six lines and
+/// the prompts are multi-line — a stack trace, a list of files, a paragraph — so
+/// Return-as-send cost a paragraph every time: the half-written prompt went to
+/// the model and the rest of the typing went into an empty field.
+///
+/// **A disabled Send says why.** It used to be a greyed button next to a finished
+/// prompt, and the only way to learn the reason was to go looking for the empty
+/// working directory in the status bar. The rule lives in `AppModel.sendBlock`,
+/// which is also `send`'s own guard, so the button cannot claim a thing the call
+/// does not enforce.
 struct Composer: View {
     @EnvironmentObject var model: AppModel
     @Binding var draft: String
@@ -536,17 +552,52 @@ struct Composer: View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField("Ask for something…", text: $draft, axis: .vertical)
                 .lineLimit(1...6)
-                .onSubmit(send)
+                .onSubmit(submit)
                 .disabled(model.busy)
+            if let reason = visibleReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 240, alignment: .trailing)
+            }
             if model.transcript.state.isRunning {
                 Button("Cancel") { model.cancel() }
             } else {
                 Button("Send") { send() }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(model.busy || model.workingDir.isEmpty)
+                    .disabled(model.sendBlock(draft) != nil)
+                    .help(model.sendBlock(draft).map { $0.reason } ?? "⌘↵ sends, ↵ writes a new line")
             }
         }
         .padding(10)
+    }
+
+    /// The reason worth showing.
+    ///
+    /// Only the two the user cannot see for themselves: a dead service, and a
+    /// scope nothing can run in. `busy` already has a Cancel button in its place,
+    /// and an empty field next to a disabled Send explains itself — a caption for
+    /// every state is a caption bar.
+    private var visibleReason: String? {
+        guard let block = model.sendBlock(draft) else { return nil }
+        switch block {
+        case .notConnected, .noWorkingDir: return block.reason
+        case .busy, .emptyDraft: return nil
+        }
+    }
+
+    /// Return inserts a newline; ⌘Return sends.
+    ///
+    /// `onSubmit` reports that a submit happened and not which key caused it, so
+    /// the modifier comes from AppKit's current event flags, which are current
+    /// for the whole of the dispatch that is calling this.
+    private func submit() {
+        if NSEvent.modifierFlags.contains(.command) {
+            send()
+            return
+        }
+        draft.append("\n")
     }
 
     private func send() {

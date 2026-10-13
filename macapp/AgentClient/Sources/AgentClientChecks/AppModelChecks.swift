@@ -203,6 +203,51 @@ private func reasoningCapChecks(_ checks: Checks) async throws {
     continuation.finish()
 }
 
+/// The composer's gate: what Send may do, and what it says when it may not.
+///
+/// The rule is `AppModel.sendBlock`, which is also `send`'s own guard — the
+/// button and the call get their answer from one place, so a Send that looks
+/// enabled cannot refuse, and one that is disabled has words to explain itself.
+/// The other half of the composer, Return writing a newline instead of sending a
+/// half-typed paragraph, is keyboard state: `swift run ui-preview` is where that
+/// is seen.
+@MainActor
+func composerChecks(_ checks: Checks) {
+    print("composer")
+
+    func ready() -> AppModel {
+        let model = AppModel()
+        model.connected = true
+        model.workingDir = "/tmp/oa-work"
+        return model
+    }
+
+    let cold = AppModel()
+    checks.equal(cold.sendBlock("hello"), .notConnected, "no service: Send is blocked on the connection")
+    checks.equal(cold.sendBlock(""), .notConnected, "…and that outranks an empty field")
+
+    let noScope = AppModel()
+    noScope.connected = true
+    checks.equal(noScope.sendBlock("hi"), .noWorkingDir, "no working directory: Send is blocked on the scope")
+
+    let blank = ready()
+    checks.equal(blank.sendBlock("   \n\t "), .emptyDraft, "whitespace is not a prompt")
+    checks.equal(blank.sendBlock(""), .emptyDraft, "so is nothing")
+    checks.equal(blank.sendBlock("fix the parser"), nil, "connected, scoped, non-empty: Send is enabled")
+
+    let running = ready()
+    running.busy = true
+    checks.equal(running.sendBlock("fix the parser"), .busy, "one run per connection: a second Send is blocked")
+    running.workingDir = ""
+    checks.equal(running.sendBlock("fix the parser"), .busy, "…and the run in flight is the reason shown")
+
+    for reason in [
+        AppModel.SendBlock.notConnected, .busy, .noWorkingDir, .emptyDraft,
+    ] {
+        checks.expect(!reason.reason.isEmpty, "every block has a reason the composer can show: \(reason)")
+    }
+}
+
 @MainActor
 func appChecks(_ checks: Checks) async {
     print("app model")
@@ -265,7 +310,10 @@ func appChecks(_ checks: Checks) async {
     // sending a request the server would refuse.
     model.workingDir = ""
     model.send("hello")
-    checks.expect(model.banner?.contains("working directory") == true, "a run without a working directory is refused by the app, with a reason")
+    checks.expect(
+        model.banner == AppModel.SendBlock.noWorkingDir.reason,
+        "a run without a working directory is refused by the app, in the words the Send button shows"
+    )
     checks.expect(!model.busy, "and the composer is not left spinning")
     model.workingDir = work.path
 

@@ -258,13 +258,24 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// The composer's starting text. `\n` in the value is a newline, because a shell
+/// argument cannot carry one and the state worth looking at is a multi-line
+/// prompt with Send disabled under it.
+private var draftSeed: String {
+    (ProcessInfo.processInfo.environment["UI_PREVIEW_DRAFT"] ?? "").replacingOccurrences(of: "\\n", with: "\n")
+}
+
 struct UIPreviewApp: App {
     @NSApplicationDelegateAdaptor(PreviewDelegate.self) private var delegate
     @StateObject private var model: AppModel = {
         let model = AppModel()
         model.connected = true
         model.status = "openagent 0.4 · protocol 1 (preview, no service)"
-        model.workingDir = "/Users/dev/Projects/SoloCoder"
+        // `UI_PREVIEW_NOSCOPE=1` leaves the scope unset, which is the state that
+        // disables Send — and the state the composer now has words for.
+        model.workingDir =
+            ProcessInfo.processInfo.environment["UI_PREVIEW_NOSCOPE"] == nil
+            ? "/Users/dev/Projects/SoloCoder" : ""
         model.modelPolicy = "local_first"
         model.transcript.addUserMessage("Find and fix the bug in the fence parser.")
         model.ingest(AsyncStream { continuation in
@@ -276,7 +287,7 @@ struct UIPreviewApp: App {
 
     var body: some Scene {
         WindowGroup("SoloCoder preview") {
-            RootView()
+            RootView(prompt: draftSeed)
                 .environmentObject(model)
                 .frame(minWidth: 780, idealWidth: 900, minHeight: 560, idealHeight: 700)
         }

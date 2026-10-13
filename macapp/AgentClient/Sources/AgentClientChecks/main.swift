@@ -497,6 +497,8 @@ do {
     markdownChecks(checks)
     stage = "tool display"
     toolDisplayChecks(checks)
+    stage = "composer"
+    composerChecks(checks)
     stage = "live"
     _ = await liveChecks(checks)
     stage = "app"
