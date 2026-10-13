@@ -9,10 +9,10 @@ own service and drives real runs, and `scripts/build_app.sh` produces a signed
 119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
 inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`, 31 commits ahead of origin — the phase 0–3i
+- Branch: `feat/computer-use-macos`, 32 commits ahead of origin — the phase 0–3i
   commits plus the streaming and finished-answer bounds, nothing pushed
 - Python suite: **609 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **419 checks passed** (`swift run agent-checks`), **432** with
+- Swift suite: **435 checks passed** (`swift run agent-checks`), **448** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
   it; add
@@ -41,10 +41,14 @@ inside it. `scripts/package_check.sh` is the gate that says so.
   same bound now covers the answer a run **leaves behind** — the row outlives the
   stream, and every later publish laid out all of it — with the rest of the answer
   behind a "Show all 4,000 blocks and 26,999 characters" button (phase 3i+)
-- Working tree: clean as of the send-refusal commit (2026-10-13).
-  `.build/app/SoloCoder.app` (120 MB) is two commits behind it — it ships
+- A launch remembers its scope, its model, its permission mode and its thinking
+  setting, and drops a remembered model the table no longer has — with a line
+  saying so — and the model menu has a Refresh (phase 3i+)
+- Working tree: clean as of the launch-settings commit (2026-10-13).
+  `.build/app/SoloCoder.app` (120 MB) is three commits behind it — it ships
   `session.delete` and the streaming bound, not the finished-answer bound, the
-  remembered scope, the in-window refusal or the prompt a refusal leaves behind;
+  remembered scope and settings, the in-window refusal or the prompt a refusal
+  leaves behind;
   `/Applications/SoloCoder.app` is still the phase 3h build and does not know
   `session.delete` at all — installing the new bundle is the step left
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
@@ -510,11 +514,69 @@ Open defects, all seen on screen:
 - **Cancel is delivered only when the main thread is free.** The bound removes the
   pin that made the Stop click undeliverable; it does not remove the class. A run
   that wedges the main thread in some other way swallows the click again.
-- **The picker is as fresh as the last `model.list`** (previous section), and the
-  launch takes the sidecar's `default_model` and `Ask` — the scope is remembered
-  now, the rest of the session's settings are not.
+- **The picker is a snapshot with a Refresh on it.** The list is as fresh as the
+  last `model.list`; nothing re-asks on a timer, so a model that appears on the
+  LAN box shows up when the user asks for it, not when it appears.
 
 Gates: **419 checks** (`swift run agent-checks`), **432** with `AGENT_REPO_ROOT`.
+
+## Phase 3i+: what a launch remembers
+
+The scope is remembered (section above). The model, the permission mode and the
+reasoning effort were not, so every launch took the sidecar's `default_model` and
+`Ask`. On this machine that is not a small thing: the model the user runs is a
+row on the LAN box, not the sidecar's default, so every launch started pointed at
+a model they did not choose, and the thinking menu was back on "model default" —
+the setting that spent 686,439 characters of private reasoning and produced no
+answer.
+
+**A remembered choice is only as good as the thing that can invalidate it**, and
+the four have four different ones:
+
+- the scope is a directory — `restorableWorkingDir` drops a path that is gone;
+- the model is a row in the table — `restorableModel(_:in:)` keeps the key only
+  while a row carries it, and an *empty* table means "not loaded", not "gone", so
+  the key waits for `refreshModels`, the only thing allowed to say a model is
+  gone. A restored key the table dropped would show in the toolbar as a model the
+  picker has no row for, and every run refused for a reason the screen does not
+  show — the credential store's defect (section above) one layer up;
+- the permission mode and the reasoning effort are enum raw values — a value the
+  enum does not know is the default, not a crash.
+
+When the table does drop the model, the toolbar changes under the user, so a
+`notice` line says so: *"the remembered model lan/gone-overnight is not in the
+table — the router chooses"*, with the OK that dismisses it.
+
+**The picker's other half is staleness.** Its options are the last `model.list`,
+and a model that appeared on the LAN box five minutes ago is not in them; the
+only way to see one was to restart the app. `SettingMenu` takes an optional
+`refresh:` closure and the model menu passes `model.refreshModels()` — a divider
+and "Refresh" with the `arrow.clockwise` glyph, the same glyph the sidebar's
+session refresh already uses.
+
+Verified on screen:
+
+| stored model | what the launch shows |
+|---|---|
+| `anthropic/claude-sonnet-5-5`, a row the table has | the toolbar opens on it; no notice line |
+| `lan/gone-overnight`, a key the table dropped | the toolbar opens on the router's choice, and the line says the remembered model is not in the table |
+| the model menu, opened | 12 rows, a checkmark on the current one, a divider and Refresh |
+
+Traps this phase added:
+
+- **`.none` on an Optional is `Optional.none`.** `checks.equal(restorableEffort("none"), .none, …)`
+  compares `ReasoningEffort?.some(.none)` to nil and fails; and
+  `firstLaunch.reasoningEffort = .none` *stores nil*, so the round-trip check
+  compared nil to nil and passed for the wrong reason. The one check that failed
+  is what made the two that passed vacuously visible. Spell `ReasoningEffort.none`.
+- **A `Menu` in a bottom toolbar opens downward, over the desktop.** The popup is
+  outside the window, so a window-region screenshot shows one clipped row; capture
+  a region that runs past the window's bottom edge.
+- **The popup's rows are not in the window's AX walk** (`windows: 1`), so their
+  coordinates come from the screenshot, and a click that lands left of the popup
+  dismisses it — the click after it goes to the window, not the menu.
+
+Gates: **435 checks** (`swift run agent-checks`), **448** with `AGENT_REPO_ROOT`.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 

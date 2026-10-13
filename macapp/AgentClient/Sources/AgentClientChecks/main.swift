@@ -516,6 +516,8 @@ do {
     try sessionChecks(checks)
     stage = "composer"
     composerChecks(checks)
+    stage = "launch"
+    launchChecks(checks)
     stage = "live"
     _ = await liveChecks(checks)
     stage = "app"

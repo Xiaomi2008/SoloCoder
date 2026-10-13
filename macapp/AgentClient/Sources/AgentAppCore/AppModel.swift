@@ -31,7 +31,12 @@ public final class AppModel: ObservableObject {
     @Published public var modelRows: [ModelRow] = []
     @Published public var modelPolicy = ""
     @Published public var sessions: [SessionRow] = []
-    @Published public var selectedModel = ""
+    /// The model the next run asks for, `""` meaning "the router's choice".
+    /// Remembered between launches, and validated against the model table the
+    /// first time it loads — see `restorableModel`.
+    @Published public var selectedModel = "" {
+        didSet { Self.store(selectedModel, forKey: Self.modelKey) }
+    }
     /// The scope the agent works in, remembered between launches.
     ///
     /// A launch with no directory refuses `run.start` — "choose a working
@@ -48,12 +53,20 @@ public final class AppModel: ObservableObject {
             }
         }
     }
-    @Published public var permissionMode: PermissionMode = .ask
+    /// What a risky tool may do, remembered between launches. `ask` is the
+    /// default and the stored value is only ever what the user picked in the
+    /// toolbar, which is on screen the whole time it is in force.
+    @Published public var permissionMode: PermissionMode = .ask {
+        didSet { UserDefaults.standard.set(permissionMode.rawValue, forKey: Self.modeKey) }
+    }
     /// How much the model may think before answering. `nil` means "model
     /// decides", which sends nothing — and on a reasoning model that default is
     /// the slow path: measured at ~10s to the first answer character, and in one
     /// run 686,439 characters of private reasoning with no answer at all.
-    @Published public var reasoningEffort: ReasoningEffort? = nil
+    /// Remembered, because "model decides" is the setting that costs.
+    @Published public var reasoningEffort: ReasoningEffort? = nil {
+        didSet { Self.store(reasoningEffort?.rawValue, forKey: Self.effortKey) }
+    }
     @Published public var status = "not connected"
     @Published public var busy = false
     @Published public var connected = false
@@ -71,6 +84,17 @@ public final class AppModel: ObservableObject {
     private var terminalTypes: Set<String> = Wire.terminalEventTypes
 
     private static let workingDirKey = "openagent.workingDir"
+    private static let modelKey = "openagent.model"
+    private static let modeKey = "openagent.permissionMode"
+    private static let effortKey = "openagent.reasoningEffort"
+
+    /// Store a choice, and remove the key when the choice is "no choice" — a
+    /// stored empty string and no key at all mean the same thing, and only one
+    /// of them survives a `defaults read`.
+    private static func store(_ value: String?, forKey key: String) {
+        if let value, !value.isEmpty { UserDefaults.standard.set(value, forKey: key) }
+        else { UserDefaults.standard.removeObject(forKey: key) }
+    }
 
     /// The stored scope, kept only while it is still a directory.
     ///
@@ -87,8 +111,39 @@ public final class AppModel: ObservableObject {
         return stored
     }
 
+    /// The stored model, kept only while the table says it exists.
+    ///
+    /// A model row is a `provider/model` key into a table that changes: the LAN
+    /// box goes offline, a provider is removed, a name is retired. A restored
+    /// key that is not in the table shows in the toolbar as a model the picker
+    /// has no row for, and every run is refused for a reason the screen does not
+    /// show — the same defect the credential store had, one layer up. An empty
+    /// `rows` is "the table has not loaded", which is not evidence of anything,
+    /// so the key survives until `refreshModels` can check it.
+    public static func restorableModel(_ stored: String?, in rows: [ModelRow]) -> String {
+        guard let stored, !stored.isEmpty else { return "" }
+        guard !rows.isEmpty else { return stored }
+        return rows.contains { $0.key == stored } ? stored : ""
+    }
+
+    /// The stored permission mode; anything the enum does not know is the default.
+    public static func restorableMode(_ stored: String?) -> PermissionMode {
+        PermissionMode(rawValue: stored ?? "") ?? .ask
+    }
+
+    /// The stored reasoning effort. `nil` is a real choice — "model decides" —
+    /// so an absent key and a stored `"none"` are different answers.
+    public static func restorableEffort(_ stored: String?) -> ReasoningEffort? {
+        guard let stored, !stored.isEmpty else { return nil }
+        return ReasoningEffort(rawValue: stored)
+    }
+
     public init() {
-        workingDir = Self.restorableWorkingDir(UserDefaults.standard.string(forKey: Self.workingDirKey))
+        let stored = UserDefaults.standard
+        workingDir = Self.restorableWorkingDir(stored.string(forKey: Self.workingDirKey))
+        selectedModel = Self.restorableModel(stored.string(forKey: Self.modelKey), in: [])
+        permissionMode = Self.restorableMode(stored.string(forKey: Self.modeKey))
+        reasoningEffort = Self.restorableEffort(stored.string(forKey: Self.effortKey))
     }
 
     /// A non-bundled app has no Console entry that a developer finds quickly, so
@@ -403,6 +458,18 @@ public final class AppModel: ObservableObject {
             modelRows = list.models
             modelPolicy = list.policy
             self.log("models: \(list.models.count) rows, policy=\(list.policy), selected=\(list.selected ?? "none")")
+            // The table is the only thing that can say a model is gone, so it is
+            // where a restored key is checked — see `restorableModel`.
+            let kept = Self.restorableModel(selectedModel, in: list.models)
+            if kept != selectedModel {
+                let dropped = selectedModel
+                self.log("model: \(dropped) is not in the table, using \(kept.isEmpty ? "the router" : kept)")
+                // The toolbar changes under the user; a line that says so beats
+                // a picker that quietly disagrees with the one they remember.
+                notice =
+                    "the remembered model \(dropped) is not in the table — \(kept.isEmpty ? "the router chooses" : kept)"
+                selectedModel = kept
+            }
             if selectedModel.isEmpty { selectedModel = list.selected ?? list.defaultModel ?? "" }
         } catch {
             banner = Self.describe(error)

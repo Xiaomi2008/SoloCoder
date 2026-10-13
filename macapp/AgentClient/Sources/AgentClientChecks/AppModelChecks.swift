@@ -303,6 +303,77 @@ func composerChecks(_ checks: Checks) {
     checks.equal(AppModel().workingDir, "", "…and forgetting the scope is remembered too")
 }
 
+/// What a launch starts with, and what it is allowed to keep.
+///
+/// The scope is remembered (see `composerChecks`); the model, the permission
+/// mode and the reasoning effort used not to be, so every launch took the
+/// sidecar's `default_model` and `Ask` and the user re-picked what they had
+/// already picked. A remembered choice is only as good as the thing that can
+/// invalidate it: a scope is a directory, and a model is a row in the table.
+@MainActor
+func launchChecks(_ checks: Checks) {
+    print("launch settings")
+
+    func row(_ provider: String, _ model: String) -> ModelRow {
+        let json = """
+            {"model":"\(model)","provider":"\(provider)","wire_api":"chat","auth_mode":"api_key", \
+            "label":"","family":"other","is_local":true, \
+            "caps":{"tools":false,"vision":false,"reasoning":false,"streaming":true,"json_mode":false, \
+            "context_window":8192,"max_output_tokens":null,"probed":false}, \
+            "cost":{"kind":"free","input_per_mtok":null,"output_per_mtok":null}}
+            """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try! decoder.decode(ModelRow.self, from: Data(json.utf8))
+    }
+
+    let rows = [row("lan", "swift-1.5"), row("openai", "gpt-6-x")]
+    checks.equal(AppModel.restorableModel(nil, in: rows), "", "no stored model: the router chooses")
+    checks.equal(
+        AppModel.restorableModel("lan/swift-1.5", in: rows), "lan/swift-1.5",
+        "a stored model the table still has comes back"
+    )
+    checks.equal(
+        AppModel.restorableModel("lan/gone-overnight", in: rows), "",
+        "a stored model the table dropped is not restored — the toolbar would name a model the picker has no row for"
+    )
+    checks.equal(
+        AppModel.restorableModel("lan/gone-overnight", in: []), "lan/gone-overnight",
+        "an unloaded table is not evidence a model is gone, so the key waits for `refreshModels`"
+    )
+    checks.equal(AppModel.restorableMode(nil), .ask, "no stored mode: ask")
+    checks.equal(
+        AppModel.restorableMode("allow_readonly"), .allowReadonly,
+        "the mode the user picked in the toolbar comes back"
+    )
+    checks.equal(AppModel.restorableMode("yolo"), .ask, "a mode the enum does not know is the default")
+    checks.equal(AppModel.restorableEffort(nil), nil, "no stored effort: the model decides")
+    // Spelled `ReasoningEffort.none`, never `.none`: in a context whose type is
+    // `ReasoningEffort?`, `.none` is `Optional.none` — nil — and the check
+    // compares nil to nil and passes for the wrong reason.
+    checks.equal(
+        AppModel.restorableEffort("none"), ReasoningEffort.none,
+        "…and a stored \"none\" is a different answer from no stored key"
+    )
+    checks.equal(AppModel.restorableEffort("sideways"), nil, "an effort the enum does not know is not a choice")
+
+    let firstLaunch = AppModel()
+    firstLaunch.selectedModel = "lan/swift-1.5"
+    firstLaunch.permissionMode = .allowReadonly
+    firstLaunch.reasoningEffort = ReasoningEffort.none
+    let next = AppModel()
+    checks.equal(next.selectedModel, "lan/swift-1.5", "the next launch asks for the same model")
+    checks.equal(next.permissionMode, .allowReadonly, "…under the same permission mode")
+    checks.equal(next.reasoningEffort, ReasoningEffort.none, "…with the same reasoning effort")
+    firstLaunch.selectedModel = ""
+    firstLaunch.permissionMode = .ask
+    firstLaunch.reasoningEffort = nil
+    let cleared = AppModel()
+    checks.equal(cleared.selectedModel, "", "clearing the model to the router's choice is remembered too")
+    checks.equal(cleared.permissionMode, .ask, "…the mode back to ask")
+    checks.equal(cleared.reasoningEffort, nil, "…and the effort back to \"model decides\"")
+}
+
 @MainActor
 func appChecks(_ checks: Checks) async {
     print("app model")

@@ -1201,6 +1201,10 @@ struct SettingMenu: View {
     let options: [String]
     let chosen: String
     let choose: (String) -> Void
+    /// A way to re-ask for the list. The options are a snapshot of the last
+    /// `model.list`, and a model that appeared on the LAN box five minutes ago
+    /// is not in it; without this the only way to see one is to restart the app.
+    var refresh: (() -> Void)? = nil
 
     var body: some View {
         Menu {
@@ -1214,6 +1218,10 @@ struct SettingMenu: View {
                         Text(option)
                     }
                 }
+            }
+            if refresh != nil {
+                Divider()
+                Button("Refresh", systemImage: "arrow.clockwise") { refresh?() }
             }
         } label: {
             HStack(spacing: 4) {
@@ -1251,6 +1259,8 @@ struct ModelMenu: View {
             chosen: model.selectedModel.isEmpty ? "(router's choice)" : model.selectedModel
         ) { choice in
             model.chooseModel(choice == "(router's choice)" ? "" : choice)
+        } refresh: {
+            Task { await model.refreshModels() }
         }
     }
 }
