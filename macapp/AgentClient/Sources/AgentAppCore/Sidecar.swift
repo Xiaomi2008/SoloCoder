@@ -95,11 +95,21 @@ public final class Sidecar {
 
     /// The checkout to run the service from: `AGENT_REPO_ROOT`, else the current
     /// directory if it looks like the repository.
+    ///
+    /// The answer is always absolute and standardized. The root is used twice —
+    /// as the child's `currentDirectoryURL` and as the base of the executable
+    /// path — so a relative value is a hop applied to two things at once, and the
+    /// spawn lands beside the cwd: `AGENT_REPO_ROOT=../..` from `macapp/AgentClient`
+    /// looked for `.venv/bin/python` in `macapp/AgentClient` and the app-model
+    /// check reported "not connected". `HANDOFF` documents that exact command.
     public static func repositoryRoot() -> URL? {
         let manager = FileManager.default
         if let configured = ProcessInfo.processInfo.environment["AGENT_REPO_ROOT"],
-           manager.fileExists(atPath: configured) {
-            return URL(fileURLWithPath: configured)
+           !configured.isEmpty {
+            // Resolved against *our* cwd, then `..` and `.` collapsed, so what
+            // the launcher gets is a path with no hops left in it.
+            let root = URL(fileURLWithPath: configured).standardizedFileURL
+            if manager.fileExists(atPath: root.path) { return root }
         }
         let cwd = URL(fileURLWithPath: manager.currentDirectoryPath)
         if manager.fileExists(atPath: cwd.appendingPathComponent(".venv/bin/python").path) {

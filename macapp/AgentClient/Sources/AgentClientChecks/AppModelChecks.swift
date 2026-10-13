@@ -263,7 +263,26 @@ func appChecks(_ checks: Checks) async {
     } catch {
         checks.expect(false, "reasoning cost checks ran: \(error)")
     }
-    guard Sidecar.repositoryRoot() != nil else {
+    // The root the sidecar spawns from, in the shape the launcher needs.
+    //
+    // `AGENT_REPO_ROOT` is documented as `..`-shaped, and the root is used twice:
+    // as the child's cwd and as the base of the executable path. A relative URL
+    // is a hop applied to both, and the spawn looks for the venv beside the cwd —
+    // which shows up as the check below failing with "not connected", with no
+    // hint that the cause is a path. So the root is asserted to be absolute and
+    // to carry an executable interpreter, before anything is spawned.
+    if let root = Sidecar.repositoryRoot() {
+        checks.expect(
+            root.isFileURL && root.path.hasPrefix("/") && !root.pathComponents.contains(".."),
+            "the sidecar's root is absolute, with no hops left in it: \(root.path)"
+        )
+        checks.expect(
+            FileManager.default.isExecutableFile(
+                atPath: root.appendingPathComponent(".venv/bin/python").path
+            ),
+            "the root has an executable .venv/bin/python: \(root.path)"
+        )
+    } else {
         checks.note("skipped: no repository with .venv/bin/python (set AGENT_REPO_ROOT)")
         return
     }
