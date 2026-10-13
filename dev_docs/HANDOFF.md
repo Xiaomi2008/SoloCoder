@@ -16,10 +16,11 @@ inside it. `scripts/package_check.sh` is the gate that says so.
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); add
   `AGENT_LIVE_MODEL` for a real streamed run with thinking off, a real thinking
   run, and the app model doing two runs on one connection
-- Packaging gate: **6 checks passed** (`scripts/package_check.sh`) — signature,
-  self-contained load paths, the app's own `--self-test` against a relocated
-  read-only copy, imports under a scrubbed environment, parent death, and the
-  seal intact after all of it
+- Packaging gate: **6 checks passed** (`scripts/package_check.sh`), **7** with
+  `AGENT_LIVE_MODEL` — signature, self-contained load paths, the app's own
+  `--self-test` against a relocated read-only copy, imports under a scrubbed
+  environment, a real streamed run, parent death, and the seal intact after all
+  of it
 - Working tree: clean
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
   (`fastapi`); a `uv run` sync prunes extras, and it did mid-session
@@ -45,6 +46,11 @@ connect, ping, `tool.list`, `auth.status`, `model.list`, stop, socket gone — a
 the script runs it against a **relocated, read-only copy** of the bundle with a
 scrubbed environment. A shell script poking the interpreter by hand would pass on
 a bundle the app cannot launch.
+
+`--self-test-run <model>` adds one step, off by default because it needs a
+reachable model server: a real streamed run, so the gate proves the shipped
+service can *answer* and not only be reached. Against `lan/swift-1.5-iq3_s` it
+returns `PACK` — four characters, from a bundle that cannot write to itself.
 
 Six checks, and the first run of them found four defects, all invisible to
 `swift build` and `pytest`:

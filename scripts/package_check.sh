@@ -120,6 +120,15 @@ import mcp, anthropic, openai, httpx, google.genai, ollama
 print(\"deps ok\")
 " ' _ "$WORK/SoloCoder.app"
 
+# A real run, against the read-only copy: the provider path, the TLS roots, the
+# model's base_url, the tool set, from inside a bundle that cannot write. Off by
+# default, because a gate that needs the network goes red for reasons that are
+# not the bundle's.
+if [[ -n "${AGENT_LIVE_MODEL:-}" ]]; then
+    check "run (live, $AGENT_LIVE_MODEL)" \
+        "$WORK/SoloCoder.app/Contents/MacOS/SoloCoder" --self-test-run "$AGENT_LIVE_MODEL"
+fi
+
 # --- parent death -----------------------------------------------------------
 # The app is killed; the service must go with it. `kill -9` posts no
 # notification and runs no teardown, so the only thing that can save the machine

@@ -22,9 +22,20 @@ import Foundation
 /// that spawns the interpreter itself would pass on a bundle the app cannot run.
 enum SelfTest {
     static let flag = "--self-test"
+    static let runFlag = "--self-test-run"
 
     static func requested(_ arguments: [String] = CommandLine.arguments) -> Bool {
-        arguments.contains(flag)
+        arguments.contains { $0 == flag || $0 == runFlag }
+    }
+
+    /// The model key for a real run: `--self-test-run lan/swift-1.5-iq3_s`.
+    ///
+    /// Opt-in, because it needs a reachable model server and a token, and a gate
+    /// that depends on the network is a gate that goes red for reasons that are
+    /// not the bundle's.
+    static func runModel(_ arguments: [String] = CommandLine.arguments) -> String? {
+        guard let index = arguments.firstIndex(of: runFlag), index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
     }
 
     /// Runs the app's startup against its own bundle. Returns the exit code.
@@ -93,6 +104,34 @@ enum SelfTest {
             let list = try await client.models()
             return "\(list.models.count) models, default \(list.defaultModel ?? "none")"
         })
+
+        // Everything above proves the app can talk to the service it ships. This
+        // proves the shipped service can answer: the provider path, the TLS
+        // roots, the model's base_url, the tool set, the cwd — from inside the
+        // bundle. The loop is bounded by the service (a turn budget, a provider
+        // timeout), not by this file: a run that streams nothing hangs here, and
+        // that is the service's bug to find, not a timeout to paper over.
+        if let model = Self.runModel() {
+            await step("run \(model)", {
+                let started = try await client.startRun(
+                    prompt: "Reply with exactly the word PACK and nothing else.",
+                    workingDir: FileManager.default.homeDirectoryForCurrentUser.path,
+                    model: model,
+                    permissionMode: .allowReadonly
+                )
+                var transcript = Transcript(terminalTypes: await client.terminalEventTypes)
+                transcript.beginRun(runId: started.runId)
+                for await event in await client.events() {
+                    transcript.apply(event)
+                    if transcript.finished { break }
+                }
+                let text = transcript.finalText ?? ""
+                if text.isEmpty {
+                    throw Failure("the run produced no answer; state \(transcript.state.label)")
+                }
+                return "\(text.count) characters: \(text.prefix(60))"
+            })
+        }
 
         // Teardown is part of the contract: the app's exit must leave no service
         // and no bound socket, or every launch adds an orphan.
