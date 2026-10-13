@@ -32,6 +32,9 @@ public final class Sidecar {
     public let socketPath: String
     private let process = Process()
     private let logPath: String
+    /// Held for the process's life: closing it early would tell the service its
+    /// parent is gone while the app is running fine.
+    private var parentPipe: Pipe?
     public private(set) var running = false
 
     public init() {
@@ -84,6 +87,17 @@ public final class Sidecar {
         let log = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
         process.standardOutput = log
         process.standardError = log
+        // The service watches its stdin for parent death. This pipe's write end
+        // closes when the app dies — by quit, by `kill`, by SIGKILL — the read
+        // EOFs, and the service shuts itself down.
+        //
+        // Without it, a killed app leaves its service bound to a socket named
+        // after the dead app's pid: invisible in the next launch's logs, and
+        // every relaunch adds another. Four of them had accumulated on this
+        // machine before this line existed.
+        let stdinPipe = Pipe()
+        self.parentPipe = stdinPipe
+        process.standardInput = stdinPipe
 
         try process.run()
         running = true
@@ -108,6 +122,10 @@ public final class Sidecar {
         // A SIGTERM'd service cancels its run and closes the provider; waiting
         // here is the app's own teardown, not the user's problem.
         process.waitUntilExit()
+        // Release the write end last: the service's own shutdown path may
+        // already be running from the EOF.
+        parentPipe?.fileHandleForWriting.closeFile()
+        parentPipe = nil
         running = false
     }
 }

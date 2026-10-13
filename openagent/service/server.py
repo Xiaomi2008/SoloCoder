@@ -22,8 +22,13 @@ because each one is a bug that was paid for:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
+import os
+import stat
+import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -343,6 +348,49 @@ class AgentService:
         path = Path(self.settings.socket_path)
         if path.exists():
             path.unlink(missing_ok=True)
+
+    def install_stdin_watchdog(self) -> bool:
+        """Shut down when the parent's stdin closes.
+
+        A sidecar that outlives its app is the failure mode this prevents. The
+        app is killed, the service keeps serving on a socket whose path is
+        derived from the dead app's pid, and the next launch starts a second
+        service — the orphans accumulate, invisible in the new launch's logs.
+        Quitting through AppKit covers a normal quit; ``kill`` posts no
+        notification, and SIGKILL posts nothing at all.
+
+        The parent keeps a pipe open on our stdin. When it dies — by any means,
+        including SIGKILL — the kernel closes its write end, this read returns
+        EOF, and we stop. It is the one parent-death signal that cannot be
+        missed, and it needs no cooperation from the parent beyond holding the
+        pipe.
+
+        Returns False when stdin is not a pipe: a terminal is (typing there
+        would be swallowed by this reader) and ``/dev/null`` is (it reports EOF
+        at once, which would kill a service started that way).
+        """
+        try:
+            mode = os.fstat(0).st_mode
+        except OSError:
+            return False
+        if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)):
+            return False
+
+        loop = asyncio.get_running_loop()
+
+        def watch() -> None:
+            while True:
+                try:
+                    if os.read(0, 4096) == b"":
+                        break
+                except OSError:
+                    break
+            logger.info("stdin closed — parent is gone, shutting down")
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.stop()))
+
+        threading.Thread(target=watch, name="stdin-watchdog", daemon=True).start()
+        return True
 
     async def serve_forever(self) -> None:
         if self._server is None:

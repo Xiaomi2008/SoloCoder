@@ -101,6 +101,10 @@ async def handle_serve(args: argparse.Namespace) -> int:
         computer_use=args.computer_use,
     )
     service = await serve(settings)
+    # A sidecar whose app was killed must not keep serving. The parent holds a
+    # pipe open on our stdin; when it dies the read EOFs and the service stops.
+    if service.install_stdin_watchdog():
+        print(dim("watching stdin for parent death"), flush=True)
     if not args.quiet:
         tools = service._tools()
         print(f"{bold('openagent')} service listening on {cyan(str(settings.socket_path))}")

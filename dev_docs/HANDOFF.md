@@ -9,11 +9,46 @@ own service and drives real runs. What is left in Phase 3 is packaging: a frozen
 sidecar binary inside a `.app`.
 
 - Branch: `feat/computer-use-macos`
-- Python suite: **569 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **165 checks passed** (`swift run agent-checks`), **180** with
+- Python suite: **571 passed** (`.venv/bin/python -m pytest tests -q`)
+- Swift suite: **171 checks passed** (`swift run agent-checks`), **186** with
   `AGENT_REPO_ROOT` + `AGENT_LIVE_MODEL` (a real streamed run, and the app model
   doing two runs on one connection with a real model)
 - Working tree: clean
+
+## Phase 3b+: the app on screen, and why the stream felt slow
+
+The app was invisible: a SwiftPM executable launched from a shell starts
+`.prohibited` — no Dock tile, no menu bar, window behind everything.
+`setActivationPolicy(.regular)` in `applicationDidFinishLaunching` fixes it. The
+enum is `0=regular, 1=accessory, 2=prohibited`, the reverse of what the numbers
+suggest.
+
+The streamed answer felt slow. Measured, in order of size:
+
+| What | Cost |
+|---|---|
+| Model first token (`lan/swift-1.5-iq3_s`) | 18–97 ms |
+| Model generation | 8–60 tok/s |
+| One turn, real request shape | 1.4–4.4 s |
+| Real request shape | 8,461-char system prompt + 19 tool schemas ≈ 18k chars, re-sent every turn |
+| Folding one event into `Transcript` | 6.5 µs |
+| One published write | a SwiftUI invalidation of every view observing `AppModel` |
+
+The model streams ~1.5 characters per chunk, so a 2k-character answer is ~1300
+deltas, and each one invalidated the whole view graph — toolbar, model picker,
+session menu, every visible line — while a selectable streaming `Text` rebuilt
+its text-kit view per character. Fixed by buffering deltas and publishing on a
+60 ms cadence (200 deltas → 4 publishes, checked), making each row its own
+`Equatable` view, and turning text selection off mid-stream
+(`TranscriptLine.streaming`). `swift run ui-cost` reproduces the fold numbers.
+
+The sidecar no longer outlives the app. Four orphaned services had accumulated
+from killed app instances: `willTerminateNotification` does not fire on `kill`,
+and nothing fires on SIGKILL. `Sidecar` now hands the service a pipe on stdin and
+`AgentService.install_stdin_watchdog()` exits on EOF — the one parent-death
+signal that cannot be missed. Verified: `kill -9` the app, the sidecar exits and
+unlinks its socket. `/dev/null` stdin is not a parent (checked), so a detached
+service still starts.
 
 ## What Phase 2 built
 
@@ -124,6 +159,18 @@ one-line preview, the permission sheet's argument rendering, scrolling behaviour
 and what a long session does to a `LazyVStack`.
 
 ## Things to know (verified the hard way)
+
+- **A `body` containing a `switch` must live in the struct, not an extension.**
+  The result-builder transform is applied to a `body` in the type's own
+  declaration only; in an extension the branches fail to unify ("branches have
+  mismatching types", for branches that are all `View`s).
+- **A published write is the unit of SwiftUI work, not a state change.** Folding
+  a delta costs 6.5 µs; publishing it costs a view-graph re-render. Buffer the
+  flood and publish on a cadence.
+- **A selectable `Text` cannot be laid out incrementally.** Text selection is
+  off while a line streams.
+- **A killed app leaves its sidecar** unless the service watches stdin. Socket
+  paths are pid-derived, so the orphan is invisible in the next launch's logs.
 
 - **`ConfigManager.get_config_path()` respects `XDG_CONFIG_HOME`** — tests that
   touch config/auth must isolate `HOME` *and* `XDG_CONFIG_HOME`, and must not
