@@ -169,3 +169,8 @@ streamlit.log
 # Logs
 *.log
 logs/
+
+# Swift package manager (macapp/AgentClient)
+.build/
+.swiftpm/
+*.xcodeproj

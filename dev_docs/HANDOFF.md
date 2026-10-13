@@ -2,12 +2,15 @@
 
 ## Where we are
 
-**Phase 2 complete on the Python side.** The agent service, its wire protocol,
-the client, the CLI entry points, and the contract tests are done and green;
-the next piece is the Swift `AgentClient` package.
+**Phase 2 complete — Python service *and* Swift client.** The agent service, its
+wire protocol, the Python client, the CLI entry points, the Swift `AgentClient`
+package and the contract tests on both sides are done and green. The next piece
+is the Phase 3 SwiftUI app shell on top of `AgentClient`.
 
 - Branch: `feat/computer-use-macos`
-- Test suite: **551 passed** (`.venv/bin/python -m pytest tests -q`)
+- Python suite: **569 passed** (`.venv/bin/python -m pytest tests -q`)
+- Swift suite: **102 checks passed** (`swift run agent-checks`), **107** with
+  `AGENT_LIVE_MODEL` set (the live run adds five)
 - Working tree: clean
 
 ## What Phase 2 built
@@ -25,13 +28,29 @@ the next piece is the Swift `AgentClient` package.
 | `openagent/runtime/permissions.py` | Risk classification + gates (`AllowAll`, `ReadOnly`, `Risk` with once/session/never scopes). Unknown tools classify as exec — fail closed. |
 | `openagent/runtime/events.py` | Added `permission_requested`, `permission_resolved` (with `reason`), `AgentResult.stop_reason`. |
 | `tests/support/streaming_provider.py` | `ScriptedStreamProvider` (turn scripts, tool calls, mid-stream failure, hang) and `HangingProvider`. |
-| `tests/service/` | 33 contract tests over a **real socket** + fixtures for the Swift package. |
+| `tests/service/` | 81 contract tests over a **real socket**, plus fixtures for the Swift package. |
 | `scripts/smoke_service.py` | End-to-end smoke over a real socket, sandboxed HOME. |
 | `scripts/gen_protocol_fixtures.py` | Regenerates `tests/service/fixtures/{protocol,events}.json` from the Python types. |
 
+## What Phase 2c built — the Swift client
+
+| File | What it is |
+|---|---|
+| `macapp/AgentClient/Sources/AgentClient/Wire.swift` | Envelope, NDJSON `FrameDecoder` (8 MiB cap), `ErrorCode`, `JSONValue` (the only place that touches `Any`), the shared `convertFromSnakeCase` decoder. |
+| `macapp/AgentClient/Sources/AgentClient/AgentEvent.swift` | Every event type 1:1 with the Python dataclasses, `.unknown` for events this client has never heard of. |
+| `macapp/AgentClient/Sources/AgentClient/AgentServiceClient.swift` | Actor over `AF_UNIX`: handshake, request/response futures, event stream, `startRun`, `respondPermission`, model/tool/session/auth/config calls. |
+| `macapp/AgentClient/Sources/AgentClient/ContractFixtures.swift` | Loads `tests/service/fixtures/*.json` — the fixtures the Python side generates. |
+| `macapp/AgentClient/Sources/AgentClientChecks/` | `swift run agent-checks`: the contract suite that runs without Xcode. Spawns the real service and drives it. |
+| `macapp/AgentClient/Tests/AgentClientTests/` | The same assertions as a Swift Testing suite, for when the package is opened in Xcode. |
+| `macapp/README.md` | How to run it, what it covers, and the traps. |
+
 ### Gates passed
 
-- `pytest tests -q` → 551 passed.
+- `pytest tests -q` → 569 passed.
+- `swift run agent-checks` → **102 checks passed**; with
+  `AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s` → **107**, including a real streamed run
+  (tool call, ~130 deltas, `run_completed`) driven by the Swift client over a
+  real Unix socket against a service the suite spawned.
 - `scripts/smoke_service.py` → `SMOKE OK` (handshake, run, permission round-trip,
   tool execution, streamed deltas, session persistence, reconnect).
 - **Real model, real socket** (`lan/swift-1.5-iq3_s` @ 192.168.4.34:8080):
@@ -54,31 +73,31 @@ the next piece is the Swift `AgentClient` package.
 
 ```bash
 cd /Users/taozeng/Projects/SoloCoder
-.venv/bin/python -m pytest tests -q                 # 551 passed
+.venv/bin/python -m pytest tests -q                 # 569 passed
 .venv/bin/python scripts/smoke_service.py           # SMOKE OK
 .venv/bin/python cli_coder.py serve --socket /tmp/oa/e2e.sock
 .venv/bin/python cli_coder.py tui --socket /tmp/oa/e2e.sock \
     -p "…" -w /tmp/oa/demo -m lan/swift-1.5-iq3_s --permission-mode ask
 .venv/bin/python cli_coder.py models list --discover
 .venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
+
+cd macapp/AgentClient
+swift run agent-checks                              # 102 checks passed
+AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s swift run agent-checks   # + a real model run
 ```
-
-## Next: Phase 2b — the Swift `AgentClient`
-
-1. `macapp/AgentClient/` as a SwiftPM package (no Xcode project yet).
-2. `AgentEvent` as a Swift enum mirroring `protocol.py`'s event registry 1:1;
-   decode the fixtures in `tests/service/fixtures/events.json` in a Swift test —
-   the fixtures are generated from the Python types, so a drift fails a test.
-3. NDJSON framing over `NWConnection`/`FileHandle` on the Unix socket, JSON-RPC
-   envelope, `convertFromSnakeCase` (wire fields are snake_case by design).
-4. Shared contract tests: the Swift suite spawns `python -m openagent.service.cli serve`
-   on a temp socket and drives the same scenarios as `tests/service/test_server.py`.
 
 ## Next: Phase 3 — app shell
 
 Chat view over the event stream, tool timeline, permission sheet (the
 `permission_requested` → `permission.respond` round-trip), model picker
 (`model.list` / `model.select`), session browser (`session.list` / `session.load`).
+
+Start from `AgentServiceClient` behind an `ObservableObject` view model:
+`events()` is the single stream the UI renders and `respondPermission` is the
+single thing a sheet must call. The service ships as a sidecar binary
+(PyInstaller) inside the `.app` — that is the packaging work Phase 3 has to
+finish, and it is where the socket path, the sandbox container and the
+launch/teardown lifecycle get decided.
 
 ## Things to know (verified the hard way)
 
@@ -123,11 +142,42 @@ Chat view over the event stream, tool timeline, permission sheet (the
   macOS Keychain, model `lan/swift-1.5-iq3_s` (tool-capable, 32k ctx).
 - **`auth status` / `models list` are the state checks.** No API keys, no
   subscription sign-ins; `lan` is the only registered server.
+- **`swift test` needs Xcode.** XCTest and Swift Testing ship inside
+  `Xcode.app`; a Command Line Tools install has the compiler and not the test
+  libraries, so `swift test` cannot build a suite here. `swift run agent-checks`
+  is the gate that runs everywhere, and `Tests/AgentClientTests/` mirrors it for
+  the day the package lands in Xcode.
+- **`NSNumber` bridges to `Bool` for 1 and 0.** A JSON `1` answers `as? Bool`
+  and becomes `true` — that turned `protocol_version` into a flag. Booleans are
+  identified by identity against the `kCFBoolean` singletons before any numeric
+  cast, in `JSONValue.fromJSON`, the only function allowed to see `Any`.
+- **Every wire decoder uses `.convertFromSnakeCase`; `AgentEvent` does not.**
+  The wire is snake_case by design, so result structs are camelCase. Event
+  payloads are `JSONValue` dictionaries whose keys are snake_case literals — the
+  strategy would rewrite them.
+- **Raw values are wire literals.** `PermissionMode.allowReadonly` must be
+  `"allow_readonly"`. `JSONEncoder` emits the raw value, and the server answers
+  `permission_mode must be one of allow_all, allow_readonly, ask`. The live
+  check caught this; a unit test against the fixtures would not have.
+- **`config.get` takes `keys` (a list) and answers `{"config": {…}}`**, narrowed
+  to the sections asked for; `config.set` takes `values` and only accepts
+  `policy`, `default_model`, `roles`, `provider`. Credentials are not settable
+  over the socket — they go through the CLI, where a human types them.
+- **Session saves are atomic.** `sessions.save` serializes to a sibling temp file
+  and `os.replace`s it. A plain `write_text` truncates first, so a SIGTERM
+  mid-write replaces a conversation with an empty file — one was found on disk,
+  written by a suite that kills its own server. Pinned by
+  `tests/service/test_sessions.py::test_a_save_killed_midwrite_leaves_the_previous_session_intact`.
+- **`AGENT_LIVE_MODEL` opts out of the sandboxed `HOME`.** A real run routes to
+  the developer's model servers, whose config and Keychain keys live in the real
+  `HOME`; a sandboxed one has nothing to route to, and the run writes a session
+  into `~/.openagent/sessions`.
 
 ## Git
 
 Ahead of `origin/feat/computer-use-macos` by the phase 0–2 commits (nothing
 pushed), newest first:
+`phase2c: Swift AgentClient — protocol codec, framing, live contract checks`,
 `phase2b: Unix-socket agent service, client, CLI, contract tests`,
 `phase2a: wire protocol + streaming tool loop (AgentRunner)`,
 `phase1+: working_dir was decorative — tools wrote into the process CWD`,

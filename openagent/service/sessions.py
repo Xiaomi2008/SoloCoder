@@ -13,6 +13,7 @@ becomes a "session".
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -51,9 +52,27 @@ def path_for(session_id: str) -> Path:
 
 
 def save(session: Session, session_id: str, *, path: str | Path | None = None) -> Path:
+    """Write the session so a kill in the middle of it costs nothing.
+
+    The service saves after every run, and a sidecar gets killed — by the app
+    quitting, by `stop()`, by the machine sleeping through a disk flush. A plain
+    `write_text` truncates the file first, so a kill mid-write leaves a
+    half-written (often empty) file where a conversation used to be; that is the
+    one thing this module promises not to lose.
+
+    So: serialize to a sibling temp file, then `os.replace`, which is atomic
+    within a filesystem. The reader sees the old session or the new one, never a
+    prefix of it.
+    """
     target = Path(path).expanduser() if path else path_for(session_id)
     target.parent.mkdir(parents=True, exist_ok=True)
-    session.save(target)
+    tmp = target.with_name(f".{target.name}.tmp")
+    try:
+        session.save(tmp)
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return target
 
 
