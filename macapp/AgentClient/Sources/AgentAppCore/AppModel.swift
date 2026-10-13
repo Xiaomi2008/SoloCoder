@@ -34,6 +34,11 @@ public final class AppModel: ObservableObject {
     @Published public var selectedModel = ""
     @Published public var workingDir = ""
     @Published public var permissionMode: PermissionMode = .ask
+    /// How much the model may think before answering. `nil` means "model
+    /// decides", which sends nothing — and on a reasoning model that default is
+    /// the slow path: measured at ~10s to the first answer character, and in one
+    /// run 686,439 characters of private reasoning with no answer at all.
+    @Published public var reasoningEffort: ReasoningEffort? = nil
     @Published public var status = "not connected"
     @Published public var busy = false
     @Published public var connected = false
@@ -219,7 +224,8 @@ public final class AppModel: ObservableObject {
                     workingDir: workingDir,
                     model: selectedModel.isEmpty ? nil : selectedModel,
                     sessionId: sessionId,
-                    permissionMode: permissionMode
+                    permissionMode: permissionMode,
+                    reasoningEffort: reasoningEffort
                 )
                 sessionId = started.sessionId
                 transcript.beginRun(runId: started.runId)

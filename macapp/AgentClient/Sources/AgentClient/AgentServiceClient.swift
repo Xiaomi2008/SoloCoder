@@ -254,6 +254,31 @@ public struct ModelProbe: Decodable, Sendable, Equatable {
 /// The raw values are the wire literals, spelled the server's way
 /// (`allow_readonly`, underscore and all). `JSONEncoder` emits the raw value,
 /// so a camelCase rawValue here is a run that never starts.
+/// How much the model may think before answering. The raw values are wire
+/// literals, sent to the provider as `reasoning_effort`.
+///
+/// Sending nothing (the app's "model decides") leaves the server's default
+/// alone, and that default is worth knowing about: measured on one reasoning
+/// model it spent 686,439 characters on private reasoning and produced no answer
+/// at all, while `none` answered in 1.1 seconds.
+public enum ReasoningEffort: String, Sendable, CaseIterable {
+    case none = "none"
+    case minimal = "minimal"
+    case low = "low"
+    case medium = "medium"
+    case high = "high"
+
+    public var label: String {
+        switch self {
+        case .none: "off"
+        case .minimal: "minimal"
+        case .low: "low"
+        case .medium: "medium"
+        case .high: "high"
+        }
+    }
+}
+
 public enum PermissionMode: String, Sendable, CaseIterable {
     /// Prompt for every risky tool. The default, and the only mode where
     /// `permission_requested` arrives.
@@ -403,7 +428,8 @@ public actor AgentServiceClient {
         sessionId: String? = nil,
         maxTurns: Int? = nil,
         permissionMode: PermissionMode = .ask,
-        images: [String] = []
+        images: [String] = [],
+        reasoningEffort: ReasoningEffort? = nil
     ) async throws -> RunStartResult {
         var params: [String: JSONValue] = [
             "prompt": .string(prompt),
@@ -414,6 +440,7 @@ public actor AgentServiceClient {
         if let sessionId { params["session_id"] = .string(sessionId) }
         if let maxTurns { params["max_turns"] = .int(maxTurns) }
         if !images.isEmpty { params["images"] = .array(images.map(JSONValue.string)) }
+        if let reasoningEffort { params["reasoning_effort"] = .string(reasoningEffort.rawValue) }
 
         let result = try await call("run.start", params: .object(params))
         return try decode(RunStartResult.self, from: result)

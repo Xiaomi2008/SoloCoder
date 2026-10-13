@@ -9,8 +9,8 @@ own service and drives real runs. What is left in Phase 3 is packaging: a frozen
 sidecar binary inside a `.app`.
 
 - Branch: `feat/computer-use-macos`
-- Python suite: **571 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **171 checks passed** (`swift run agent-checks`), **186** with
+- Python suite: **575 passed** (`.venv/bin/python -m pytest tests -q`)
+- Swift suite: **186 checks passed** (`swift run agent-checks`), **196** with
   `AGENT_REPO_ROOT` + `AGENT_LIVE_MODEL` (a real streamed run, and the app model
   doing two runs on one connection with a real model)
 - Working tree: clean
@@ -49,6 +49,31 @@ and nothing fires on SIGKILL. `Sidecar` now hands the service a pipe on stdin an
 signal that cannot be missed. Verified: `kill -9` the app, the sidecar exits and
 unlinks its socket. `/dev/null` stdin is not a parent (checked), so a detached
 service still starts.
+
+## Phase 3c+: the ten seconds of nothing
+
+"TG feels slow" was not generation speed. Measured on `swift-1.5-iq3_s` over the
+LAN server: first reasoning token at 55–311 ms, **first answer character at
+9.5–10.5 s**, ~7,500 chars of private reasoning before ~1,300 chars of answer,
+and 150–330 tok/s once the answer starts — matching the server's own benchmark.
+The provider read only `delta.content`, so the app showed a frozen spinner for
+the whole thinking phase. One default run produced **686,439 characters of
+reasoning and no answer at all**.
+
+- `ProviderReasoningDelta` → runtime `reasoning_delta` → protocol event →
+  `ReasoningLine` in the timeline: open while streaming, collapsed when the
+  answer starts, never joined to the answer, never sent back to the model.
+- `run.start` takes `reasoning_effort` (`none|minimal|low|medium|high`), per-run,
+  applied to every turn; the toolbar exposes it. `none` answers in 1.1 s.
+- The drift test caught the new event being registered in the protocol but
+  missing from the `RuntimeEvent` union; the Swift checks caught it missing from
+  `Wire.eventTypes` and from the handshake comparison. Each of those is a
+  cross-language contract check doing its job.
+
+Publishes in a real tool loop run ~50/s, not the 17/s the 60 ms cadence implies:
+every non-delta event flushes the delta buffer to preserve order, and a tool loop
+is mostly non-delta events. The synthetic 200-deltas-→-4-publishes number is the
+no-interleaving case.
 
 ## What Phase 2 built
 

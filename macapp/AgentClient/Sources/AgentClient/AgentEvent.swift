@@ -18,6 +18,7 @@ public enum AgentEvent: Sendable, Equatable {
     case runStarted(RunStarted)
     case messageStarted(MessageStarted)
     case messageDelta(MessageDelta)
+    case reasoningDelta(ReasoningDelta)
     case messageCompleted(MessageCompleted)
     case messageFailed(MessageFailed)
     case toolCallStarted(ToolCallStarted)
@@ -38,6 +39,7 @@ public enum AgentEvent: Sendable, Equatable {
         case .runStarted: "run_started"
         case .messageStarted: "message_started"
         case .messageDelta: "message_delta"
+        case .reasoningDelta: "reasoning_delta"
         case .messageCompleted: "message_completed"
         case .messageFailed: "message_failed"
         case .toolCallStarted: "tool_call_started"
@@ -62,6 +64,7 @@ public enum AgentEvent: Sendable, Equatable {
         case .runStarted(let e): e.runId
         case .messageStarted(let e): e.runId
         case .messageDelta(let e): e.runId
+        case .reasoningDelta(let e): e.runId
         case .messageCompleted(let e): e.runId
         case .messageFailed(let e): e.runId
         case .toolCallStarted(let e): e.runId
@@ -97,6 +100,7 @@ public enum AgentEvent: Sendable, Equatable {
         case "run_started": .runStarted(try decoder.decode(RunStarted.self, from: data))
         case "message_started": .messageStarted(try decoder.decode(MessageStarted.self, from: data))
         case "message_delta": .messageDelta(try decoder.decode(MessageDelta.self, from: data))
+        case "reasoning_delta": .reasoningDelta(try decoder.decode(ReasoningDelta.self, from: data))
         case "message_completed": .messageCompleted(try decoder.decode(MessageCompleted.self, from: data))
         case "message_failed": .messageFailed(try decoder.decode(MessageFailed.self, from: data))
         case "tool_call_started": .toolCallStarted(try decoder.decode(ToolCallStarted.self, from: data))
@@ -143,6 +147,17 @@ public struct MessageStarted: Decodable, Sendable, Equatable {
 }
 
 public struct MessageDelta: Decodable, Sendable, Equatable {
+    public let runId: String
+    public let messageId: String
+    public let delta: String
+}
+
+/// The model's private thinking, streamed before the answer.
+///
+/// Not part of the answer and never part of history. A client that drops it
+/// shows a spinner that has not moved for ten seconds — measured on a reasoning
+/// model, ~1,900 reasoning tokens arrive before the first answer character.
+public struct ReasoningDelta: Decodable, Sendable, Equatable {
     public let runId: String
     public let messageId: String
     public let delta: String

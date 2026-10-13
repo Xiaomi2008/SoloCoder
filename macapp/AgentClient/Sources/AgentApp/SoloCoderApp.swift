@@ -292,6 +292,8 @@ struct LineView: View {
             UserLine(text: text)
         case .assistant(let text):
             AssistantLine(text: text, streaming: line.streaming)
+        case .reasoning(let text):
+            ReasoningLine(text: text, streaming: line.streaming)
         case .messageFailed(let error):
             FailedLine(error: error)
         case .tool(let row):
@@ -318,6 +320,59 @@ struct UserLine: View {
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .trailing)
             .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// The model thinking out loud, as progress.
+///
+/// Open while it streams — ten seconds of a spinner that has not moved reads as
+/// a hang, and this is the ten seconds. Collapsed once the answer starts, so it
+/// does not push the reply off screen. Subdued because it is not the answer:
+/// the model never sees it again, and the user is not reading a result.
+struct ReasoningLine: View {
+    let text: String
+    let streaming: Bool
+
+    @State private var expanded: Bool?
+
+    private var open: Bool { expanded ?? streaming }
+
+    /// Not selectable while it streams: a selectable `Text` rebuilds its
+    /// text-kit view on every character. A ternary cannot express this —
+    /// `.enabled` and `.disabled` are different types.
+    @ViewBuilder
+    private var reasoningText: some View {
+        if streaming {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
+        } else {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
+        }
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: Binding(
+            get: { open },
+            set: { expanded = $0 }
+        )) {
+            reasoningText
+        } label: {
+            HStack(spacing: 6) {
+                if streaming { ProgressView().controlSize(.mini) }
+                Text(streaming ? "thinking…" : "thought for a moment")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .tint(.secondary)
     }
 }
 

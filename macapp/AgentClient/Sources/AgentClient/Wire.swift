@@ -29,7 +29,7 @@ public enum Wire {
 
     public static let eventTypes: Set<String> = [
         "run_started",
-        "message_started", "message_delta", "message_completed", "message_failed",
+        "message_started", "message_delta", "reasoning_delta", "message_completed", "message_failed",
         "tool_call_started", "tool_call_completed", "tool_call_failed",
         "permission_requested", "permission_resolved",
         "context_compaction_started", "context_compaction_completed", "context_compaction_failed",

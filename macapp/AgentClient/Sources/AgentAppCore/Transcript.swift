@@ -83,6 +83,14 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case user(String)
         case assistant(String)
+        /// The model's private thinking, shown as progress.
+        ///
+        /// Kept apart from `assistant` on purpose: it is not the answer, it
+        /// never joins the answer's text, and it is never sent back to the
+        /// model. Measured on a reasoning model, ~1,900 reasoning tokens arrive
+        /// before the first answer character — a client that drops this shows a
+        /// spinner that has not moved for ten seconds.
+        case reasoning(String)
         case messageFailed(String)
         case tool(ToolCallRow)
         case permission(PermissionOutcome)
@@ -215,6 +223,29 @@ public struct Transcript: Equatable, Sendable {
             )
             state = .streaming
 
+        case .reasoningDelta(let e):
+            if let index = lines.lastIndex(where: { $0.messageId == e.messageId && isReasoning($0.kind) }) {
+                if case .reasoning(let text) = lines[index].kind {
+                    lines[index].kind = .reasoning(text + e.delta)
+                }
+            } else {
+                let line = TranscriptLine(
+                    id: "\(e.messageId)·thinking",
+                    kind: .reasoning(e.delta),
+                    messageId: e.messageId,
+                    streaming: true
+                )
+                // Above the answer it belongs to. `message_started` has already
+                // appended the assistant line, so appending here would put the
+                // thinking underneath the reply it produced.
+                if let answer = indexOfMessage(e.messageId) {
+                    lines.insert(line, at: answer)
+                } else {
+                    lines.append(line)
+                }
+            }
+            state = .streaming
+
         case .messageDelta(let e):
             guard let index = indexOfMessage(e.messageId) else {
                 // A delta for a message that never started: render it, do not
@@ -228,8 +259,12 @@ public struct Transcript: Equatable, Sendable {
             if case .assistant(let text) = lines[index].kind {
                 lines[index].kind = .assistant(text + e.delta)
             }
+            // The answer has started: the thinking that produced it is finished,
+            // and the view collapses it.
+            closeReasoning(for: e.messageId)
 
         case .messageCompleted(let e):
+            closeReasoning(for: e.messageId)
             // Authoritative. Deltas are the progress; this is the answer.
             let line = TranscriptLine(id: e.messageId, kind: .assistant(e.outputText), messageId: e.messageId)
             if let index = indexOfMessage(e.messageId) {
@@ -372,6 +407,16 @@ public struct Transcript: Equatable, Sendable {
 
     private func indexOfMessage(_ messageId: String) -> Int? {
         lines.lastIndex { $0.messageId == messageId && isAssistant($0.kind) }
+    }
+
+    private func isReasoning(_ kind: TranscriptLine.Kind) -> Bool {
+        if case .reasoning = kind { return true }
+        return false
+    }
+
+    private mutating func closeReasoning(for messageId: String) {
+        guard let index = lines.lastIndex(where: { $0.messageId == messageId && isReasoning($0.kind) }) else { return }
+        lines[index].streaming = false
     }
 
     private func indexOfTool(_ toolCallId: String) -> Int? {

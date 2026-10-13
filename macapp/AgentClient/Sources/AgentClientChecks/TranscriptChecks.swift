@@ -32,8 +32,54 @@ private func notes(_ transcript: Transcript) -> [String] {
     transcript.lines.compactMap { if case .note(let text) = $0.kind { return text } else { return nil } }
 }
 
+private func thinkingIndexOrMax(_ transcript: Transcript) -> Int {
+    transcript.lines.firstIndex { if case .reasoning = $0.kind { return true } else { return false } } ?? .max
+}
+
 func transcriptChecks(_ checks: Checks) throws {
     print("transcript")
+
+    // MARK: the model thinking before it answers
+
+    let thinking = try fold([
+        ev(#"{"type":"run_started","run_id":"r1"}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        ev(#"{"type":"reasoning_delta","run_id":"r1","message_id":"m1","delta":"The user wants "}"#),
+        ev(#"{"type":"reasoning_delta","run_id":"r1","message_id":"m1","delta":"a list. I will glob."}"#),
+        ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"Here "}"#),
+        ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"are they."}"#),
+        ev(#"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":"Here are they."}"#),
+        ev(#"{"type":"run_completed","run_id":"r1","final_message_id":"m1","result":{"run_id":"r1","final_message_id":"m1","output_text":"Here are they.","stop_reason":"end_turn"}}"#),
+    ])
+    let reasoning = thinking.lines.compactMap { if case .reasoning(let text) = $0.kind { return text } else { return nil } }
+    checks.expect(reasoning == ["The user wants a list. I will glob."], "the thinking is visible, in order, as one line")
+    checks.expect(
+        assistantText(thinking) == ["Here are they."],
+        "the thinking never joins the answer — the model is not shown its own reasoning"
+    )
+    checks.expect(thinking.finalText == "Here are they.", "finalText is the answer, not the thinking")
+    let thinkingLine = thinking.lines.first { if case .reasoning = $0.kind { return true } else { return false } }
+    checks.expect(thinkingLine?.streaming == false, "the thinking closes once the answer starts, so the view collapses it")
+    let answerIndex = thinking.lines.firstIndex { if case .assistant = $0.kind { return true } else { return false } }!
+    let thinkingIndex = thinkingIndexOrMax(thinking)
+    checks.expect(thinkingIndex < answerIndex, "the thinking sits above the answer it produced, not below it")
+
+    // A run that thinks and never answers: the thinking must stay on screen,
+    // because that is the only evidence the user has that the run is alive.
+    let onlyThinking = try fold([
+        ev(#"{"type":"run_started","run_id":"r1"}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        ev(#"{"type":"reasoning_delta","run_id":"r1","message_id":"m1","delta":"thinking and thinking"}"#),
+        ev(#"{"type":"run_cancelled","run_id":"r1","reason":"cancelled"}"#),
+    ])
+    checks.expect(
+        onlyThinking.lines.contains { if case .reasoning(let t) = $0.kind { return t == "thinking and thinking" } else { return false } },
+        "a run that only thinks still shows what it thought"
+    )
+    checks.expect(
+        onlyThinking.lines.first(where: { $0.messageId == "m1" && $0.streaming })?.kind != nil,
+        "and it stays open, because nothing closed it"
+    )
 
     // MARK: the documented sequence
 

@@ -171,6 +171,11 @@ func appChecks(_ checks: Checks) async {
     if let modelKey = liveModel, !modelKey.isEmpty {
         model.selectedModel = modelKey
         model.permissionMode = .allowReadonly
+        // The knob the ten-seconds-of-nothing is about. A reasoning model's
+        // server default spent ~10s on private thinking before the first answer
+        // character, and in one run 686,439 characters of it with no answer at
+        // all; "none" answers in ~1s. The app has to be able to ask for that.
+        model.reasoningEffort = .none
         // Wall clock and publishes for a real streamed answer: the number that
         // says what the user waits for, and the number that says what the UI
         // does while they wait.

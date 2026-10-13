@@ -106,6 +106,31 @@ sheet driven by `permission_requested`, a model picker from `model.list`, and a
 session browser from `session.list` / `session.load`. Choose a working directory
 from the toolbar — a run needs one, and the app refuses to send without it.
 
+## The ten seconds of nothing
+
+A reasoning model thinks before it answers, and the thinking arrives on the
+wire. Measured on `swift-1.5-iq3_s` over the LAN server:
+
+| | |
+|---|---|
+| First reasoning token | 55–311 ms |
+| **First answer character** | **9.5–10.5 s** |
+| Reasoning streamed | ~7,500 chars (≈1,900 tokens) |
+| Answer streamed | ~1,300 chars (≈330 tokens) |
+| Generation rate once answering | 150–330 tok/s |
+
+The provider used to read only `delta.content`, so the user watched a spinner
+that had not moved for ten seconds. Two changes:
+
+- **`reasoning_delta` is an event.** Provider → runtime → protocol → a
+  `ReasoningLine` in the timeline, open while it streams and collapsed once the
+  answer starts. It is progress, never history: the model is not shown its own
+  reasoning, and a test pins that.
+- **The toolbar has a Thinking picker** (`model decides` / off / minimal / low /
+  medium / high), sent as `run.start`'s `reasoning_effort`. The server default is
+  the slow path: one run produced **686,439 characters of private reasoning and
+  no answer at all**, while `none` answered in **1.1 s**.
+
 ## Why a streamed answer feels slow (measured, not guessed)
 
 The model is not the bottleneck, and the UI was. Numbers from
