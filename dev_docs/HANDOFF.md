@@ -9,10 +9,10 @@ own service and drives real runs, and `scripts/build_app.sh` produces a signed
 119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
 inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`, 32 commits ahead of origin — the phase 0–3i
+- Branch: `feat/computer-use-macos`, 33 commits ahead of origin — the phase 0–3i
   commits plus the streaming and finished-answer bounds, nothing pushed
 - Python suite: **609 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **435 checks passed** (`swift run agent-checks`), **448** with
+- Swift suite: **438 checks passed** (`swift run agent-checks`), **451** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
   it; add
@@ -44,8 +44,8 @@ inside it. `scripts/package_check.sh` is the gate that says so.
 - A launch remembers its scope, its model, its permission mode and its thinking
   setting, and drops a remembered model the table no longer has — with a line
   saying so — and the model menu has a Refresh (phase 3i+)
-- Working tree: clean as of the launch-settings commit (2026-10-13).
-  `.build/app/SoloCoder.app` (120 MB) is three commits behind it — it ships
+- Working tree: clean as of the sidebar-naming commit (2026-10-13).
+  `.build/app/SoloCoder.app` (120 MB) is four commits behind it — it ships
   `session.delete` and the streaming bound, not the finished-answer bound, the
   remembered scope and settings, the in-window refusal or the prompt a refusal
   leaves behind;
@@ -519,6 +519,37 @@ Open defects, all seen on screen:
   LAN box shows up when the user asks for it, not when it appears.
 
 Gates: **419 checks** (`swift run agent-checks`), **432** with `AGENT_REPO_ROOT`.
+
+## Phase 3i+: the sidebar names the thing it resumed
+
+Bionic was opened again for the comparison, and the screen is worth writing down:
+the selected chat is a filled pill in the accent, white text, and the rows carry
+no ids, no timestamps and no message counts; the prompt is a right-aligned pill;
+the activity row is plain grey text — *Worked for 2m 50s ›*; the composer is a
+hairline card with the model pill, the mic and a filled circular send inside it,
+and "Context: 6.2K" under it. The composer card and the activity row are already
+this app's (phase 3h). Two deltas were.
+
+**The resume line quoted a 28-character id under a row the user clicked by
+name.** *"resumed sess_31cd4c9ed29e412e91adcf4f — the next run continues it"*
+confirms a thing the user never saw: they clicked "what is repo is about?".
+`AppModel.resumedNotice(sessionId:row:)` names the session the way the sidebar
+names it — `SessionTitle.label`, whose first answer is the title and whose last
+is the id — so a session with no title is still named by the string `--session`
+takes, and a session the sidebar has no row for falls back to the id.
+
+**The sidebar's selection pill is not the app's colour, and is not reachable.**
+The pill is the loudest element in a sidebar that is otherwise all text, and on a
+machine whose system accent is blue it is blue while every coloured thing this app
+draws is violet. `.tint(Theme.accent)` on the `List` leaves it blue; so does
+`.accentColor(Theme.accent)`. Left as the platform draws it — the same idiom
+Finder and Mail use, in the accent the user chose in System Settings. The dead
+modifiers are gone; the finding is the comment.
+
+Verified on screen: the line reads *"resumed what is repo is about? — the next run
+continues it"*, and the pill is blue on a blue machine.
+
+Gates: **438 checks** (`swift run agent-checks`), **451** with `AGENT_REPO_ROOT`.
 
 ## Phase 3i+: what a launch remembers
 

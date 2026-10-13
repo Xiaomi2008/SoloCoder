@@ -521,11 +521,28 @@ public final class AppModel: ObservableObject {
                 transcript = history
                 promptToAnswer = nil
                 busy = false
-                self.notice = "resumed \(record.sessionId) — the next run continues it"
+                self.notice = Self.resumedNotice(
+                    sessionId: record.sessionId,
+                    row: sessions.first { $0.sessionId == record.sessionId }
+                )
             } catch {
                 banner = Self.describe(error)
             }
         }
+    }
+
+    /// The line that confirms a resumed conversation.
+    ///
+    /// It names the session the way the sidebar names it — the sentence of its
+    /// title — because the user clicked a row they read as a name, and a line
+    /// quoting a 28-character string they never saw confirms a different thing
+    /// from the one they did. `SessionTitle.label` already falls back to the id
+    /// for a session with no title, so the id is the last answer, not the first.
+    /// `nonisolated`: it reads its two arguments and nothing else, so the check
+    /// suite can call it from outside the main actor.
+    nonisolated public static func resumedNotice(sessionId: String, row: SessionRow?) -> String {
+        if let row { return "resumed \(SessionTitle.label(row)) — the next run continues it" }
+        return "resumed \(sessionId) — the next run continues it"
     }
 
     /// Whether the app may offer to delete a session.

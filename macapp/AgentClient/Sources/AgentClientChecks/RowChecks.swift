@@ -380,4 +380,24 @@ func sessionChecks(_ checks: Checks) throws {
         SessionDeletion.isOffered("sess_live", openSessionId: nil, running: true),
         "a run on an unnamed new session does not lock a stored row"
     )
+
+    // The line that confirms a resume names the session the way the sidebar
+    // names it. It used to quote the id — "resumed sess_31cd4c9ed29e412e91adcf4f
+    // — the next run continues it" — under a row the user had just clicked by
+    // its title, which confirms a thing they never saw.
+    checks.equal(
+        AppModel.resumedNotice(sessionId: named.sessionId, row: named),
+        "resumed fix the flaky test in test_agent.py — the next run continues it",
+        "the line repeats the name the user clicked"
+    )
+    checks.equal(
+        AppModel.resumedNotice(sessionId: legacy.sessionId, row: legacy),
+        "resumed sess_legacy — the next run continues it",
+        "a session with no title is named by its id, the string `--session` takes"
+    )
+    checks.equal(
+        AppModel.resumedNotice(sessionId: "sess_not_in_the_sidebar", row: nil),
+        "resumed sess_not_in_the_sidebar — the next run continues it",
+        "a session the sidebar has no row for falls back to the id"
+    )
 }

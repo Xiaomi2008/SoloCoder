@@ -199,6 +199,12 @@ struct Sidebar: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            // The selection pill is the platform's, in the accent the user chose
+            // in System Settings, and it is not reachable from here: `tint` and
+            // `accentColor` on the List both leave it the system's blue on a
+            // machine set to blue. Left as the platform draws it — the same
+            // idiom Finder and Mail use, and the loudest element in a sidebar
+            // that is otherwise all text.
             .onChange(of: selection) { _, chosen in
                 guard let chosen, chosen != model.sessionId else { return }
                 model.open(chosen)
