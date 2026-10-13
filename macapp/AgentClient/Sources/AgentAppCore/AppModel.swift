@@ -37,7 +37,12 @@ public final class AppModel: ObservableObject {
     @Published public var status = "not connected"
     @Published public var busy = false
     @Published public var connected = false
+    /// An error to show. Kept separate from `notice`: an informational line
+    /// that pops a modal titled "the service said no" teaches the user that
+    /// alerts here are noise.
     @Published public var banner: String?
+    /// An informational line for the status bar.
+    @Published public var notice: String?
 
     public private(set) var sessionId: String?
     private let sidecar = Sidecar()
@@ -46,6 +51,14 @@ public final class AppModel: ObservableObject {
     private var terminalTypes: Set<String> = Wire.terminalEventTypes
 
     public init() {}
+
+    /// A non-bundled app has no Console entry that a developer finds quickly, so
+    /// the app's own story goes to stderr — which is where `swift run` and the
+    /// checks' log files already look.
+    private func log(_ message: String) {
+        let line = "[solocoder] \(Date()) \(message)\n"
+        if let data = line.data(using: .utf8) { FileHandle.standardError.write(data) }
+    }
 
     deinit {
         streamTask?.cancel()
@@ -85,12 +98,14 @@ public final class AppModel: ObservableObject {
                 connected = true
                 status = "\(info.server) \(info.serverVersion) · protocol \(info.protocolVersion)"
                 banner = nil
+                self.log("connected: \(self.status) socket=\(self.sidecar.socketPath)")
                 consume(await client.events())
                 await refreshModels()
                 await refreshSessions()
             } catch {
                 status = "not connected"
                 banner = Self.describe(error)
+                self.log("start failed: \(Self.describe(error))")
             }
         }
     }
@@ -141,11 +156,13 @@ public final class AppModel: ObservableObject {
                 sessionId = started.sessionId
                 transcript.beginRun(runId: started.runId)
                 banner = nil
+                self.log("run started: \(started.runId) model=\(started.model) session=\(started.sessionId)")
             } catch {
                 // The run never started, so no event will say so. Say it here.
                 transcript.failLocally(Self.describe(error))
                 busy = false
                 banner = Self.describe(error)
+                self.log("run.start refused: \(Self.describe(error))")
             }
         }
     }
@@ -194,9 +211,11 @@ public final class AppModel: ObservableObject {
             let list = try await client.models(discover: true)
             modelRows = list.models
             modelPolicy = list.policy
+            self.log("models: \(list.models.count) rows, policy=\(list.policy), selected=\(list.selected ?? "none")")
             if selectedModel.isEmpty { selectedModel = list.selected ?? list.defaultModel ?? "" }
         } catch {
             banner = Self.describe(error)
+            self.log("model.list failed: \(Self.describe(error))")
         }
     }
 
@@ -244,7 +263,7 @@ public final class AppModel: ObservableObject {
                 transcript = history
                 promptToAnswer = nil
                 busy = false
-                banner = "resumed \(record.sessionId) — the next run continues it"
+                self.notice = "resumed \(record.sessionId) — the next run continues it"
             } catch {
                 banner = Self.describe(error)
             }
