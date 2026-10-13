@@ -127,10 +127,16 @@ ERROR_NAMES: dict[int, str] = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass
 class RpcError(Exception):
     """An RPC error object. It is an Exception so a handler can ``raise`` it and
-    the dispatcher turns it into the error response; ``code`` is the contract."""
+    the dispatcher turns it into the error response; ``code`` is the contract.
+
+    Not frozen, deliberately: the interpreter assigns ``__traceback__`` to every
+    raised exception, and Python 3.14's ``contextlib`` does it explicitly on the
+    way out of ``asyncio.timeout`` / ``suppress``. A frozen exception raises
+    ``FrozenInstanceError`` from inside the exception handler.
+    """
 
     code: int
     message: str

@@ -118,7 +118,7 @@ and `run_id`.
 | `tool_call_completed` | `message_id`, `tool_call_id`, `tool_name`, `result` |
 | `tool_call_failed` | `message_id`, `tool_call_id`, `tool_name`, `error` |
 | `permission_requested` | `request_id`, `tool_name`, `arguments`, `reason` |
-| `permission_resolved` | `request_id`, `granted`, `scope` |
+| `permission_resolved` | `request_id`, `granted`, `scope`, `reason` |
 | `context_compaction_started` | `reason` |
 | `context_compaction_completed` | `reason` |
 | `context_compaction_failed` | `reason`, `error` |
@@ -148,7 +148,7 @@ Ordering guarantees the UI is written against:
    "params":{"request_id":"req_9f8","granted":true,"scope":"session"}}
 ← {"jsonrpc":"2.0","id":"c7","result":{"ok":true,"granted":true,"scope":"session"}}
 ← event  {"type":"permission_resolved","run_id":"run_ab12","request_id":"req_9f8",
-          "granted":true,"scope":"session"}
+          "granted":true,"scope":"session","reason":"approved by the user"}
 ← event  {"type":"tool_call_started", …}
 ```
 
@@ -159,6 +159,10 @@ The rules that make this safe:
   from the event.
 - The server **fails closed**: no `permission.respond` within
   `permission_timeout` (default 60 s) is a denial, and the reason says so.
+- `permission_resolved.reason` carries *why* the answer is what it is — the
+  user refused, a session grant was reused, nobody answered in time. "Denied"
+  and "denied because the prompt timed out" are different lines in a UI, and a
+  silent timeout is the difference between a hung app and a refused tool.
 - A denial emits **no** `tool_call_started`. The refusal goes back to the model
   as an errored tool result, so it can change course instead of crashing.
 - `scope` is `once` (this call), `session` (this tool, rest of the run —

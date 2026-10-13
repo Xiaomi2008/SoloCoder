@@ -121,10 +121,17 @@ class PermissionRequested:
 
 @dataclass
 class PermissionResolved:
+    """The answer to a prompt, and why.
+
+    ``reason`` distinguishes "the user refused" from "nobody answered in 60s":
+    a UI shows those differently, and a silent timeout must be visible.
+    """
+
     run_id: str
     request_id: str
     granted: bool
     scope: str = "once"
+    reason: str = ""
     type: Literal["permission_resolved"] = "permission_resolved"
 
 

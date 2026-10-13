@@ -115,6 +115,7 @@
         "request_id": "req_sample",
         "granted": true,
         "scope": "session",
+        "reason": "approved by the user for this session",
         "type": "permission_resolved"
       }
     },
@@ -125,6 +126,7 @@
         "request_id": "req_sample",
         "granted": false,
         "scope": "never",
+        "reason": "no answer within 60s; refused by default",
         "type": "permission_resolved"
       }
     },

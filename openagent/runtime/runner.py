@@ -134,7 +134,11 @@ class AgentRunner:
         permission_gate: PermissionGate | None = None,
     ) -> None:
         self.provider = provider
-        self.session = session or Session(system_prompt=system_prompt)
+        # `session or Session(...)` is a trap here: Session defines __len__, so
+        # a brand-new empty session is falsy and the caller's session would be
+        # silently replaced — the service would then save an empty conversation
+        # and a reconnect would find nothing. Test: test_runner_preserves_the_callers_session.
+        self.session = session if session is not None else Session(system_prompt=system_prompt)
         self.tool_registry = _registry_from_tools(tools)
         self.tool_context = tool_context or ToolContext()
         self.max_turns = max_turns
@@ -173,14 +177,19 @@ class AgentRunner:
         prompt: str | None = None,
         *,
         images: Sequence[str] | None = None,
+        run_id: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[RuntimeEvent]:
         """Run one user turn to completion, yielding events as it goes.
 
         ``images`` are base64 strings; the first, if any, is attached to the
         user message (``Session`` carries one image per message).
+
+        ``run_id`` may be supplied by a caller that has to answer with the id
+        *before* the first event arrives — the service returns it from
+        ``run.start``, and the client uses it for ``run.cancel``.
         """
-        run_id = next_id("run")
+        run_id = run_id or next_id("run")
         settings, provider_kwargs = LoopSettings.from_kwargs(kwargs)
         guard = EmptyResponseGuard(settings.max_empty_response_retries)
         tool_defs = self.tool_registry.definitions or None
@@ -460,6 +469,7 @@ class AgentRunner:
                 request_id=request.request_id,
                 granted=decision.granted,
                 scope=decision.scope,
+                reason=decision.reason,
             )
 
     def _provider_kwargs_for_turn(

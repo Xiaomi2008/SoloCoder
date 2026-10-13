@@ -85,8 +85,20 @@ def sample_events() -> list[RuntimeEvent]:
             arguments={"command": "rm -rf build"},
             reason="exec: runs arbitrary commands",
         ),
-        PermissionResolved(run_id="run_sample", request_id="req_sample", granted=True, scope="session"),
-        PermissionResolved(run_id="run_sample", request_id="req_sample", granted=False, scope="never"),
+        PermissionResolved(
+            run_id="run_sample",
+            request_id="req_sample",
+            granted=True,
+            scope="session",
+            reason="approved by the user for this session",
+        ),
+        PermissionResolved(
+            run_id="run_sample",
+            request_id="req_sample",
+            granted=False,
+            scope="never",
+            reason="no answer within 60s; refused by default",
+        ),
         ContextCompactionStarted(run_id="run_sample", reason="context approaching limit"),
         ContextCompactionCompleted(run_id="run_sample", reason="context approaching limit"),
         ContextCompactionFailed(

@@ -1,203 +1,136 @@
-# Handoff — resuming work on the Mac general-agent app
-
-Read this first after a restart. Design rationale lives in
-[`mac-agent-app-architecture.md`](mac-agent-app-architecture.md); this file is
-*state*: what exists, what is verified, what is outstanding, what to do next.
-
-_Last updated: Phase 1 + post-gate fixes committed, 463 tests green._
-
----
-
-## Resume in 30 seconds
-
-```bash
-cd /Users/taozeng/Projects/SoloCoder
-git status --short && git log --oneline -4     # clean tree expected
-.venv/bin/python -m pytest tests -q            # 463 passed, zero warnings
-.venv/bin/python cli_coder.py auth status      # credentials + model servers
-.venv/bin/python cli_coder.py models list --discover
-.venv/bin/python cli_coder.py models probe lan/swift-1.5-iq3_s
-```
-
-Branch: `feat/computer-use-macos`. Venv: `.venv/bin/python` (3.14). No untracked
-work in progress — every phase is committed.
-
----
+# HANDOFF — resumable state after restart
 
 ## Where we are
 
-| Commit | What |
-| --- | --- |
-| `2433af5` | **Phase 0** — foundation cleanup: deduped the two `Agent` classes, shared run-loop policy (`runtime/loop.py`), secrets → macOS Keychain, Py3.16 deprecations, Pydantic `ConfigDict`, metadata rot. 320 tests. |
-| `dd2477c` | **Phase 1** — provider registry, `ModelRef`, model catalog + capability probe, router, `AuthBroker` (API key + OAuth PKCE loopback for ChatGPT/Claude), `openai-responses` adapter, `auth`/`models` CLI. 428 tests. |
-| `85a2cc8` | **Phase 1+** — user-added model servers (`models add-endpoint`), discovery sends the key and explains silence, config isolation for tests. 451 tests. |
-| `852f920` | **Phase 1+** — `working_dir` was decorative; tools wrote into the process CWD. Added `ToolContext`. 463 tests. |
+**Phase 2 complete on the Python side.** The agent service, its wire protocol,
+the client, the CLI entry points, and the contract tests are done and green;
+the next piece is the Swift `AgentClient` package.
 
-### Gates that actually ran (not mocked)
+- Branch: `feat/computer-use-macos`
+- Test suite: **551 passed** (`.venv/bin/python -m pytest tests -q`)
+- Working tree: clean
 
-- **Synthetic OpenAI-compatible server** on LM Studio's port 1234: discovery,
-  probe (233 ms), text turn, tool-call turn, clean `close()`.
-- **Real LAN model server** `http://192.168.4.34:8080/v1` (the user's box, key
-  `auth:lan` in the Keychain, registered as custom endpoint `lan`, marked
-  `--local`): discovery listed `lan/swift-1.5-iq3_s`, probe proved tool calling
-  (1.3–1.7 s), and a full `CoderAgent` run with real tools created and read
-  files **inside the session directory**. This gate is what found the
-  `working_dir` bug.
+## What Phase 2 built
 
-### Gates still outstanding
+| File | What it is |
+|---|---|
+| `dev_docs/agent-service-protocol.md` | The contract: NDJSON JSON-RPC over a Unix socket, 16 methods, 19 events, error codes, ordering guarantees, the permission round-trip. The Swift app is written against this document. |
+| `openagent/service/protocol.py` | The contract in code: envelope, framing (8 MiB cap), event codec, `EVENT_TYPES` registry, `RpcError` + `ErrorCode`. |
+| `openagent/service/server.py` | `AgentService` + `Connection`. One run per connection, reader loop and run task separate, writes serialized, disconnect cancels the run, provider closed after every run, permission timeout denies. |
+| `openagent/service/client.py` | `ServiceClient`: handshake, response/event demux, `start_run`, `respond_permission`, `events()`. |
+| `openagent/service/cli.py` | `openagent serve` and `openagent tui` (headless client, interactive permission prompts). |
+| `openagent/service/scope.py` | `working_dir` validation: absolute, existing, not `/`, inside `--root`. |
+| `openagent/service/sessions.py` | Session ids (path-traversal-safe), save/load/list under `~/.openagent/sessions`. |
+| `openagent/runtime/runner.py` | `AgentRunner`: the streaming, tool-capable run loop that **emits events instead of printing**. The CLI's `run_loop` prints to a terminal and cannot be a sidecar engine. |
+| `openagent/runtime/permissions.py` | Risk classification + gates (`AllowAll`, `ReadOnly`, `Risk` with once/session/never scopes). Unknown tools classify as exec — fail closed. |
+| `openagent/runtime/events.py` | Added `permission_requested`, `permission_resolved` (with `reason`), `AgentResult.stop_reason`. |
+| `tests/support/streaming_provider.py` | `ScriptedStreamProvider` (turn scripts, tool calls, mid-stream failure, hang) and `HangingProvider`. |
+| `tests/service/` | 33 contract tests over a **real socket** + fixtures for the Swift package. |
+| `scripts/smoke_service.py` | End-to-end smoke over a real socket, sandboxed HOME. |
+| `scripts/gen_protocol_fixtures.py` | Regenerates `tests/service/fixtures/{protocol,events}.json` from the Python types. |
 
-1. **Claude Max OAuth sign-in** — needs an interactive browser:
-   `.venv/bin/python cli_coder.py auth login anthropic_oauth`, then verify
-   token storage, refresh, and a real Claude Max turn.
-2. **LM Studio's own server** — port 1234 was closed all session (only the
-   user's Codex/LM Studio Responses proxy listens on 1235). Re-run the gate
-   above once the LM Studio API server is enabled.
-3. **Default model is unset** (`models.default_model == ""`). The router picks
-   `lan/swift-1.5-iq3_s` under `local_first`; persisting a default is a one-liner
-   (`models use lan/swift-1.5-iq3_s`) and was deliberately left to the user.
+### Gates passed
 
----
+- `pytest tests -q` → 551 passed.
+- `scripts/smoke_service.py` → `SMOKE OK` (handshake, run, permission round-trip,
+  tool execution, streamed deltas, session persistence, reconnect).
+- **Real model, real socket** (`lan/swift-1.5-iq3_s` @ 192.168.4.34:8080):
+  - streamed run that called `glob`, read the result, answered;
+  - `--permission-mode ask`: the TUI was prompted for `bash` and `write`,
+    answered `y`, the file was really written, `read` ran unprompted (read-only);
+  - a second run on the same `--session` remembered the file the first created
+    (resume over a reconnecting client).
+- `openagent serve --help` / `openagent tui --help` wired into `cli_coder.py`.
 
-## What exists, by file
+### Phase 1 gates still open (user action)
 
-**Engine (Python, ~9.2k LOC in `openagent/`)** — unchanged in intent, reusable
-by the Swift app over a socket.
+- `auth login anthropic_oauth` — needs an interactive browser.
+- LM Studio API server on `:1234` — not enabled.
+- `models use lan/swift-1.5-iq3_s` — left to the user. The router picks
+  `lmstudio/qwen3-coder-32b` (unreachable) under `local_first`, so runs need an
+  explicit `-m lan/swift-1.5-iq3_s` until a default is chosen.
 
-- `openagent/provider/model_ref.py` — `ModelRef` (the single model address:
-  provider/model, `AuthMode`, `WireAPI`, `Capabilities`, `CostHint`, base_url),
-  `AuthMode`, `WireAPI`, `Capabilities`, `CostHint`.
-- `openagent/provider/registry.py` — endpoint table (LM Studio, Ollama, MLX,
-  llama.cpp, vLLM, Anthropic-compatible local, Anthropic, Anthropic OAuth,
-  OpenAI, OpenAI OAuth, Gemini) + user `custom_endpoints`; `build()/_build()`
-  split translating missing SDKs into `ProviderDependencyError`;
-  `spec_from_config`, `add_endpoint_config`, `remove_endpoint_config`,
-  `BUILTIN_PROVIDERS`.
-- `openagent/provider/catalog.py` — built-in defaults, live discovery (sends
-  stored keys), capability probe + cache, `discovery_errors` diagnostics.
-- `openagent/provider/router.py` — `RoutingPolicy` (`fixed`, `local_first`,
-  `cloud_first`, `cheapest_capable`, `privacy_lock`), role overrides, probed
-  facts outrank declared claims.
-- `openagent/provider/auth/` — `tokens.py` (`TokenSet`, `Credentials`,
-  `AuthStatus`, `AuthRequired`), `spec.py` (Anthropic + OpenAI specs, env
-  overrides), `pkce.py`, `flow.py` (authorize URL, token exchange, refresh,
-  JWT claims, loopback listener), `broker.py` (`AuthBroker`: Keychain-backed,
-  refresh-if-needed, status).
-- `openagent/provider/responses.py` — `OpenAIResponsesProvider` for the ChatGPT
-  subscription backend `https://chatgpt.com/backend-api/codex/responses`.
-- `openagent/provider/cli.py` — `auth status|login|logout`, `models
-  list|probe|use|add-endpoint|remove-endpoint`; async handlers
-  (`handle_auth_async`, `handle_models_async`) + sync wrappers.
-- `openagent/core/tool.py` — `ToolContext` (session scope injected into tools),
-  `ToolRegistry`, schema builder that hides injected params.
-- `openagent/core/agent.py` — canonical tool-capable `Agent`; owns
-  `working_dir`, passes `tool_context` at the execute site.
-- `openagent/runtime/loop.py` — shared run-loop policy (`LoopSettings`,
-  `EmptyResponseGuard`, compaction hook, id generator). `RuntimeAgent` is the
-  canonical runtime class; `openagent.runtime.Agent` is a compat alias.
-- `openagent/core/config.py` — `ModelConfig` incl. `policy`, `default_model`,
-  `roles`, `custom_endpoints`; `reload_config()`.
-- `openagent/core/memory.py` `SecretManager` — macOS Keychain via
-  `/usr/bin/security`, `0600` JSON fallback off-macOS, legacy plaintext
-  migration.
+## Commands
 
-**Tests** — `tests/providers/` (registry, catalog, router, auth broker, OAuth
-flow, responses, provider CLI, close, custom endpoints),
-`tests/runtime/test_loop.py`, `tests/test_config_secrets.py`,
-`tests/test_public_api.py`, `tests/test_working_dir_scope.py`.
-`tests/conftest.py` sandboxes the config file; provider tests guard the real
-Keychain.
+```bash
+cd /Users/taozeng/Projects/SoloCoder
+.venv/bin/python -m pytest tests -q                 # 551 passed
+.venv/bin/python scripts/smoke_service.py           # SMOKE OK
+.venv/bin/python cli_coder.py serve --socket /tmp/oa/e2e.sock
+.venv/bin/python cli_coder.py tui --socket /tmp/oa/e2e.sock \
+    -p "…" -w /tmp/oa/demo -m lan/swift-1.5-iq3_s --permission-mode ask
+.venv/bin/python cli_coder.py models list --discover
+.venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
+```
 
----
+## Next: Phase 2b — the Swift `AgentClient`
 
-## Machine facts (verified this session)
+1. `macapp/AgentClient/` as a SwiftPM package (no Xcode project yet).
+2. `AgentEvent` as a Swift enum mirroring `protocol.py`'s event registry 1:1;
+   decode the fixtures in `tests/service/fixtures/events.json` in a Swift test —
+   the fixtures are generated from the Python types, so a drift fails a test.
+3. NDJSON framing over `NWConnection`/`FileHandle` on the Unix socket, JSON-RPC
+   envelope, `convertFromSnakeCase` (wire fields are snake_case by design).
+4. Shared contract tests: the Swift suite spawns `python -m openagent.service.cli serve`
+   on a temp socket and drives the same scenarios as `tests/service/test_server.py`.
 
-- Config: `~/.openagent/config.json` — `search` (tavily) + `models`
-  (`policy: local_first`, `default_model: ""`, custom endpoint `lan`).
-- Keychain service `openagent`, accounts: `tavily_api_key`, `auth:lan`.
-  Deliberately absent: `auth:anthropic`, `auth:openai`, `auth:anthropic_oauth`,
-  `auth:openai_oauth` (no subscription sign-in yet).
-- Ports: `1234` LM Studio **closed**, `1235` **LISTEN** (user's
-  `~/.codex/lmstudio-proxy/proxy.py`), `11434`/`8080`/`8000` closed.
-  LAN server: `192.168.4.34:8080` (OpenAI-compat, requires key).
-- Optional extras not installed: `ollama`, `google-genai`
-  (`pip install openagent[ollama]` / `[google]`).
-- Repo: 518 MB after pruning stale `.claude/worktrees/*`.
+## Next: Phase 3 — app shell
 
----
+Chat view over the event stream, tool timeline, permission sheet (the
+`permission_requested` → `permission.respond` round-trip), model picker
+(`model.list` / `model.select`), session browser (`session.list` / `session.load`).
 
-## Traps already paid for — do not re-discover
+## Things to know (verified the hard way)
 
-1. `openagent.providers.ProviderError` is a **stream event dataclass**, not an
-   exception. Dependency failures use `ProviderDependencyError`.
-2. `store or SecretManager()` let a falsy test store fall through to the **real
-   macOS Keychain**. Falsy is still a store: `SecretManager() if store is None else store`.
-3. Keychain account names are a namespace: `auth:anthropic` (API key) vs
-   `auth:anthropic_oauth` (subscription). `AuthBroker` must not inherit the
-   legacy plaintext→Keychain migration for `auth:*`.
-4. ChatGPT subscription JWTs are **rejected by `api.openai.com`**; the
-   subscription path is the Codex **Responses** backend.
-5. Anthropic OAuth is not "an API key with another base URL": needs
-   `Authorization: Bearer`, `anthropic-beta: oauth-2025-04-20`, and
-   `anthropic-account-id` decoded from the JWT.
-6. The OAuth loopback listener must bind **IPv4 and IPv6** loopback (browsers
-   redirect to `127.0.0.1`) and must refuse non-loopback hosts — it receives
-   the access token.
-7. OpenAI-compat base URLs already end in `/v1`; discovery paths are relative,
-   else `/v1/v1/models`.
-8. `cli_coder.main()` is async: CLI handlers must be awaitable, never
-   `asyncio.run()` inside it.
-9. `BaseProvider.close()` is part of the contract (long-lived app builds
-   providers per turn).
-10. `security add-generic-password -w` reads the password **twice** from stdin,
-    and `-w` must be the last argument.
-11. `ToolContext` is injected by the harness and **must never appear in the
-    model-facing schema** — a model that can set it escapes the session scope.
-12. Tests must not read the user's real config (custom endpoints live there) and
-    must never write the real Keychain.
+- **`ConfigManager.get_config_path()` respects `XDG_CONFIG_HOME`** — tests that
+  touch config/auth must isolate `HOME` *and* `XDG_CONFIG_HOME`, and must not
+  monkeypatch `ConfigManager._path`. `tests/conftest.py::isolated_config` does this.
+- **`RpcError` must not be a frozen dataclass.** Python 3.14's `contextlib`
+  assigns `__traceback__` on the way out of `asyncio.timeout`/`suppress`, and a
+  frozen exception raises `FrozenInstanceError` *from inside the exception
+  handler*. `tests/service/test_protocol.py::test_rpc_error_survives_contextlib_and_asyncio_timeout`
+  pins it.
+- **`Session.__len__` makes an empty session falsy.** `session or Session()`
+  silently discards a caller's fresh session. `AgentRunner` compares to `None`;
+  `tests/runtime/test_runner.py::test_runner_preserves_the_callers_session` pins it.
+- **`Server.wait_closed()` waits for connection handlers.** A sidecar's clients
+  stay connected for the life of the app, so `AgentService.stop()` cancels the
+  connection tasks *before* awaiting `wait_closed()`, and background tasks
+  (model discovery) are tracked separately from client tasks.
+- **macOS `AF_UNIX` paths cap at ~104 bytes.** pytest's `tmp_path` is too long
+  for a socket; `tests/service/test_server.py::Harness.sock_dir` uses a short
+  `tempfile.mkdtemp(prefix="oa")` and skips if the platform refuses.
+- **The service tests isolate `HOME`/`XDG_CONFIG_HOME`** (autouse fixture) —
+  every run saves a session, and the suite must not litter `~/.openagent`.
+- **`working_dir` is real.** `ToolContext.working_dir` is applied as the cwd of
+  `bash` and resolved against `read`/`write`/`edit`/`glob`/`grep`/`apply_patch`.
+  The model is given absolute paths; it cannot escape the session directory.
+- **`run.start` answers before the first token**, and `permission_requested` is
+  emitted *before* the engine blocks on the answer. Both are load-bearing for a
+  UI; the contract tests assert them.
+- **A denied tool emits no `tool_call_started`.** The refusal goes back to the
+  model as an errored tool result, and `permission_resolved.reason` says why
+  (user refused / timed out).
+- **`--session NAME` creates as well as resumes.** Naming a session for its
+  first run is the common case; `session.load` stays strict so a typo is not
+  silently blank.
+- **Model discovery is a startup task, not a blocking call.** A model on a
+  user-added server is only in the catalog after `discover()`; `_resolve_model`
+  discovers on a miss so `run.start(model=…)` never needs a prior `model.list`.
+- **LM Studio is `:1234`.** `:1235` is a different server; `:8080` is
+  llama.cpp/mlx; `:11434` ollama; `:8000` vllm.
+- **The LAN model server** `lan` → `http://192.168.4.34:8080/v1`, key in the
+  macOS Keychain, model `lan/swift-1.5-iq3_s` (tool-capable, 32k ctx).
+- **`auth status` / `models list` are the state checks.** No API keys, no
+  subscription sign-ins; `lan` is the only registered server.
 
----
+## Git
 
-## Next: Phase 2 — agent service
-
-Contract first, then code. The Swift app is a client of this socket; the event
-schema is the stable boundary that lets a pure-Swift engine replace the Python
-one later with zero UI change.
-
-1. `openagent/service/protocol.py` — JSON-RPC envelope + event names
-   (`run.start`, `run.started`, `message.started/delta/completed`,
-   `tool_call.started/completed`, `run.completed/failed/cancel`,
-   `permission.request/respond`, `context.compaction.started`,
-   `model.list/probe`, `auth.status/login`, `session.list/load/save`,
-   `config.get/set`).
-2. Unix-socket server, NDJSON framing, one run per connection, cancellation,
-   permission round-trip channel.
-3. **`run.start` carries the session scope** (`working_dir`) → engine maps it to
-   `ToolContext`. The app picks the project; the model only ever writes paths.
-4. `openagent serve` + headless `openagent tui` client driving a full run.
-5. `macapp/AgentClient/` SwiftPM package: `AsyncThrowingStream<AgentEvent>`,
-   Codable event types, **shared contract tests** run against the Python socket
-   (same fixture files on both sides).
-6. Define the Swift `AgentEvent` Codable schema in this phase, not Phase 3.
-
-**Gate:** headless TUI completes a streamed run through the socket (stream,
-cancel, permission round-trip, reconnect) and the Swift harness passes the same
-tests.
-
-Then Phase 3 (SwiftUI shell + sidecar lifecycle + TCC), Phase 3.5 (native UI
-parity → delete the React frontend), Phase 4 (Accessibility computer-use,
-Calendar/Reminders/Notes/Mail, permission broker).
-
----
-
-## Decisions not to relitigate
-
-SwiftUI/AppKit shell + Python sidecar over a Unix socket; **no WebView, no
-Electron, no Node in the shipped app**; Python stays the engine for v1
-(~10.4k LOC, and `mcp`/`openai`/`anthropic`/MLX are load-bearing); `openagent`
-stays the package name, SoloCoder is one app under `openagent/apps/solocoder/`;
-API keys are the officially supported cloud path, subscription OAuth is
-supported but labelled unofficial/at-your-own-risk; local servers are
-*optimistic until probed* (declared = claim, probed = fact); `ModelRef` is the
-only model address the app sees. Full reasoning:
-[`mac-agent-app-architecture.md`](mac-agent-app-architecture.md) §2.1, §3.2,
-§3.3, §6 (roadmap + Phase 1 deviations), §8 (risks).
+Ahead of `origin/feat/computer-use-macos` by the phase 0–2 commits (nothing
+pushed), newest first:
+`phase2b: Unix-socket agent service, client, CLI, contract tests`,
+`phase2a: wire protocol + streaming tool loop (AgentRunner)`,
+`phase1+: working_dir was decorative — tools wrote into the process CWD`,
+`phase1+: user-added model servers, discovery diagnostics, test isolation`,
+`phase1: provider registry, model catalog, router, auth broker`,
+`phase0: foundation cleanup for the Mac general-agent app`.

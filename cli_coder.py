@@ -126,6 +126,11 @@ Type 'quit' or 'exit' to stop the agent.
 
     add_model_subcommands(subparsers)
 
+    # The agent service (serve) and its headless client (tui)
+    from openagent.service.cli import add_subcommands as add_service_subcommands
+
+    add_service_subcommands(subparsers)
+
     parser.add_argument(
         "--model",
         "-m",
@@ -810,6 +815,13 @@ async def main():
 
         handler = handle_auth_async if args.command == "auth" else handle_models_async
         raise SystemExit(await handler(args))
+
+    # Handle the service and its client: they own the process from here.
+    if args.command in ("serve", "tui"):
+        service_handler = getattr(args, "handler", None)
+        if service_handler is None:
+            raise SystemExit(2)
+        raise SystemExit(await service_handler(args))
 
     from openagent import configure_logging
 

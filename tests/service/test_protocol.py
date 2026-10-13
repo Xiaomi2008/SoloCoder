@@ -244,6 +244,28 @@ def test_rpc_error_is_raisable_and_named():
     assert exc.value.to_dict()["code"] == ErrorCode.NOT_AUTHENTICATED
 
 
+def test_rpc_error_survives_contextlib_and_asyncio_timeout():
+    """Python 3.14 assigns ``__traceback__`` on the way out of a context manager.
+
+    A frozen exception raises ``FrozenInstanceError`` *from inside the handler*,
+    which is the worst place to find it: a client that wraps a call in
+    ``asyncio.timeout`` — which the service client does — would get a crash
+    where it expected the error it was catching.
+    """
+    import asyncio
+    import contextlib
+
+    with contextlib.suppress(RpcError):
+        raise RpcError(ErrorCode.METHOD_NOT_FOUND, "gone")
+
+    async def call():
+        async with asyncio.timeout(5):
+            raise RpcError(ErrorCode.METHOD_NOT_FOUND, "gone")
+
+    with pytest.raises(RpcError):
+        asyncio.run(call())
+
+
 def test_as_request_rejects_non_object_params():
     with pytest.raises(ProtocolError, match="params"):
         as_request({"method": "ping", "params": ["nope"], "id": "c1"})

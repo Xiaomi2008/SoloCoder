@@ -82,6 +82,7 @@ class HangingProvider:
 
     def __init__(self) -> None:
         self.entered = False
+        self.closed = False
 
     async def stream(
         self,
@@ -100,6 +101,7 @@ class HangingProvider:
         raise NotImplementedError
 
     async def close(self) -> None:
+        self.closed = True
         return None
 
 

@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from openagent.core.session import Session
 from openagent.core.tool import ToolContext, ToolRegistry, tool
 from openagent.runtime.events import (
     ContextCompactionStarted,
@@ -155,6 +156,24 @@ async def test_tool_results_go_back_into_the_session():
     roles = [m.role for m in runner.session.messages]
     assert roles == ["user", "assistant", "tool_result", "assistant"]
     assert runner.session.messages[2].tool_results[0].content == "echo:x"
+
+
+async def test_runner_preserves_the_callers_session():
+    """A new ``Session`` is empty, and empty is falsy — so ``session or Session()``
+    silently throws away the caller's session.
+
+    The service owns the session it hands the runner: it saves it when the run
+    ends, and a reconnect loads it. Swap in a fresh one and every conversation
+    is saved empty, which is exactly the bug this test pins.
+    """
+    session = Session(system_prompt="sp")
+    provider = ScriptedStreamProvider([text_turn("a"), text_turn("b")])
+    runner = AgentRunner(provider, session=session, tools=[])
+
+    await collect(runner, "first")
+
+    assert runner.session is session
+    assert [m.role for m in session.messages] == ["user", "assistant"]
 
 
 async def test_session_scope_is_injected_and_anchors_relative_paths(tmp_path):

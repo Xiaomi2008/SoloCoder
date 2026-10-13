@@ -172,6 +172,11 @@ class ToolRegistry:
             func=func,
         )
 
+    @property
+    def entries(self) -> list[ToolEntry]:
+        """Registered tools, for anything that lists them (the service's ``tool.list``)."""
+        return list(self._tools.values())
+
     def get(self, name: str) -> Callable[..., Any] | None:
         entry = self._tools.get(name)
         return entry.func if entry else None
