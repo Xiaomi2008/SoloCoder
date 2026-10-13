@@ -171,13 +171,25 @@ func appChecks(_ checks: Checks) async {
     if let modelKey = liveModel, !modelKey.isEmpty {
         model.selectedModel = modelKey
         model.permissionMode = .allowReadonly
+        // Wall clock and publishes for a real streamed answer: the number that
+        // says what the user waits for, and the number that says what the UI
+        // does while they wait.
+        let publishesBefore = model.transcriptPublishes
+        let t0 = DispatchTime.now().uptimeNanoseconds
         model.send("List the files in this directory with a tool, then tell me how many there are.")
         let finished = await settled(model, timeout: 240)
+        let seconds = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9
         checks.expect(finished, "a real run finishes")
         checks.expect((model.transcript.finalText ?? "").isEmpty == false, "the app shows the model's answer")
         checks.expect(!model.transcript.toolRows.isEmpty, "the app shows the tool the model used")
         checks.expect(model.sessionId != nil, "the session id came back from run.start")
+        let chars = (model.transcript.finalText ?? "").count
         checks.note("app run: \(model.transcript.lines.count) lines, session \(model.sessionId ?? "?"), \(model.transcript.state.label)")
+        checks.note(
+            "app run wall \(String(format: "%.1f", seconds))s for \(chars) chars of answer, "
+            + "\(model.transcriptPublishes - publishesBefore) publishes, "
+            + "\(model.transcript.lines.count) lines"
+        )
 
         // The answer to a prompt the app never asked for is a bug the sheet
         // cannot recover from; the transcript is the only source of truth.
