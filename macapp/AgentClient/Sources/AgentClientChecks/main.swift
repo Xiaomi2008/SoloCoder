@@ -495,6 +495,8 @@ do {
     try transcriptChecks(checks)
     stage = "live"
     _ = await liveChecks(checks)
+    stage = "app"
+    await appChecks(checks)
     status = checks.report()
 } catch {
     print("check suite aborted in \(stage): \(error)")

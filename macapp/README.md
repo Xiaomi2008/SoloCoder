@@ -1,31 +1,49 @@
 # macapp — the Mac client
 
-`AgentClient/` is a SwiftPM package: the client half of the agent service, with
-no UI and no dependency on the app target. It speaks the protocol in
+`AgentClient/` is one SwiftPM package with four targets: the wire protocol, the
+app's state machine, the SwiftUI shell, and a contract suite that runs without
+Xcode. It speaks the protocol in
 [`dev_docs/agent-service-protocol.md`](../dev_docs/agent-service-protocol.md)
-over a Unix socket, and it is the layer the SwiftUI app is built on.
+over a Unix socket. The protocol and the state machine are libraries a test can
+import; the views are the only part that is not.
 
 ## Layout
 
 ```
 AgentClient/
   Package.swift
-  Sources/AgentClient/            the library
+  Sources/AgentClient/            the wire protocol
     Wire.swift                    envelope, framing, error codes, JSONValue
     AgentEvent.swift              every event type, 1:1 with the Python dataclasses
     AgentServiceClient.swift      connect, call, event stream, run, permission
     ContractFixtures.swift        loads the fixtures the Python side generates
+  Sources/AgentAppCore/           the app, minus the pixels
+    Transcript.swift              event stream -> the timeline a view renders
+    AppModel.swift                runs, permissions, models, sessions
+    Sidecar.swift                 spawns the service in development
+  Sources/AgentApp/               the SwiftUI shell (chat, tools, permission sheet)
   Sources/AgentClientChecks/      `swift run agent-checks` — the contract suite
   Tests/AgentClientTests/         the same checks as a Swift Testing suite
 ```
+
+The split is deliberate: `AgentAppCore` is the app's logic and a test can import
+it, so the state machine and the app model are checked headless. `AgentApp` is
+views, and views are the only thing left that no automated check reaches.
 
 ## Running the checks
 
 ```sh
 cd macapp/AgentClient
-swift run agent-checks                        # fixtures, framing, live service
-AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s swift run agent-checks   # + a real streamed run
+swift run agent-checks                        # fixtures, framing, live service, app model
+AGENT_REPO_ROOT=.. swift run agent-checks     # enable the app-model checks
+AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s swift run agent-checks
+swift run solocoder                           # the app itself
 ```
+
+`solocoder` spawns its own service (`Sidecar`), so it needs a repository to run
+it from: `AGENT_REPO_ROOT` pointing at the SoloCoder checkout, or a working
+directory that contains `.venv/bin/python`. A shipped app embeds a frozen build
+of the service instead — that packaging step is not done.
 
 `agent-checks` is the gate that runs everywhere Swift runs. It spawns the real
 service (`.venv/bin/python cli_coder.py serve --socket …`), drives it, and
@@ -68,7 +86,25 @@ the run writes a session into `~/.openagent/sessions`.
   server cannot serve is reported; a call before `hello` is rejected; an unknown
   method is method-not-found.
 - **Live model run** (with `AGENT_LIVE_MODEL`): a streamed run that calls tools,
-  produces deltas, and ends on a terminal event.
+  produces deltas, and ends on a terminal event, folded through `Transcript` —
+  the timeline the app renders, checked against a real stream.
+- **App model** (with `AGENT_REPO_ROOT`): the real `AppModel` and `Sidecar` —
+  spawn the service, connect, read the policy, refuse a run with no working
+  directory, close a run whose model is unreachable, reset on a new run, and
+  (with `AGENT_LIVE_MODEL`) finish a real run and take the session id from
+  `run.start`.
+
+## Running the app
+
+```sh
+cd macapp/AgentClient
+AGENT_REPO_ROOT=/path/to/SoloCoder swift run solocoder
+```
+
+A window opens: a chat over the event stream, a tool timeline, a permission
+sheet driven by `permission_requested`, a model picker from `model.list`, and a
+session browser from `session.list` / `session.load`. Choose a working directory
+from the toolbar — a run needs one, and the app refuses to send without it.
 
 ## Things to know
 
@@ -95,3 +131,17 @@ the run writes a session into `~/.openagent/sessions`.
 - **Socket paths are short.** macOS caps an `AF_UNIX` path at ~104 bytes, so the
   socket lives in a short temp directory, not in a deep `NSTemporaryDirectory()`
   tree.
+- **The event stream is the connection's, not the run's.** It yields across runs
+  and ends when the connection closes. A stream that finished at the first
+  terminal event left the app with no events for its second run on the same
+  connection — every run after the first. One-shot consumers break on
+  `isTerminal`; the app keeps consuming and lets `Transcript` close each run.
+- **`message_completed` is authoritative, deltas are progress.** The reducer
+  appends deltas and then replaces the line with the completed text, so a stream
+  that dies mid-message shows partial text and a stream that finishes shows
+  exactly what the model said.
+- **The user's own message is not in the stream.** The server has no reason to
+  echo what it was told; the client inserts it. A loaded session's history is
+  rendered the same way, from stored messages, not from invented events.
+- **The session id comes from the service.** `run.start` answers with one; the
+  app stores it and sends it on the next run, so the conversation continues.

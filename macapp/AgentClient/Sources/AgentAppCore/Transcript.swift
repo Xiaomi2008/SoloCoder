@@ -26,7 +26,12 @@ import Foundation
 
 // MARK: - Rows
 
-public struct ToolRow: Identifiable, Equatable, Sendable {
+/// A tool call in the timeline.
+///
+/// Not `ToolRow`: `AgentClient.ToolRow` is a `tool.list` row (a tool the service
+/// offers), this is one call the model made. Two nouns for two things, so a
+/// view that imports both does not have to qualify every use.
+public struct ToolCallRow: Identifiable, Equatable, Sendable {
     public enum State: Equatable, Sendable {
         case running
         case done(String)
@@ -79,7 +84,7 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
         case user(String)
         case assistant(String)
         case messageFailed(String)
-        case tool(ToolRow)
+        case tool(ToolCallRow)
         case permission(PermissionOutcome)
         case compaction(CompactionRow)
         /// An event this client does not model, kept visible. A newer server
@@ -159,6 +164,26 @@ public struct Transcript: Equatable, Sendable {
         lines.append(TranscriptLine(id: "user-\(lines.count)", kind: .user(text), messageId: nil))
     }
 
+    /// A past assistant message, for a session loaded from disk.
+    ///
+    /// History is not a stream: a stored session has the finished text and no
+    /// events to fold, and inventing fake `message_completed` payloads to render
+    /// it would make the transcript lie about what it saw.
+    public mutating func addAssistantMessage(_ text: String) {
+        lines.append(TranscriptLine(id: "history-\(lines.count)", kind: .assistant(text), messageId: nil))
+    }
+
+    /// A run that never reached the service.
+    ///
+    /// `run.start` was refused — bad working directory, unknown model, dead
+    /// socket. No `run_failed` event is coming, so the timeline has to close the
+    /// run itself, with the reason the call returned.
+    public mutating func failLocally(_ reason: String) {
+        finished = true
+        pendingPermission = nil
+        state = .failed(reason)
+    }
+
     public mutating func beginRun(runId: String) {
         self.runId = runId
         finished = false
@@ -218,13 +243,13 @@ public struct Transcript: Equatable, Sendable {
             lines.append(
                 TranscriptLine(
                     id: e.toolCallId,
-                    kind: .tool(ToolRow(id: e.toolCallId, name: e.toolName, arguments: e.arguments)),
+                    kind: .tool(ToolCallRow(id: e.toolCallId, name: e.toolName, arguments: e.arguments)),
                     messageId: e.messageId
                 )
             )
 
         case .toolCallCompleted(let e):
-            let preview = ToolRow.State.done(Self.preview(of: e.result))
+            let preview = ToolCallRow.State.done(Self.preview(of: e.result))
             if let index = indexOfTool(e.toolCallId) {
                 if case .tool(var row) = lines[index].kind {
                     row.state = preview
@@ -234,14 +259,14 @@ public struct Transcript: Equatable, Sendable {
                 lines.append(
                     TranscriptLine(
                         id: e.toolCallId,
-                        kind: .tool(ToolRow(id: e.toolCallId, name: e.toolName, arguments: .null, state: preview)),
+                        kind: .tool(ToolCallRow(id: e.toolCallId, name: e.toolName, arguments: .null, state: preview)),
                         messageId: e.messageId
                     )
                 )
             }
 
         case .toolCallFailed(let e):
-            let failure = ToolRow.State.failed(e.error)
+            let failure = ToolCallRow.State.failed(e.error)
             if let index = indexOfTool(e.toolCallId) {
                 if case .tool(var row) = lines[index].kind {
                     row.state = failure
@@ -252,7 +277,7 @@ public struct Transcript: Equatable, Sendable {
                     TranscriptLine(
                         id: e.toolCallId,
                         kind: .tool(
-                            ToolRow(id: e.toolCallId, name: e.toolName ?? "?", arguments: .null, state: failure)
+                            ToolCallRow(id: e.toolCallId, name: e.toolName ?? "?", arguments: .null, state: failure)
                         ),
                         messageId: e.messageId
                     )
@@ -332,7 +357,7 @@ public struct Transcript: Equatable, Sendable {
         return nil
     }
 
-    public var toolRows: [ToolRow] {
+    public var toolRows: [ToolCallRow] {
         lines.compactMap { if case .tool(let row) = $0.kind { return row } else { return nil } }
     }
 

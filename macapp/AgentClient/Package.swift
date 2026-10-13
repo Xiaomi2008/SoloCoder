@@ -24,11 +24,13 @@ let package = Package(
     products: [
         .library(name: "AgentClient", targets: ["AgentClient"]),
         .library(name: "AgentAppCore", targets: ["AgentAppCore"]),
+        .executable(name: "solocoder", targets: ["AgentApp"]),
         .executable(name: "agent-checks", targets: ["AgentClientChecks"]),
     ],
     targets: [
         .target(name: "AgentClient"),
         .target(name: "AgentAppCore", dependencies: ["AgentClient"]),
+        .executableTarget(name: "AgentApp", dependencies: ["AgentClient", "AgentAppCore"]),
         .executableTarget(
             name: "AgentClientChecks",
             dependencies: ["AgentClient", "AgentAppCore"]

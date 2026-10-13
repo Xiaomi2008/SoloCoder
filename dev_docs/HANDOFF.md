@@ -2,15 +2,17 @@
 
 ## Where we are
 
-**Phase 2 complete — Python service *and* Swift client.** The agent service, its
-wire protocol, the Python client, the CLI entry points, the Swift `AgentClient`
-package and the contract tests on both sides are done and green. The next piece
-is the Phase 3 SwiftUI app shell on top of `AgentClient`.
+**Phase 3 in progress: the app runs.** The Python service, the Swift client, the
+event-stream state machine and a SwiftUI shell (chat, tool timeline, permission
+sheet, model picker, session browser) are done and green, and the app spawns its
+own service and drives real runs. What is left in Phase 3 is packaging: a frozen
+sidecar binary inside a `.app`.
 
 - Branch: `feat/computer-use-macos`
 - Python suite: **569 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **102 checks passed** (`swift run agent-checks`), **107** with
-  `AGENT_LIVE_MODEL` set (the live run adds five)
+- Swift suite: **165 checks passed** (`swift run agent-checks`), **180** with
+  `AGENT_REPO_ROOT` + `AGENT_LIVE_MODEL` (a real streamed run, and the app model
+  doing two runs on one connection with a real model)
 - Working tree: clean
 
 ## What Phase 2 built
@@ -42,15 +44,22 @@ is the Phase 3 SwiftUI app shell on top of `AgentClient`.
 | `macapp/AgentClient/Sources/AgentClient/ContractFixtures.swift` | Loads `tests/service/fixtures/*.json` — the fixtures the Python side generates. |
 | `macapp/AgentClient/Sources/AgentClientChecks/` | `swift run agent-checks`: the contract suite that runs without Xcode. Spawns the real service and drives it. |
 | `macapp/AgentClient/Tests/AgentClientTests/` | The same assertions as a Swift Testing suite, for when the package is opened in Xcode. |
+| `macapp/AgentClient/Sources/AgentAppCore/Transcript.swift` | The event stream folded into the timeline a view renders: assistant lines, tool rows, permission prompts, compaction, run state. |
+| `macapp/AgentClient/Sources/AgentAppCore/AppModel.swift` | The app's state: runs, permission answers, models, sessions, the session id taken from `run.start`. |
+| `macapp/AgentClient/Sources/AgentAppCore/Sidecar.swift` | Spawns the service from the repo's venv in development; logs to a file, not a pipe. |
+| `macapp/AgentClient/Sources/AgentApp/` | The SwiftUI shell: `solocoder`. |
 | `macapp/README.md` | How to run it, what it covers, and the traps. |
 
 ### Gates passed
 
 - `pytest tests -q` → 569 passed.
-- `swift run agent-checks` → **102 checks passed**; with
-  `AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s` → **107**, including a real streamed run
-  (tool call, ~130 deltas, `run_completed`) driven by the Swift client over a
-  real Unix socket against a service the suite spawned.
+- `swift run agent-checks` → **165 checks passed**; with
+  `AGENT_REPO_ROOT` + `AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s` → **180**: a real
+  streamed run (tool calls, ~130 deltas, `run_completed`) folded through
+  `Transcript` (8 lines, state "Done"), and the real `AppModel` + `Sidecar`
+  finishing a run on a real model (7 lines, session id from `run.start`).
+- `swift run solocoder` → the app opens, spawns the service, binds the socket,
+  connects (verified by `lsof` on the socket pair; the window is the user's).
 - `scripts/smoke_service.py` → `SMOKE OK` (handshake, run, permission round-trip,
   tool execution, streamed deltas, session persistence, reconnect).
 - **Real model, real socket** (`lan/swift-1.5-iq3_s` @ 192.168.4.34:8080):
@@ -82,22 +91,37 @@ cd /Users/taozeng/Projects/SoloCoder
 .venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
 
 cd macapp/AgentClient
-swift run agent-checks                              # 102 checks passed
-AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s swift run agent-checks   # + a real model run
+swift run agent-checks                              # 165 checks passed
+AGENT_REPO_ROOT=.. swift run agent-checks           # + the app-model checks
+AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s \
+    swift run agent-checks                          # 180, real model
+swift run solocoder                                 # the app
 ```
 
-## Next: Phase 3 — app shell
+## Next: Phase 3b — packaging the sidecar
 
-Chat view over the event stream, tool timeline, permission sheet (the
-`permission_requested` → `permission.respond` round-trip), model picker
-(`model.list` / `model.select`), session browser (`session.list` / `session.load`).
+The app runs from a checkout (`Sidecar` spawns `.venv/bin/python cli_coder.py
+serve`). A shipped app embeds a frozen build of the service, and that decision
+drags in the rest:
 
-Start from `AgentServiceClient` behind an `ObservableObject` view model:
-`events()` is the single stream the UI renders and `respondPermission` is the
-single thing a sheet must call. The service ships as a sidecar binary
-(PyInstaller) inside the `.app` — that is the packaging work Phase 3 has to
-finish, and it is where the socket path, the sandbox container and the
-launch/teardown lifecycle get decided.
+1. **PyInstaller (or similar) build** of `cli_coder.py serve` — the entry point
+   exists (`openagent serve`), so this is a spec file plus the hidden imports
+   the providers need.
+2. **Socket path inside the container**: `~/Library/Application Support/…` or an
+   app group, kept short (AF_UNIX ~104 bytes).
+3. **Launch/teardown**: the app owns the sidecar's life; SIGTERM cancels the run
+   and closes the provider (already true), and `Sidecar.stop()` waits.
+4. **Keychain access from a sandboxed app** — the model-server keys live in the
+   login keychain; a sandboxed `.app` needs the entitlement, or the config moves.
+5. **Code signing + notarization**, icon, `Info.plist`, `.app` bundle assembly
+   (SwiftPM executables are not bundles).
+
+## Next: Phase 3c — the views, once they have a screen
+
+The views are the only code no automated check reaches. Worth doing with the
+window open: markdown rendering for assistant text, tool output beyond the
+one-line preview, the permission sheet's argument rendering, scrolling behaviour,
+and what a long session does to a `LazyVStack`.
 
 ## Things to know (verified the hard way)
 
@@ -172,11 +196,27 @@ launch/teardown lifecycle get decided.
   the developer's model servers, whose config and Keychain keys live in the real
   `HOME`; a sandboxed one has nothing to route to, and the run writes a session
   into `~/.openagent/sessions`.
+- **The event stream is the connection's, not the run's.** The Swift client used
+  to `finish()` its stream at the first terminal event, which left the app with
+  no events for its second run on the same connection — every run after the
+  first. The stream now ends when the connection does; one-shot consumers break
+  on `isTerminal`, and `Transcript` closes each run. Found by the app-model
+  check, invisible to the protocol tests.
+- **`AppModel` and `Sidecar` live in `AgentAppCore`, not in the executable
+  target.** A target a test cannot import is a target a test cannot check. The
+  views are the only part left unchecked, which is why they are thin.
+- **`Sidecar` redirects the service's stderr to a file, not a `Pipe`.** A full
+  pipe buffer blocks the writer: a service that blocks on its own stderr is a
+  service that stops serving.
+- **`hello` reports `terminal_event_types`** and a client ends a *run* on the
+  union of its own set and the server's, so a terminal event added in a later
+  protocol version closes an older client's timeline instead of leaving it open.
 
 ## Git
 
-Ahead of `origin/feat/computer-use-macos` by the phase 0–2 commits (nothing
+Ahead of `origin/feat/computer-use-macos` by the phase 0–3 commits (nothing
 pushed), newest first:
+`phase3a: Transcript — the event stream as UI state, checked headless`,
 `phase2c: Swift AgentClient — protocol codec, framing, live contract checks`,
 `phase2b: Unix-socket agent service, client, CLI, contract tests`,
 `phase2a: wire protocol + streaming tool loop (AgentRunner)`,

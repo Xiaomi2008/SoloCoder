@@ -373,6 +373,17 @@ public actor AgentServiceClient {
 
     /// The event stream for this connection. Single consumer, and it is live
     /// from `connect()` — subscribe before starting a run.
+    /// The event stream for this connection's life.
+    ///
+    /// It is not one run's stream: it yields across runs and ends only when the
+    /// connection closes. A one-shot client (a CLI that starts a run and wants to
+    /// print it) breaks out on `event.isTerminal`; an app keeps consuming and
+    /// lets `Transcript` close each run. A stream that finished at the first
+    /// terminal event would leave an app with no events for its second run.
+    ///
+    /// A consumer that stops consuming does not stop the yielding: the stream
+    /// buffers, so a client that walks away from a connection for good should
+    /// close it.
     public func events() -> AsyncStream<AgentEvent> { eventStream }
 
     // ------------------------------------------------------------------ calls
@@ -593,10 +604,18 @@ public actor AgentServiceClient {
                     switch message {
                     case .event(let event):
                         self.eventContinuation.yield(event)
-                        // The union, not the compiled-in set: a terminal event
-                        // this build has never heard of must still end the
-                        // stream, because the connection stays open after a run.
-                        if self.terminalTypes.contains(event.type) { self.eventContinuation.finish() }
+                        // The stream is the connection's, not the run's. A
+                        // terminal event ends a *run*; finishing the stream here
+                        // leaves a long-lived client with no events for its
+                        // second run on the same connection, which is every run
+                        // after the first. Consumers that want one run break on
+                        // `isTerminal` themselves.
+                        //
+                        // The union of the client's terminal set and the
+                        // server's is what the app's timeline uses to close a
+                        // run, so a terminal event this build has never heard of
+                        // still closes the timeline instead of leaving it open.
+                        _ = self.terminalTypes.contains(event.type)
                     case .response(let id, let result, let error):
                         Task { await self.resolve(id: id, result: result, error: error) }
                     case .serverRequest(let method, let id):
