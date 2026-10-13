@@ -159,16 +159,7 @@ struct CodeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
         .overlay(alignment: .topTrailing) {
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-            } label: {
-                Image(systemName: "doc.on.doc")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.mini)
-            .padding(4)
-            .help("Copy this block")
+            CopyButton(text: text, label: "this block").padding(4)
         }
     }
 }

@@ -163,6 +163,20 @@ struct StatusBar: View {
                 Button("OK") { model.notice = nil }.controlSize(.mini)
             }
             Spacer()
+            if let answer = model.transcript.finalText {
+                // The run's last answer, from anywhere in the timeline: the
+                // per-line copy is the answer being read, this is the one that
+                // was scrolled past to ask a follow-up. Labelled, not an icon —
+                // in a bar of icons, a word is the only thing that says what it
+                // copies.
+                Button("Copy answer") {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(answer, forType: .string)
+                }
+                .controlSize(.small)
+                .help("Copy the last answer of this run")
+            }
             Button {
                 chooseWorkingDir(model)
             } label: {
@@ -289,6 +303,14 @@ struct AssistantLine: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             MarkdownView(text: text)
+                // The answer, as markdown, is the thing worth taking away. A run
+                // writes several answers around its tool calls, so the copy is
+                // per line — "the answer" here means the one being looked at.
+                // Not while streaming: the text is not finished, and a copy of a
+                // half-arrived answer is a half answer in the pasteboard.
+                .overlay(alignment: .topTrailing) {
+                    CopyButton(text: text, label: "this answer").padding(4)
+                }
         }
     }
 }
@@ -704,6 +726,37 @@ struct ArgumentSections: View {
                 }
             }
         }
+    }
+}
+
+/// Copy a block of text, with a mark that says it happened.
+///
+/// The pasteboard write is silent. A button that gives no sign of success is a
+/// button the user presses twice, and the second press is a second `clearContents`
+/// — which is how a copy button eats the thing the user copied from somewhere
+/// else while looking at it. The mark is the point; the icon is the one the
+/// fenced code blocks already used, so the two copy affordances are one idiom.
+struct CopyButton: View {
+    let text: String
+    var label = "this"
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            copied = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5))
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.mini)
+        .help("Copy \(label)")
     }
 }
 
