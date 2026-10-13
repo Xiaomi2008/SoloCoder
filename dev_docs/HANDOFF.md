@@ -2,20 +2,102 @@
 
 ## Where we are
 
-**Phase 3 in progress: the app runs.** The Python service, the Swift client, the
-event-stream state machine and a SwiftUI shell (chat, tool timeline, permission
-sheet, model picker, session browser) are done and green, and the app spawns its
-own service and drives real runs. What is left in Phase 3 is packaging: a frozen
-sidecar binary inside a `.app`.
+**Phase 3 done: the app runs, and it ships.** The Python service, the Swift
+client, the event-stream state machine and a SwiftUI shell (chat, tool timeline,
+permission sheet, model picker, session browser) are green, the app spawns its
+own service and drives real runs, and `scripts/build_app.sh` produces a signed
+119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
+inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`
-- Python suite: **575 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **235 checks passed** (`swift run agent-checks`), **246** with
+- Branch: `feat/computer-use-macos`, ahead of origin by the phase 0–3f commits
+  (nothing pushed)
+- Python suite: **576 passed** (`.venv/bin/python -m pytest tests -q`)
+- Swift suite: **277 checks passed** (`swift run agent-checks`), **288** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); add
   `AGENT_LIVE_MODEL` for a real streamed run with thinking off, a real thinking
   run, and the app model doing two runs on one connection
-- Working tree: the phase 3d view work (markdown, tool output, scrolling, the
-  reasoning control, the target split) is uncommitted
+- Packaging gate: **6 checks passed** (`scripts/package_check.sh`) — signature,
+  self-contained load paths, the app's own `--self-test` against a relocated
+  read-only copy, imports under a scrubbed environment, parent death, and the
+  seal intact after all of it
+- Working tree: clean
+- The venv needs the `dev` extra for `tests/test_schemas.py` to collect
+  (`fastapi`); a `uv run` sync prunes extras, and it did mid-session
+
+## Phase 3f: a `.app`, and what the packaging gate found
+
+`scripts/build_app.sh` produces `SoloCoder.app` (119 MB): the Swift binary, and
+inside it a python-build-standalone interpreter with the runtime dependencies in
+its own `site-packages`, next to the project's source. Signing is ad-hoc,
+innermost-first, no hardened runtime, no sandbox.
+
+Not PyInstaller, not a venv, and the reason is relocation. Gatekeeper
+translocation runs a quarantined app from
+`/private/var/folder/…/AppTranslocation/<uuid>/d/`, so the payload must work as a
+directory tree that moved. PBS is: `sys.prefix` follows the executable. A venv is
+not: `pyvenv.cfg` pins `home = <absolute path>` outside the bundle, and its
+`bin/python` is a symlink. PyInstaller onefile unpacks ~150 MB per launch and
+breaks pyobjc's Objective-C classes.
+
+`scripts/package_check.sh` is the gate, and the app does the middle of it:
+`SoloCoder --self-test` runs the app's own startup headless — resolve, spawn,
+connect, ping, `tool.list`, `auth.status`, `model.list`, stop, socket gone — and
+the script runs it against a **relocated, read-only copy** of the bundle with a
+scrubbed environment. A shell script poking the interpreter by hand would pass on
+a bundle the app cannot launch.
+
+Six checks, and the first run of them found four defects, all invisible to
+`swift build` and `pytest`:
+
+- **SIGTERM had no handler.** The app's `stop()` sends it, and the default action
+  terminates the process where it stands: the socket stays bound (the next
+  launch's `start()` finds a live listener and refuses), the MCP subprocesses are
+  orphaned, and `handle_serve`'s `finally` — the only caller of `stop()` — never
+  runs. Fixing that exposed a second bug: the signal handler and the `finally`
+  both call `stop()`, and the second awaited `wait_closed()` on a field the first
+  had already cleared. `stop()` now takes the server out of the field before its
+  first await. `tests/service/test_watchdog.py::test_SIGTERM_shuts_the_service_down_gracefully`
+  covers both, with stdin on `/dev/null` so nothing but the handler can save it.
+- **The gate broke the seal of the bundle it was checking.** Its dependency probe
+  imported the whole set without `-B`, writing `__pycache__` into the bundle's
+  `site-packages` — a resource added after signing, so `codesign --verify` failed
+  on the next run. A check that mutates the thing it verifies has to run against
+  the read-only copy. The gate now ends by re-verifying the build tree, which is
+  what catches this class.
+- **`compileall` writes into the interpreter's stdlib.** It imports stdlib
+  modules, and an interpreter without `-B` writes their byte code beside the
+  source. `-B` is not an option there — it blocks `compileall`'s own writes — so
+  the build strips every `__pycache__` under the interpreter tree after compiling
+  the app's, and the seal covers what ships.
+- **A Finder-launched app is not a terminal launch.** It gets
+  `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and cwd `/`, so the bash tool cannot find
+  a Homebrew `git`, `rg`, `node` or `uv`, and an MCP server configured as
+  `npx`/`uvx` fails at `exec`. The environment is now curated rather than
+  inherited, with the PATH taken from a login shell (2 s budget, then the
+  LaunchServices default), and the cwd is the home directory, not the bundle.
+
+Two more that only a bundle shows:
+
+- **`-I` drops the script's directory *and* the cwd from `sys.path`.** The bundle
+  resolves `import openagent` because `cli_coder.py` inserts its own parent — not
+  because of where it sits. A `-c "import openagent"` probe fails on a bundle
+  that launches fine; that is a fact about `-I`, not a defect.
+- **`FD_CLOEXEC` on the parent-death pipe's write end.** The service spawns its
+  own children, and a forked child inherits the write end. If it does, the read
+  end never sees EOF when the app dies — a grandchild is holding it — and the
+  service that was supposed to shut itself down serves forever, in a socket
+  directory named after a dead app.
+
+The parent-death path is verified end to end: `kill -9` the app, and the sidecar
+is gone inside a second. `scripts/package_check.sh` opens a real window for ~3 s
+to prove it, which is the one thing about that script worth knowing before
+running it.
+
+Open, in order of who will hit them: Developer ID signing and notarization (the
+entitlements file is written for the hardened runtime, and is inert under
+ad-hoc); `SETEXPGID` + `killpg` so a killed service takes its grandchildren;
+TCC grants keyed to the ad-hoc cdhash, which changes every rebuild, so
+`tccutil reset All dev.solocoder.app` after a build.
 
 ## Phase 3b+: the app on screen, and why the stream felt slow
 
@@ -263,6 +345,9 @@ UI_PREVIEW_SHORT=1 swift run ui-preview             # …top of the timeline
 ```
 
 ## Next: Phase 3b — packaging the sidecar
+
+*Done by Phase 3f, above: the answer was not PyInstaller, and the sandbox the
+keychain item in point 4 assumes is not used.*
 
 The app runs from a checkout (`Sidecar` spawns `.venv/bin/python cli_coder.py
 serve`). A shipped app embeds a frozen build of the service, and that decision

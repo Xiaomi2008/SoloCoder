@@ -97,6 +97,42 @@ def test_the_service_exits_when_its_stdin_closes(shortdir):
                 pass
 
 
+def test_SIGTERM_shuts_the_service_down_gracefully(shortdir):
+    """The app's ``stop()`` sends SIGTERM, and that path has to clean up.
+
+    The default action for SIGTERM terminates the process where it stands. That
+    leaves the socket bound — the next ``start()`` finds a live listener and
+    refuses to start — and leaves every MCP subprocess orphaned, because
+    ``stop()`` is the only thing that drains them and it lives in
+    ``handle_serve``'s ``finally``, which a default-action death never reaches.
+
+    Stdin is ``/dev/null`` here on purpose: the stdin watchdog is not installed
+    for it, so nothing but the signal handler can produce a clean shutdown.
+    """
+    socket_path = shortdir / "c.sock"
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    proc = _spawn(devnull, socket_path)
+    os.close(devnull)
+    try:
+        assert _wait_for_socket(socket_path, proc), (
+            "the service never bound its socket: "
+            + (proc.stdout.read().decode(errors="replace") if proc.stdout else "")
+        )
+        proc.terminate()
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        code = proc.poll()
+        if code != 0:
+            output = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+            raise AssertionError(f"SIGTERM produced exit {code}, not a clean shutdown:\n{output}")
+        assert not socket_path.exists(), "the socket was left bound after SIGTERM"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
 def test_a_stdin_that_reports_eof_at_once_does_not_watch_a_parent(shortdir):
     """``/dev/null`` reads as EOF immediately.
 

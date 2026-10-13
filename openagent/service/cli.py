@@ -105,6 +105,10 @@ async def handle_serve(args: argparse.Namespace) -> int:
     # pipe open on our stdin; when it dies the read EOFs and the service stops.
     if service.install_stdin_watchdog():
         print(dim("watching stdin for parent death"), flush=True)
+    # The polite path. The app's `stop()` sends SIGTERM, and without a handler
+    # the default action kills the process before the `finally` below can drain
+    # its clients, close the socket and release its MCP subprocesses.
+    service.install_signal_handlers()
     if not args.quiet:
         tools = service._tools()
         print(f"{bold('openagent')} service listening on {cyan(str(settings.socket_path))}")

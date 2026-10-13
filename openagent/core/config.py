@@ -90,15 +90,32 @@ class SecretManager:
 
     @classmethod
     def get_secret_folder(cls) -> Path:
-        """Get or create the secret folder in project directory."""
-        SECRET_FOLDER = Path(__file__).parent.parent.parent / "secrets"
-        SECRET_FOLDER.mkdir(parents=True, exist_ok=True)
-        return SECRET_FOLDER
+        """The directory holding the file backend's secrets.
+
+        Under the config directory, and **not** derived from ``__file__``. A
+        packaged app runs from inside a ``.app`` bundle, where the package's
+        parent is ``Contents/Resources``: creating a folder there breaks the code
+        signature's seal, and on a Gatekeeper-translocated launch the bundle is
+        read-only, so the ``mkdir`` raises and every keychain miss takes the
+        exception path. Nothing is created on a read — ``_save_secrets`` makes
+        the directory when it writes.
+        """
+        return Path.home() / ".openagent" / "secrets"
 
     @classmethod
     def get_secret_file(cls) -> Path:
-        """Get the legacy/file secrets file path."""
+        """The file backend's secrets file path."""
         return cls.get_secret_folder() / "secrets.json"
+
+    @classmethod
+    def get_legacy_secret_file(cls) -> Path:
+        """Where the file backend's secrets lived: beside the source tree.
+
+        Read-only, for migration. It is derived from ``__file__`` because that is
+        the historical location — a checkout's ``secrets/secrets.json`` — and it
+        is never created, so the read-only-bundle problem above does not apply.
+        """
+        return Path(__file__).parent.parent.parent / "secrets" / "secrets.json"
 
     # --- backend selection -------------------------------------------------
 
@@ -162,8 +179,13 @@ class SecretManager:
 
     @classmethod
     def _load_secrets(cls) -> dict[str, str]:
-        """Load secrets from the file backend."""
+        """Load secrets from the file backend, current path then legacy."""
         secret_file = cls.get_secret_file()
+        if not secret_file.exists():
+            # The migration path: a checkout's ``secrets/secrets.json``. Read
+            # only — the caller that finds a legacy entry writes it to the
+            # keychain and removes it from this file.
+            secret_file = cls.get_legacy_secret_file()
         if secret_file.exists():
             try:
                 with open(secret_file, "r") as f:

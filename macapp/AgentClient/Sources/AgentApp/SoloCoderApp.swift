@@ -20,6 +20,19 @@ import SwiftUI
 /// because SwiftUI has not created the window at `didFinishLaunching`.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if SelfTest.requested() {
+            setvbuf(stdout, nil, _IONBF, 0)
+            print("argv: \(CommandLine.arguments)")
+            // The gate reads stdout and an exit code. `.prohibited` keeps the
+            // Dock tile and the menu bar away, and closing the windows keeps a
+            // window away from whoever is at the screen.
+            NSApp.setActivationPolicy(.prohibited)
+            for window in NSApp.windows { window.close() }
+            Task { @MainActor in
+                exit(await SelfTest.run())
+            }
+            return
+        }
         // A process launched from a shell starts prohibited (no Dock tile, no
         // menu bar, no activation). `.regular` is the line that makes it a
         // normal app. The enum is 0=regular, 1=accessory, 2=prohibited — the
@@ -33,7 +46,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         raiseWindows(after: 0.05)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// Closing the last window quits the app — except under `--self-test`, where
+    /// the windows are closed on purpose and the run is not over.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !SelfTest.requested()
+    }
 
     /// Raise the app's own window, and only that one.
     ///
@@ -70,7 +87,10 @@ struct SoloCoderApp: App {
         WindowGroup("SoloCoder") {
             RootView()
                 .environmentObject(model)
-                .task { model.start() }
+                // Under `--self-test` the view's model must stay idle: the
+                // self-test spawns its own sidecar, and both would use this
+                // process's one socket path.
+                .task { if !SelfTest.requested() { model.start() } }
         }
         .defaultSize(width: 900, height: 620)
         .commands {

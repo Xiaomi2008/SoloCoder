@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Ad-hoc signing with no hardened runtime, so these are inert today. They are
+  here so that turning the hardened runtime on — which a Developer ID
+  distribution needs — does not fail on the bundled CPython: a Python that
+  dlopens `.so` files from its own site-packages is refused by library
+  validation, and pydantic-core and tiktoken are Rust extensions that build
+  executable memory.
+
+  No app sandbox: the app spawns a process, binds a Unix socket, reads
+  ~/.openagent, and runs the `security` CLI for a Keychain key. The sandbox
+  denies the first three and makes the fourth a different keychain.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

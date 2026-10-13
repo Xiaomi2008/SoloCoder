@@ -26,6 +26,7 @@ import contextlib
 import dataclasses
 import logging
 import os
+import signal
 import stat
 import sys
 import threading
@@ -333,8 +334,15 @@ class AgentService:
             logger.debug("startup model discovery failed", exc_info=True)
 
     async def stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
+        # Take the server out of the field before the first await. Two callers
+        # reach this at once on a SIGTERM: the signal handler, and
+        # ``handle_serve``'s ``finally`` once closing the server releases
+        # ``serve_forever()``. A caller that read the field before the other
+        # cleared it awaits ``wait_closed()`` on ``None`` — so the check and the
+        # use have to be one step, and the second caller's unlink is a no-op.
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
             # ``Server.wait_closed()`` waits for connection handlers to finish,
             # and a handler is a client that stays connected for the life of the
             # app. Shut the clients down first or shutdown hangs on them.
@@ -343,11 +351,37 @@ class AgentService:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-            await self._server.wait_closed()
-            self._server = None
+            await server.wait_closed()
         path = Path(self.settings.socket_path)
         if path.exists():
             path.unlink(missing_ok=True)
+
+    def install_signal_handlers(self) -> bool:
+        """Stop the service on SIGTERM and SIGINT.
+
+        The app's ``stop()`` sends SIGTERM, and the default action for SIGTERM
+        is to terminate the process where it stands. That leaves the socket
+        bound — the next launch's ``start()`` finds a live listener and refuses
+        to start — and leaves every MCP subprocess orphaned, because
+        ``stop()`` is the only thing that drains them and it lives in
+        ``handle_serve``'s ``finally``, which a default-action death never
+        reaches.
+
+        So SIGTERM means what the app means by it: the same shutdown the stdin
+        watchdog runs. Closing the server is what releases
+        ``serve_forever()``, and the ``finally`` then drains the clients.
+        """
+        loop = asyncio.get_running_loop()
+        installed = 0
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, lambda: asyncio.ensure_future(self.stop()))
+                installed += 1
+            except (NotImplementedError, RuntimeError, ValueError, OSError):
+                # Not the main thread, or a platform without this support. The
+                # stdin watchdog still covers parent death.
+                pass
+        return installed > 0
 
     def install_stdin_watchdog(self) -> bool:
         """Shut down when the parent's stdin closes.
