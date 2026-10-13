@@ -151,6 +151,45 @@ public enum Markdown {
         return blocks
     }
 
+    /// The part of a streaming answer whose blocks are finished, and the tail
+    /// still being written.
+    ///
+    /// A block is finished when a blank line follows it, so the split is at the
+    /// last blank line: above it is structure the model has committed to, below it
+    /// is the block in progress, whose next character can turn `- it` into a rule
+    /// or a heading. That split is what lets a streaming answer be markdown at
+    /// all — the prefix is parsed once, when it grows, and only the tail
+    /// re-renders per character. Parsing the whole answer per publish is the O(n²)
+    /// this file's caller has been avoiding.
+    ///
+    /// An open fence swallows everything after it, so a prefix ending inside one
+    /// is not finished structure: the whole answer is the tail, and the code block
+    /// appears as markdown when its fence closes.
+    public static func split(_ text: String) -> (complete: String, tail: String) {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var lastBlank = -1
+        for (offset, line) in lines.enumerated() where isBlank(line) { lastBlank = offset }
+        guard lastBlank >= 0 else { return ("", text) }
+        var open: Fence?
+        for line in lines[...lastBlank] {
+            guard let fence = fenceOpener(line) else { continue }
+            if open == nil {
+                open = fence
+            } else if let opened = open, fence.marker == opened.marker, fence.length >= opened.length,
+                      fence.language == nil {
+                // A closer is the marker alone: `fenceOpener` gives it no info
+                // string, which is what separates ``` closing a block from
+                // ```swift opening the next one.
+                open = nil
+            }
+        }
+        if open != nil { return ("", text) }
+        return (
+            lines[...lastBlank].joined(separator: "\n"),
+            lines[(lastBlank + 1)...].joined(separator: "\n")
+        )
+    }
+
     // MARK: rules
 
     private static func isBlank(_ line: String) -> Bool {

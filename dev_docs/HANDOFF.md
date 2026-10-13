@@ -12,16 +12,19 @@ inside it. `scripts/package_check.sh` is the gate that says so.
 - Branch: `feat/computer-use-macos`, ahead of origin by the phase 0–3f commits
   (nothing pushed)
 - Python suite: **576 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **277 checks passed** (`swift run agent-checks`), **288** with
+- Swift suite: **300 checks passed** (`swift run agent-checks`), **319** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); add
   `AGENT_LIVE_MODEL` for a real streamed run with thinking off, a real thinking
   run, and the app model doing two runs on one connection
+- Installed at `/Applications/SoloCoder.app`, and `.build/SoloCoder-0.1.0.dmg`
+  (62 MB) builds and verifies with `scripts/make_dmg.sh`
 - Packaging gate: **6 checks passed** (`scripts/package_check.sh`), **7** with
   `AGENT_LIVE_MODEL` — signature, self-contained load paths, the app's own
   `--self-test` against a relocated read-only copy, imports under a scrubbed
   environment, a real streamed run, parent death, and the seal intact after all
   of it
-- Working tree: clean
+- Working tree: **not clean** — the composer keys, the markdown fix,
+  `scripts/make_dmg.sh` and this file are uncommitted as of 2026-10-12
 - The venv needs the `dev` extra for `tests/test_schemas.py` to collect
   (`fastapi`); a `uv run` sync prunes extras, and it did mid-session
 
@@ -104,6 +107,73 @@ entitlements file is written for the hardened runtime, and is inert under
 ad-hoc); `SETEXPGID` + `killpg` so a killed service takes its grandchildren;
 TCC grants keyed to the ad-hoc cdhash, which changes every rebuild, so
 `tccutil reset All dev.solocoder.app` after a build.
+
+## Phase 3g: on the machine, and two things the gate could not see
+
+The bundle passed its gate and then met a user. Both reports were about the
+window, and neither was visible to `swift build`, `pytest` or
+`scripts/package_check.sh`.
+
+**Installed, and as a dmg.** `/Applications/SoloCoder.app`, copied with `ditto`
+(keeps the interpreter's symlinks and the signature; `codesign --verify --deep
+--strict` and `--self-test` both pass from that path). `scripts/make_dmg.sh`
+builds `.build/SoloCoder-0.1.0.dmg` — 62 MB of 119, UDZO, the app beside an
+`Applications` symlink, image signed, then verified by mounting it **read-only**
+and running `--self-test` from inside the mount. A mounted dmg is the cheap
+stand-in for translocation, so the dmg's check is the same shape the packaging
+gate already proved. Three things about it: the copy in `/Applications` is a
+snapshot, so a rebuild needs `build_app.sh --binary` and a `ditto`; there is no
+`CFBundleIconFile`, so the Dock tile is the generic one; and the image is for
+this machine — a file built here carries no `com.apple.quarantine`, and the same
+file emailed to anyone arrives with it, which an ad-hoc signature cannot survive.
+That last one is the Developer ID item above, not a defect in the script.
+
+**Return.** The composer had Return writing a newline and ⌘Return sending,
+written down with a real reason: prompts are multi-line, and Return-as-send costs
+a paragraph mid-thought. The reasoning is right about the cost and wrong about
+the key — every chat box on the machine sends on Return, so a Return that quietly
+inserts a newline is reported as a Send that does not work. Now **↵ sends, ⇧↵
+writes the newline** (⌥↵ too; ⌘↵ kept for anyone who learned it). Not verifiable
+headless: posting key events needs an Accessibility grant for the posting
+process. ↵-sends is the code path ⌘Return already used, so it is proven;
+⇧↵-newline is the branch only a thumb can check, and its failure mode is a
+doubled blank line (SwiftUI's vertical field inserts its own newline for some
+modifier-Returns, and `submit()` appends one).
+
+**Markdown.** The report was "it didn't render markdown", and that is two
+different things. The parser is not one of them: a prompt forcing every construct
+through `lan/swift-1.5-iq3_s` produced textbook markdown and
+`Markdown.blocks` classified all of it.
+
+- *The bug.* `message_completed` was the only event that closed an assistant
+  line, so a run that ends without one — Cancel pressed mid-answer, a stream that
+  drops, a run-level failure with no message-level one — left the answer
+  `streaming` for the rest of the session, which is the user reading `## Plan`
+  and `**bold**` in a run that finished two minutes ago. Every terminal event now
+  closes the streaming lines. Deliberate side effect: a cancelled run's thinking
+  collapses into its disclosure instead of staying expanded, and one check that
+  asserted "it stays open, because nothing closed it" was updated to say why
+  36,000 characters of thinking have no business being open in a finished run.
+- *The design.* A streaming answer was plain text on purpose: parsing
+  `Markdown.blocks` per publish is O(n²) in an answer that grows per publish. It
+  is now markdown up to its last blank line, with the block in progress plain —
+  a `- it` can become a rule or a heading on the next character, so the tail
+  cannot be committed early. `Markdown.split` says where that boundary is, and is
+  fence-aware: a blank line inside an open fence is not a boundary, because the
+  fence swallows everything after it. The parse runs in the reducer, once per
+  finished block, cached on the line (`TranscriptLine.blocks`), so the view parses
+  nothing per publish.
+
+The O(n²) the old comment was guarding is measured, not assumed. Per-delta split,
+ungated, debug build, `swift run ui-cost`: 5.5 ms / 470 ms / **7.4 s** of
+main-actor work for 2k / 20k / 80k-character answers. The boundary can only move
+when a newline arrives, or when the text ended on a blank line the next delta
+fills in — a trailing blank line stops being blank the moment a character lands
+on it. Gated to that: **0.3 ms / 3.3 ms / 19.6 ms**.
+
+Swift suite: 288 → **319 checks**. New: the split rules, block-boundary parsing
+from deltas, the cancelled-run close, and one live assertion that a real streamed
+answer has parsed blocks *before* the run ends.
 
 ## Phase 3b+: the app on screen, and why the stream felt slow
 
@@ -332,7 +402,7 @@ to launch the app. Four gaps, and a way to look.
 
 ```bash
 cd /Users/taozeng/Projects/SoloCoder
-.venv/bin/python -m pytest tests -q                 # 569 passed
+.venv/bin/python -m pytest tests -q                 # 576 passed
 .venv/bin/python scripts/smoke_service.py           # SMOKE OK
 .venv/bin/python cli_coder.py serve --socket /tmp/oa/e2e.sock
 .venv/bin/python cli_coder.py tui --socket /tmp/oa/e2e.sock \
@@ -341,13 +411,22 @@ cd /Users/taozeng/Projects/SoloCoder
 .venv/bin/python scripts/gen_protocol_fixtures.py   # after any protocol/event change
 
 cd macapp/AgentClient
-swift run agent-checks                              # 235 checks passed
-AGENT_REPO_ROOT=.. swift run agent-checks           # + the app-model checks
+swift run agent-checks                              # 300 checks passed
+AGENT_REPO_ROOT=.. swift run agent-checks           # 319, + the app-model checks
 AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s \
-    swift run agent-checks                          # 180, real model
+    swift run agent-checks                          # …and a real streamed run
 swift run solocoder                                 # the app
 swift run ui-preview                                # the views, no service, no model
 UI_PREVIEW_SHORT=1 swift run ui-preview             # …top of the timeline
+swift run ui-cost                                   # streaming cost, measured
+
+cd ../..
+scripts/build_app.sh                                # the .app, 119 MB
+scripts/build_app.sh --binary                       # …the fast path: binary + source
+scripts/package_check.sh                            # 6 checks, 7 with AGENT_LIVE_MODEL
+scripts/make_dmg.sh                                 # 62 MB dmg, verified from a mount
+rm -rf /Applications/SoloCoder.app \
+    && ditto .build/app/SoloCoder.app /Applications/SoloCoder.app   # refresh the install
 ```
 
 ## Next: Phase 3b — packaging the sidecar

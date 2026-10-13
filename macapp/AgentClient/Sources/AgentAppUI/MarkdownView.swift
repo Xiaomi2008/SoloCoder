@@ -24,16 +24,28 @@ struct MarkdownView: View {
     let text: String
 
     var body: some View {
+        BlocksView(blocks: Markdown.blocks(text)).textSelection(.enabled)
+    }
+}
+
+/// Blocks, drawn.
+///
+/// Split out of `MarkdownView` because a streaming answer draws its finished
+/// blocks and its in-progress tail through different views, and the finished part
+/// is already parsed by the time it gets here.
+struct BlocksView: View {
+    let blocks: [MarkdownBlock]
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // `Array` over `enumerated()` because a block has no identity of its
             // own: the same `paragraph("…")` can appear twice in one answer, and
             // a `ForEach` keyed on content would collapse them.
-            ForEach(Array(Markdown.blocks(text).enumerated()), id: \.offset) { _, block in
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 BlockView(block: block)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
     }
 }
 

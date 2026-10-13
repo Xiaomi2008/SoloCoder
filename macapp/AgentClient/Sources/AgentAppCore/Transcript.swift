@@ -111,6 +111,41 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     /// characters per chunk, so a 2k-character answer is 1300 rebuilds of a view
     /// that cannot be laid out incrementally.
     public var streaming: Bool = false
+    /// The blocks of an answer that are already finished, parsed while it streams.
+    ///
+    /// The cache exists so the view parses nothing: `Markdown.split` says which
+    /// part of a streaming answer is committed structure, and this is that part
+    /// parsed, refreshed only when the boundary moves — once per block, not once
+    /// per character. The tail, the block still being written, stays plain text
+    /// until its blank line arrives.
+    ///
+    /// Empty for a finished line, which the view parses whole.
+    public var blocks: [MarkdownBlock] = []
+    /// The text `blocks` was parsed from, so the parse runs when it changes.
+    ///
+    /// Not `private`: a private stored property makes the memberwise init private,
+    /// and this struct is constructed by name from all over the reducer.
+    var parsedPrefix: String = ""
+
+    /// Fold a delta into the answer, and re-parse the part of it that is finished.
+    mutating func appendAnswerDelta(_ delta: String) {
+        guard case .assistant(let accumulated) = kind else { return }
+        // The split can only move when a newline arrives, or when the text ended on
+        // a blank line that this delta is filling in — a trailing blank line stops
+        // being blank the moment a character lands on it. Everything else leaves the
+        // finished prefix exactly where it was, and the scan is O(n) in an answer
+        // that grows per delta: ungated, a 20k-character answer costs 470 ms of
+        // main-actor work spread across the run, and an 80k one costs 7.4 s.
+        let canMove = delta.contains("\n") || accumulated.hasSuffix("\n")
+        var text = accumulated
+        text.append(delta)
+        kind = .assistant(text)
+        guard canMove else { return }
+        let (complete, _) = Markdown.split(text)
+        guard complete != parsedPrefix else { return }
+        parsedPrefix = complete
+        blocks = Markdown.blocks(complete)
+    }
 }
 
 public enum RunState: Equatable, Sendable {
@@ -370,16 +405,19 @@ public struct Transcript: Equatable, Sendable {
             finished = true
             pendingPermission = nil
             state = .finished(e.result.stopReason)
+            closeStreamingLines()
 
         case .runFailed(let e):
             finished = true
             pendingPermission = nil
             state = .failed(e.error)
+            closeStreamingLines()
 
         case .runCancelled(let e):
             finished = true
             pendingPermission = nil
             state = .cancelled(e.reason)
+            closeStreamingLines()
 
         case .unknown(let type, _):
             lines.append(TranscriptLine(id: "unknown-\(lines.count)", kind: .note("event: \(type)"), messageId: nil))
@@ -387,6 +425,7 @@ public struct Transcript: Equatable, Sendable {
                 finished = true
                 pendingPermission = nil
                 state = .finished(.other(type))
+                closeStreamingLines()
             }
         }
     }
@@ -439,10 +478,8 @@ public struct Transcript: Equatable, Sendable {
                 text = String(text.suffix(Self.reasoningKeep))
             }
             lines[index].kind = .reasoning(text)
-        case .assistant(let accumulated):
-            var text = accumulated
-            text.append(delta)
-            lines[index].kind = .assistant(text)
+        case .assistant:
+            lines[index].appendAnswerDelta(delta)
         default:
             break
         }
@@ -456,6 +493,20 @@ public struct Transcript: Equatable, Sendable {
     private mutating func closeReasoning(for messageId: String) {
         guard let index = lines.lastIndex(where: { $0.messageId == messageId && isReasoning($0.kind) }) else { return }
         lines[index].streaming = false
+    }
+
+    /// Nothing is arriving any more, so nothing may be marked as arriving.
+    ///
+    /// `message_completed` is the event that normally closes an answer line, and a
+    /// run ends without it more often than that suggests: Cancel pressed
+    /// mid-answer, a stream that drops, a run-level failure with no message-level
+    /// one. A line left `streaming` renders as plain text for the rest of the
+    /// session, so the user reads `## Plan` and `**bold**` in a run that finished
+    /// two minutes ago.
+    private mutating func closeStreamingLines() {
+        for index in lines.indices where lines[index].streaming {
+            lines[index].streaming = false
+        }
     }
 
     private func indexOfTool(_ toolCallId: String) -> Int? {

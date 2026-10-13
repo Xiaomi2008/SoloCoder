@@ -213,4 +213,28 @@ func markdownChecks(_ checks: Checks) {
             checks.expect(allText.contains(part), "the answer's `\(part)` reaches a block")
         }
     }
+
+    // MARK: the streaming split
+    //
+    // A streaming answer is markdown up to its last blank line and plain text
+    // after it, so the parse runs once per finished block and not once per
+    // character. These are the rules that make that true.
+
+    let mid = Markdown.split("## Title\n\nSome words\n\n- one\n- tw")
+    checks.equal(mid.complete, "## Title\n\nSome words\n", "the finished blocks are everything to the last blank line")
+    checks.equal(mid.tail, "- one\n- tw", "the block in progress is the tail")
+    checks.equal(
+        Markdown.blocks(mid.complete),
+        [.heading(level: 2, text: "Title"), .paragraph("Some words")],
+        "…and the prefix is parseable on its own"
+    )
+
+    let first = Markdown.split("## Title")
+    checks.equal(first.complete, "", "with no blank line nothing is finished: the answer is one paragraph in progress")
+    checks.equal(first.tail, "## Title", "…so all of it is the tail")
+
+    checks.equal(Markdown.split("```\ncode\n\nmore").complete, "", "a blank line inside an open fence is not a block boundary")
+    let pastFence = Markdown.split("```\ncode\n```\n\n- item")
+    checks.equal(pastFence.complete, "```\ncode\n```\n", "a closed fence is a finished block")
+    checks.equal(pastFence.tail, "- item", "…and the list after it is the tail")
 }

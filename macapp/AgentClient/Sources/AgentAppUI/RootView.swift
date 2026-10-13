@@ -278,19 +278,22 @@ struct ChatScroll: View {
 
 /// The assistant text, split by how far along it is.
 ///
-/// An empty message is "thinking…"; a streaming one is plain `Text`; a finished
-/// one is markdown, selectable, parsed once.
+/// An empty message is "thinking…"; a streaming one is the markdown it has
+/// finished plus the block it is still writing; a finished one is markdown,
+/// selectable, parsed once.
 ///
-/// The streaming case is plain text on purpose, for the same reason the thinking
-/// line shows a tail: a selectable `Text` rebuilds its text-kit view on every
+/// The streaming case draws `blocks`, which the transcript parsed once per block
+/// as the answer grew — never per character. That is what keeps the trap the
+/// thinking line proved: a selectable `Text` rebuilds its text-kit view on every
 /// character, and the model streams ~1.5 characters per chunk, so a 2k-character
-/// answer is 1300 rebuilds of a view that cannot be laid out incrementally.
-/// Parsing markdown per publish is the same trap one layer up — `Markdown.blocks`
-/// is O(n) in an answer that grows per publish, so it is O(n²) per run. The
-/// finished line is the only one that pays for structure, and it pays once.
+/// answer is 1300 publishes; parsing the whole answer on each of them is O(n²) per
+/// run. So the finished prefix is structure, parsed at its own pace, and the tail
+/// — the block in progress, whose next character can turn `- it` into a rule — is
+/// plain text until its blank line arrives.
 struct AssistantLine: View {
     let text: String
     let streaming: Bool
+    var blocks: [MarkdownBlock] = []
 
     var body: some View {
         if text.isEmpty {
@@ -299,8 +302,14 @@ struct AssistantLine: View {
                 Text("thinking…").foregroundStyle(.secondary)
             }
         } else if streaming {
-            Text(text)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            let tail = Markdown.split(text).tail
+            VStack(alignment: .leading, spacing: 8) {
+                BlocksView(blocks: blocks)
+                if !tail.isEmpty {
+                    Text(tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         } else {
             MarkdownView(text: text)
                 // The answer, as markdown, is the thing worth taking away. A run
@@ -333,7 +342,7 @@ struct LineView: View {
         case .user(let text):
             UserLine(text: text)
         case .assistant(let text):
-            AssistantLine(text: text, streaming: line.streaming)
+            AssistantLine(text: text, streaming: line.streaming, blocks: line.blocks)
         case .reasoning(let text):
             ReasoningLine(text: text, streaming: line.streaming)
         case .messageFailed(let error):
@@ -556,10 +565,13 @@ struct PermissionLine: View {
 
 /// The prompt field.
 ///
-/// **Return writes a newline; ⌘Return sends.** The field is one to six lines and
-/// the prompts are multi-line — a stack trace, a list of files, a paragraph — so
-/// Return-as-send cost a paragraph every time: the half-written prompt went to
-/// the model and the rest of the typing went into an empty field.
+/// **Return sends; ⇧Return and ⌘Return write a newline.** It used to be the other
+/// way round, on the reasoning that prompts are multi-line — a stack trace, a list
+/// of files, a paragraph — and Return-as-send costs a paragraph each time one is
+/// being typed. That reasoning is right about the cost and wrong about the key:
+/// every chat box on the machine sends on Return, so a Return that quietly writes
+/// a newline reads as a broken Send, and the fix is the modifier every one of
+/// those boxes uses for the rarer keypress.
 ///
 /// **A disabled Send says why.** It used to be a greyed button next to a finished
 /// prompt, and the only way to learn the reason was to go looking for the empty
@@ -589,7 +601,7 @@ struct Composer: View {
                 Button("Send") { send() }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(model.sendBlock(draft) != nil)
-                    .help(model.sendBlock(draft).map { $0.reason } ?? "⌘↵ sends, ↵ writes a new line")
+                    .help(model.sendBlock(draft).map { $0.reason } ?? "↵ sends, ⇧↵ writes a new line")
             }
         }
         .padding(10)
@@ -609,17 +621,26 @@ struct Composer: View {
         }
     }
 
-    /// Return inserts a newline; ⌘Return sends.
+    /// Return sends; a modifier writes the newline.
     ///
     /// `onSubmit` reports that a submit happened and not which key caused it, so
     /// the modifier comes from AppKit's current event flags, which are current
     /// for the whole of the dispatch that is calling this.
+    ///
+    /// Shift is the newline key every chat box uses; ⌘ is kept because it is what
+    /// this box did before, and a user who learned it should not find it sending.
+    /// Option is in the list because SwiftUI's own vertical field inserts a newline
+    /// on Option-Return, and the two possible failures are not equal: appending
+    /// when AppKit already inserted costs a blank line in a prompt, and not
+    /// appending when it did not costs a key that does nothing — the complaint this
+    /// flip exists to answer.
     private func submit() {
-        if NSEvent.modifierFlags.contains(.command) {
-            send()
+        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.shift) || flags.contains(.command) || flags.contains(.option) {
+            draft.append("\n")
             return
         }
-        draft.append("\n")
+        send()
     }
 
     private func send() {

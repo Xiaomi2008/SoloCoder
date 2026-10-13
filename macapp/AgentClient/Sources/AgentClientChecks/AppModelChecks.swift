@@ -208,9 +208,10 @@ private func reasoningCapChecks(_ checks: Checks) async throws {
 /// The rule is `AppModel.sendBlock`, which is also `send`'s own guard — the
 /// button and the call get their answer from one place, so a Send that looks
 /// enabled cannot refuse, and one that is disabled has words to explain itself.
-/// The other half of the composer, Return writing a newline instead of sending a
-/// half-typed paragraph, is keyboard state: `swift run ui-preview` is where that
-/// is seen.
+/// The other half of the composer — which key sends, which one writes a newline —
+/// is keyboard state, and `swift run ui-preview` is where that is seen. What is
+/// checked here is the gate under it: a Send that fires on any of those keys can
+/// only fire when there is a connection, a scope and a prompt.
 @MainActor
 func composerChecks(_ checks: Checks) {
     print("composer")

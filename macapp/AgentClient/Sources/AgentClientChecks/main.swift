@@ -389,10 +389,19 @@ func liveSession(
     var types: [String] = []
     var sawDelta = false
     var sawTool = false
+    var streamingBlocks = 0
     for await event in stream {
         types.append(event.type)
         transcript.apply(event)
-        if case .messageDelta = event { sawDelta = true }
+        if case .messageDelta = event {
+            sawDelta = true
+            // The answer is markdown *while it streams*, not only after it ends:
+            // the blocks the reducer parsed mid-run are the proof, on real traffic
+            // from a real model.
+            if let answer = transcript.lines.last(where: { if case .assistant = $0.kind { return true } else { return false } }) {
+                streamingBlocks = max(streamingBlocks, answer.blocks.count)
+            }
+        }
         if case .toolCallCompleted = event { sawTool = true }
         if event.isTerminal { break }
     }
@@ -403,6 +412,10 @@ func liveSession(
     checks.expect(
         types.last.map { Wire.terminalEventTypes.contains($0) } ?? false,
         "the stream ends on a terminal event"
+    )
+    checks.expect(
+        streamingBlocks > 0,
+        "the answer is markdown while it streams: \(streamingBlocks) blocks parsed before the run ended"
     )
 
     // The reducer, fed a real stream rather than a scripted one: this is what

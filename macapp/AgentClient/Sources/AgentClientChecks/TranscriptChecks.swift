@@ -76,9 +76,14 @@ func transcriptChecks(_ checks: Checks) throws {
         onlyThinking.lines.contains { if case .reasoning(let t) = $0.kind { return t == "thinking and thinking" } else { return false } },
         "a run that only thinks still shows what it thought"
     )
+    // It stays on screen *while the run is alive*. Once the run has ended there is
+    // nothing left to prove: the thinking is history, and the view keeps history
+    // collapsed behind its "thought for a moment" disclosure. Left open, a
+    // cancelled run leaves 36,000 characters of thinking expanded in the timeline
+    // for the rest of the session.
     checks.expect(
-        onlyThinking.lines.first(where: { $0.messageId == "m1" && $0.streaming })?.kind != nil,
-        "and it stays open, because nothing closed it"
+        onlyThinking.lines[thinkingIndexOrMax(onlyThinking)].streaming == false,
+        "and it closes when the run ends, so the thinking lives in its disclosure"
     )
 
     // MARK: the documented sequence
@@ -346,4 +351,50 @@ func transcriptChecks(_ checks: Checks) throws {
     checks.expect(all.finished, "the fixture stream ends the run")
     checks.expect(!all.lines.isEmpty, "and leaves a timeline")
     checks.equal(all.pendingPermission, nil, "a finished run has nothing pending")
+
+    // MARK: a streaming answer's structure
+
+    // The answer arrives a character at a time and the view renders its finished
+    // part as markdown, so the blocks have to be parsed at block boundaries — in
+    // the reducer, where a check can see them, and not in the view per publish.
+    var streaming = Transcript()
+    for json in [
+        #"{"type":"run_started","run_id":"r1"}"#,
+        #"{"type":"message_started","run_id":"r1","message_id":"m1"}"#,
+        ###"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"## Plan"}"###,
+    ] {
+        streaming.apply(try ev(json))
+    }
+    checks.expect(
+        streaming.lines.last?.blocks.isEmpty == true,
+        "a heading that has not had its blank line is not a finished block"
+    )
+
+    streaming.apply(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"\n- one"}"#))
+    checks.expect(
+        streaming.lines.last?.blocks.isEmpty == true,
+        "a heading and a bullet with no blank line between them are one block in progress"
+    )
+
+    streaming.apply(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"\n\nbody"}"#))
+    checks.equal(
+        streaming.lines.last?.blocks,
+        [.heading(level: 2, text: "Plan"), .bullets(["one"])],
+        "the blank line closes the block, so the parse runs once and `body` is the tail"
+    )
+
+    // A run that ends without `message_completed` — Cancel pressed mid-answer, a
+    // stream that drops — used to leave its answer `streaming` for the rest of the
+    // session, which is the user reading `## Plan` in a run that finished.
+    let cancelledMidAnswer = try fold([
+        ev(#"{"type":"run_started","run_id":"r1"}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        ev(###"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"## Plan"}"###),
+        ev(#"{"type":"run_cancelled","run_id":"r1","reason":"the user pressed Cancel"}"#),
+    ])
+    let answerLine = cancelledMidAnswer.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    checks.expect(
+        answerLine?.streaming == false,
+        "a cancelled run closes its answer, so the answer renders as markdown and not as markup"
+    )
 }
