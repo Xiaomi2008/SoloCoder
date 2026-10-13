@@ -1,5 +1,6 @@
 import AgentAppCore
 import AgentClient
+import AppKit
 import Combine
 import Foundation
 
@@ -53,6 +54,24 @@ public final class AppModel: ObservableObject {
     // MARK: lifecycle
 
     public func start() {
+        // Quitting takes the sidecar with it. An app that leaves a service bound
+        // to a socket behind is an app whose next launch talks to the previous
+        // launch's server — and the socket path is derived from the pid, so the
+        // orphan is not even visible in the new launch's logs.
+        //
+        // `kill` is not covered: SIGTERM does not post this notification, so a
+        // killed app still leaves its sidecar. The shipped answer is a watchdog
+        // in the service that exits when its stdin closes (the parent's pipe
+        // EOFs when the parent dies); that is a service-side change, not a
+        // view-side one.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.stop()
+        }
+
         Task {
             do {
                 try await sidecar.start()
