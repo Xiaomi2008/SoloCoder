@@ -34,11 +34,13 @@ from openagent.core.types import (
 )
 from openagent.provider.base import BaseProvider
 from openagent.providers import (
+    ProviderReasoningDelta,
     ProviderError,
     ProviderTextDelta,
     ProviderToolCall,
 )
 from openagent.runtime.events import (
+    ReasoningDelta,
     AgentResult,
     ContextCompactionCompleted,
     ContextCompactionFailed,
@@ -132,6 +134,7 @@ class AgentRunner:
         system_prompt: str = "",
         max_turns: int = 100,
         permission_gate: PermissionGate | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.provider = provider
         # `session or Session(...)` is a trap here: Session defines __len__, so
@@ -143,6 +146,10 @@ class AgentRunner:
         self.tool_context = tool_context or ToolContext()
         self.max_turns = max_turns
         self.permission_gate = permission_gate
+        # How much the model is allowed to think before answering. Measured on
+        # `swift-1.5-iq3_s`: the default produced 686,439 characters of private
+        # reasoning and never emitted an answer; "none" answers in 1.1s.
+        self.reasoning_effort = reasoning_effort
         self._cancel_reason: str | None = None
 
     # ----------------------------------------------------------- entry points
@@ -262,7 +269,14 @@ class AgentRunner:
                     system_prompt=self.session.system_prompt,
                     **turn_kwargs,
                 ):
-                    if isinstance(chunk, ProviderTextDelta):
+                    if isinstance(chunk, ProviderReasoningDelta):
+                        # Not part of the answer, never part of history: the
+                        # user sees the model working instead of a spinner that
+                        # has been still for ten seconds.
+                        yield ReasoningDelta(
+                            run_id=run_id, message_id=message_id, delta=chunk.delta
+                        )
+                    elif isinstance(chunk, ProviderTextDelta):
                         text_parts.append(chunk.delta)
                         yield MessageDelta(
                             run_id=run_id, message_id=message_id, delta=chunk.delta
@@ -481,6 +495,8 @@ class AgentRunner:
         model stalls the run for minutes.
         """
         kwargs = dict(base_kwargs)
+        if self.reasoning_effort:
+            kwargs.setdefault("reasoning_effort", self.reasoning_effort)
         if screenshot_followup_added:
             kwargs["max_tokens"] = min(
                 kwargs.get("max_tokens", 8192), self.SCREENSHOT_FOLLOWUP_MAX_TOKENS
@@ -488,4 +504,8 @@ class AgentRunner:
         return kwargs
 
 
-__all__ = ["MAX_TURNS_MESSAGE", "AgentRunner"]
+#: What a client may ask the model to spend on thinking. The literals are wire
+#: values, sent to the provider as `reasoning_effort`.
+REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high")
+
+__all__ = ["MAX_TURNS_MESSAGE", "REASONING_EFFORTS", "AgentRunner"]

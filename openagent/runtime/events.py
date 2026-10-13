@@ -58,6 +58,21 @@ class MessageDelta:
 
 
 @dataclass
+class ReasoningDelta:
+    """The model thinking out loud, before it answers.
+
+    Not part of the answer and never sent back to the model as history: it is
+    progress for the user. A client that ignores it shows a frozen spinner for
+    the ~10 seconds a reasoning model spends on its private tokens.
+    """
+
+    run_id: str
+    message_id: str
+    delta: str
+    type: Literal["reasoning_delta"] = "reasoning_delta"
+
+
+@dataclass
 class MessageCompleted:
     run_id: str
     message_id: str
@@ -164,6 +179,7 @@ RuntimeEvent = (
     | RunCancelled
     | MessageStarted
     | MessageDelta
+    | ReasoningDelta
     | MessageCompleted
     | MessageFailed
     | ToolCallStarted
@@ -186,6 +202,7 @@ __all__ = [
     "MessageDelta",
     "MessageFailed",
     "MessageStarted",
+    "ReasoningDelta",
     "PermissionRequested",
     "PermissionResolved",
     "RunCancelled",

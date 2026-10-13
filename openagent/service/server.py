@@ -58,7 +58,7 @@ from openagent.runtime.permissions import (
     risk_reason,
     tool_risk,
 )
-from openagent.runtime.runner import AgentRunner
+from openagent.runtime.runner import REASONING_EFFORTS, AgentRunner
 from openagent.service import sessions
 from openagent.service.protocol import (
     MIN_PROTOCOL_VERSION,
@@ -511,6 +511,14 @@ class AgentService:
                 {"permission_mode": mode},
             )
 
+        reasoning_effort = params.get("reasoning_effort")
+        if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+            raise RpcError(
+                ErrorCode.INVALID_PARAMS,
+                f"reasoning_effort must be one of {', '.join(REASONING_EFFORTS)}",
+                {"reasoning_effort": reasoning_effort},
+            )
+
         images = params.get("images")
         if images is not None and (
             not isinstance(images, list) or not all(isinstance(i, str) for i in images)
@@ -537,6 +545,7 @@ class AgentService:
             tool_context=ToolContext(working_dir=str(working_dir)),
             max_turns=max_turns,
             permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
+            reasoning_effort=reasoning_effort,
         )
         run = _Run(
             run_id=run_id,

@@ -16,6 +16,15 @@
       }
     },
     {
+      "type": "reasoning_delta",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "delta": "Thinking: the user wants 中文 — 1,900 tokens of this arrive before the first answer character. ",
+        "type": "reasoning_delta"
+      }
+    },
+    {
       "type": "message_delta",
       "params": {
         "run_id": "run_sample",

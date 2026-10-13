@@ -69,7 +69,7 @@ forever. A new terminal event type is therefore additive, not breaking.
 | --- | --- | --- |
 | `hello` | `protocol_version`, `client`, `client_version` | handshake above |
 | `ping` | — | `{"pong": true, "server_time": float}` |
-| `run.start` | `prompt` (str), `working_dir` (str, **required**, absolute), `model` (str, optional `provider/model`), `session_id` (optional), `max_turns` (int), `permission_mode` (`allow_all`\|`allow_readonly`\|`ask`), `images` ([base64], optional) | `{"run_id": …, "session_id": …, "model": "provider/model"}` |
+| `run.start` | `prompt` (str), `working_dir` (str, **required**, absolute), `model` (str, optional `provider/model`), `session_id` (optional), `max_turns` (int), `permission_mode` (`allow_all`\|`allow_readonly`\|`ask`), `images` ([base64], optional), `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`, optional) | `{"run_id": …, "session_id": …, "model": "provider/model"}` |
 | `run.cancel` | `run_id` | `{"cancelled": true}` (the `run_cancelled` event follows on the stream) |
 | `permission.respond` | `request_id`, `granted` (bool), `scope` (`once`\|`session`\|`never`) | `{"ok": true, "granted": bool, "scope": str}` |
 | `model.list` | `discover` (bool) | `{"models":[ModelRef…], "policy":…, "default_model":…, "selected":…}` |
@@ -120,6 +120,7 @@ and `run_id`.
 | `run_started` | — |
 | `message_started` | `message_id` |
 | `message_delta` | `message_id`, `delta` |
+| `reasoning_delta` | `message_id`, `delta` |
 | `message_completed` | `message_id`, `output_text` |
 | `message_failed` | `message_id`, `error` |
 | `tool_call_started` | `message_id`, `tool_call_id`, `tool_name`, `arguments` |
@@ -145,6 +146,18 @@ Ordering guarantees the UI is written against:
    `tool_call_started`. A denied call emits **no** `tool_call_started`; the
    denial goes back to the model as an errored tool result.
 5. `stop_reason` is `end_turn` | `max_turns` | `empty_response`.
+6. `reasoning_delta` is the model's private thinking, streamed **before** the
+   answer's `message_delta` for the same `message_id`. It is not part of the
+   answer, never part of session history, and never sent back to the model. A
+   client that ignores it shows a spinner that has not moved for ten seconds:
+   measured on a reasoning model, ~1,900 reasoning tokens arrive before the
+   first answer character. Render it as progress, in a subdued style, and close
+   it when the answer starts.
+7. `reasoning_effort` on `run.start` asks the provider how much thinking to
+   allow. It is per-run and applies to every turn of it. `none` is not a
+   cosmetic choice: measured on one reasoning model, the default spent 686,439
+   characters on private reasoning and produced no answer at all, while `none`
+   answered in 1.1 seconds. An unknown value is `INVALID_PARAMS`.
 
 ## 5. Tool approval
 

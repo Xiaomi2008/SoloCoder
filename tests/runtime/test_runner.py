@@ -24,6 +24,7 @@ from openagent.runtime.events import (
     MessageStarted,
     PermissionRequested,
     PermissionResolved,
+    ReasoningDelta,
     RunCancelled,
     RunCompleted,
     RunFailed,
@@ -50,6 +51,7 @@ from tests.support.streaming_provider import (
     empty_turn,
     error_turn,
     raising_turn,
+    reasoning_turn,
     text_turn,
     tool_turn,
 )
@@ -502,6 +504,58 @@ async def test_every_delta_belongs_to_an_opened_and_closed_message():
     assert len(started) == len(completed) == 1
     assert {d.message_id for d in deltas} == {started[0].message_id}
     assert completed[0].output_text == "".join(d.delta for d in deltas)
+
+
+async def test_reasoning_arrives_before_the_answer_and_never_becomes_history():
+    """A reasoning model spends ~10 seconds on private tokens first.
+
+    Measured on `swift-1.5-iq3_s`: ~1,900 reasoning tokens, then ~330 answer
+    tokens. A client that never sees the reasoning shows a spinner that has not
+    moved for ten seconds, which reads as a hang; a model that is shown its own
+    reasoning pays for it again on every turn.
+    """
+    provider = ScriptedStreamProvider(
+        [reasoning_turn("think-1 ", "think-2 ", text="the answer")]
+    )
+    runner = AgentRunner(provider)
+
+    events = await collect(runner)
+
+    assert [e.type for e in events] == [
+        "run_started",
+        "message_started",
+        "reasoning_delta",
+        "reasoning_delta",
+        "message_delta",
+        "message_completed",
+        "run_completed",
+    ]
+    assert [e.delta for e in events if isinstance(e, ReasoningDelta)] == ["think-1 ", "think-2 "]
+    completed = [e for e in events if isinstance(e, MessageCompleted)][0]
+    assert completed.output_text == "the answer"
+
+    carried = " ".join(str(m.content) for m in provider.calls[0]["messages"])
+    assert "think-" not in carried, "the model's private reasoning leaked into history"
+
+
+async def test_reasoning_effort_reaches_every_provider_turn():
+    """The knob is per-run and applies to every turn of it, not just the first.
+
+    A tool loop is several provider calls; thinking turned off has to stay off
+    across them, or the second turn is slow again for no visible reason.
+    """
+    registry, _ = scoped_registry()
+    provider = ScriptedStreamProvider(
+        [tool_turn("touch", {"name": "note.txt"}), text_turn("done")]
+    )
+    runner = AgentRunner(
+        provider, tools=registry, reasoning_effort="none"
+    )
+
+    await collect(runner)
+
+    assert len(provider.calls) == 2, "the run should have made a tool turn and an answer turn"
+    assert all(c["kwargs"].get("reasoning_effort") == "none" for c in provider.calls)
 
 
 async def test_run_helper_returns_the_result_and_raises_on_failure():

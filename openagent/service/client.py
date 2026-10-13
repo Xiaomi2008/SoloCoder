@@ -148,6 +148,7 @@ class ServiceClient:
         max_turns: int | None = None,
         permission_mode: str = "ask",
         images: list[str] | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         """Start a run and return ``{run_id, session_id, model, working_dir}``.
 
@@ -168,6 +169,8 @@ class ServiceClient:
             params["max_turns"] = max_turns
         if images:
             params["images"] = images
+        if reasoning_effort:
+            params["reasoning_effort"] = reasoning_effort
         return await self.call(Method.RUN_START, params)
 
     async def cancel(self, run_id: str) -> dict[str, Any]:

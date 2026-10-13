@@ -18,6 +18,7 @@ from openagent.runtime.events import (
     MessageDelta,
     MessageFailed,
     MessageStarted,
+    ReasoningDelta,
     PermissionRequested,
     PermissionResolved,
     RunCancelled,
@@ -45,6 +46,11 @@ def sample_events() -> list[RuntimeEvent]:
     return [
         RunStarted(run_id="run_sample"),
         MessageStarted(run_id="run_sample", message_id="msg_sample"),
+        ReasoningDelta(
+            run_id="run_sample",
+            message_id="msg_sample",
+            delta="Thinking: the user wants 中文 — 1,900 tokens of this arrive before the first answer character. ",
+        ),
         MessageDelta(
             run_id="run_sample", message_id="msg_sample", delta="Writing — 中文 ✓\n"
         ),

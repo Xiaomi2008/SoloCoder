@@ -13,6 +13,7 @@ from openagent.providers import (
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,
+    ProviderReasoningDelta,
     ProviderTextDelta,
     ProviderToolCall,
 )
@@ -110,6 +111,22 @@ def text_turn(*deltas: str, message_id: str = "msg_script") -> list[Any]:
     return [
         ProviderMessageStarted(message_id=message_id),
         *[ProviderTextDelta(message_id=message_id, delta=d) for d in deltas],
+        ProviderMessageCompleted(message_id=message_id),
+    ]
+
+
+def reasoning_turn(
+    *reasoning: str, text: str, message_id: str = "msg_script"
+) -> list[Any]:
+    """A reasoning model's turn: private tokens first, then the answer.
+
+    The shape `swift-1.5-iq3_s` really produces: ~1,900 reasoning tokens before
+    the first answer character.
+    """
+    return [
+        ProviderMessageStarted(message_id=message_id),
+        *[ProviderReasoningDelta(message_id=message_id, delta=r) for r in reasoning],
+        ProviderTextDelta(message_id=message_id, delta=text),
         ProviderMessageCompleted(message_id=message_id),
     ]
 

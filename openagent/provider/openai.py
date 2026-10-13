@@ -18,7 +18,14 @@ from openagent.core.types import (
 )
 from openagent.provider.base import BaseProvider
 from openagent.provider.converter import MessageConverterMixin
-from openagent.providers.events import ProviderError, ProviderMessageCompleted, ProviderMessageStarted, ProviderTextDelta, ProviderToolCall
+from openagent.providers.events import (
+    ProviderError,
+    ProviderMessageCompleted,
+    ProviderMessageStarted,
+    ProviderReasoningDelta,
+    ProviderTextDelta,
+    ProviderToolCall,
+)
 
 
 logger = logging.getLogger("openagent.provider.openai")
@@ -26,6 +33,21 @@ logger = logging.getLogger("openagent.provider.openai")
 
 class OpenAIConverterMixin(MessageConverterMixin):
     """Converts between canonical message format and OpenAI's chat format."""
+
+    @staticmethod
+    def _reasoning_of(delta: Any) -> str:
+        """The model's private reasoning from a streaming delta, if it has any.
+
+        llama.cpp, vLLM and Ollama put it in ``reasoning_content``, which is not
+        an OpenAI field — the SDK keeps unknown fields in ``model_extra``. Two
+        lookups because the SDK's behaviour here has changed across versions,
+        and a missing one is ten seconds of invisible thinking.
+        """
+        value = getattr(delta, "reasoning_content", None)
+        if value is None:
+            extra = getattr(delta, "model_extra", None) or {}
+            value = extra.get("reasoning_content")
+        return value if isinstance(value, str) else ""
 
     def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
         """Hook for provider-specific response anomaly logging."""
@@ -204,6 +226,21 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         )
         self.base_url = base_url
 
+    @staticmethod
+    def _reasoning_of(delta: Any) -> str:
+        """The model's private reasoning from a streaming delta, if it has any.
+
+        llama.cpp, vLLM and Ollama put it in ``reasoning_content``, which is not
+        an OpenAI field — the SDK keeps unknown fields in ``model_extra``. Two
+        lookups because the SDK's behaviour here has changed across versions,
+        and a missing one is ten seconds of invisible thinking.
+        """
+        value = getattr(delta, "reasoning_content", None)
+        if value is None:
+            extra = getattr(delta, "model_extra", None) or {}
+            value = extra.get("reasoning_content")
+        return value if isinstance(value, str) else ""
+
     def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
         metadata = {
             "issue": issue,
@@ -281,6 +318,13 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
                 if not started:
                     started = True
                     yield ProviderMessageStarted(message_id=message_id)
+
+                if chunk.choices:
+                    reasoning = self._reasoning_of(chunk.choices[0].delta)
+                    if reasoning:
+                        yield ProviderReasoningDelta(
+                            message_id=message_id, delta=reasoning
+                        )
 
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield ProviderTextDelta(

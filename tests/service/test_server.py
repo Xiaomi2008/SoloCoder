@@ -328,6 +328,30 @@ async def test_roots_are_enforced(harness: Harness, tmp_path: Path):
     await collect_events(client)
 
 
+async def test_reasoning_effort_reaches_the_provider(
+    connected: ServiceClient, harness: Harness, workdir: Path
+):
+    """The knob that stops a reasoning model from thinking away the run.
+
+    Measured on `swift-1.5-iq3_s`: the default spent 686,439 characters on
+    private reasoning and emitted no answer at all; `reasoning_effort="none"`
+    answered in 1.1 seconds. The value has to reach the provider request, not
+    just be accepted by the service.
+    """
+    await harness.run(connected, workdir, reasoning_effort="none")
+
+    kwargs = harness.providers[0].calls[0]["kwargs"]
+    assert kwargs.get("reasoning_effort") == "none"
+
+
+async def test_an_unknown_reasoning_effort_is_refused(connected: ServiceClient, workdir: Path):
+    """The literals are wire values; a typo must not silently mean "the model decides"."""
+    with pytest.raises(RpcError) as exc:
+        await connected.start_run("go", workdir, reasoning_effort="sideways")
+    assert exc.value.code == ErrorCode.INVALID_PARAMS
+    assert "reasoning_effort" in exc.value.message
+
+
 async def test_working_dir_reaches_the_tools(harness: Harness, tmp_path: Path):
     """The run's scope is what a relative path means — the point of §5.
 
