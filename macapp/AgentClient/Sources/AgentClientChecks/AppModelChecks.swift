@@ -20,9 +20,89 @@ private func settled(_ model: AppModel, timeout: TimeInterval) async -> Bool {
     return true
 }
 
+private func ev(_ json: String) throws -> AgentEvent {
+    try AgentEvent.decode(from: Data(json.utf8))
+}
+
+/// The cost of a streamed answer, which is what "the UI feels slow" measures.
+///
+/// The model streams ~1.5 characters per chunk, so a 2k-character answer is
+/// ~1300 `message_delta` events. Folding one costs 6.5 microseconds — the cost
+/// is the view invalidation each published write causes, which re-runs the
+/// toolbar, the model picker, the session menu and every visible line. So the
+/// app buffers deltas and publishes on a cadence. These checks pin that down:
+/// a run of 200 deltas must not cost 200 publishes, and buffering must not lose
+/// text, reorder a tool row, or leave a line marked as still streaming.
+/// Let the consumer task drain the stream, then publish what it buffered.
+/// `quiesce` alone is not enough: the events are in the stream's buffer, not
+/// yet in the app's delta buffer.
+@MainActor
+private func settle(_ model: AppModel) async {
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    model.quiesce()
+}
+
+@MainActor
+private func streamingCostChecks(_ checks: Checks) async throws {
+    let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+    let model = AppModel()
+    model.ingest(stream)
+
+    for chunk in 0..<200 {
+        continuation.yield(
+            try ev(#"{"type":"message_delta","run_id":"r","message_id":"m1","delta":"tok\#(chunk) "}"#)
+        )
+    }
+    await settle(model)
+    let midText = model.transcript.lines.compactMap {
+        if case .assistant(let text) = $0.kind { return text } else { return nil }
+    }.joined()
+    checks.expect(midText.hasPrefix("tok0 "), "text is visible while streaming, not held back")
+    let streamingLine = model.transcript.lines.first { $0.messageId == "m1" }
+    checks.expect(streamingLine?.streaming == true, "a mid-stream line is marked streaming (text selection stays off)")
+
+    continuation.yield(
+        try ev(#"{"type":"tool_call_started","run_id":"r","message_id":"m1","tool_call_id":"t1","tool_name":"bash","arguments":{"command":"ls"}}"#)
+    )
+    await settle(model)
+    let ids = model.transcript.lines.map(\.id)
+    checks.expect(
+        ids.firstIndex(of: "m1")! < ids.firstIndex(of: "t1")!,
+        "buffered deltas land before the tool row that follows them"
+    )
+
+    continuation.yield(
+        try ev(#"{"type":"message_completed","run_id":"r","message_id":"m1","output_text":"the authoritative answer"}"#)
+    )
+    continuation.yield(
+        try ev(#"{"type":"run_completed","run_id":"r","final_message_id":"m1","result":{"run_id":"r","final_message_id":"m1","output_text":"the authoritative answer","stop_reason":"end_turn"}}"#)
+    )
+    continuation.finish()
+    while model.transcript.state.isRunning {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    await settle(model)
+    let final = model.transcript.lines.first { $0.messageId == "m1" }
+    checks.expect(
+        final?.kind == .assistant("the authoritative answer"),
+        "the completed text wins over the buffered deltas"
+    )
+    checks.expect(final?.streaming == false, "a finished line is not streaming (text selection turns on)")
+    checks.expect(
+        model.transcriptPublishes < 100,
+        "200 deltas cost \(model.transcriptPublishes) publishes, not 200"
+    )
+    checks.note("200 deltas -> \(model.transcriptPublishes) publishes")
+}
+
 @MainActor
 func appChecks(_ checks: Checks) async {
     print("app model")
+    do {
+        try await streamingCostChecks(checks)
+    } catch {
+        checks.expect(false, "streaming cost checks ran: \(error)")
+    }
     guard Sidecar.repositoryRoot() != nil else {
         checks.note("skipped: no repository with .venv/bin/python (set AGENT_REPO_ROOT)")
         return

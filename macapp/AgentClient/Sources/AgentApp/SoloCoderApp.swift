@@ -227,7 +227,10 @@ struct ChatScroll: View {
                         )
                     }
                     ForEach(model.transcript.lines) { line in
-                        LineView(line: line).id(line.id)
+                        // `.equatable()` is the difference between re-running
+                        // every visible line's body on every publish and
+                        // re-running only the lines that changed.
+                        LineView(line: line).equatable().id(line.id)
                     }
                 }
                 .padding(12)
@@ -242,58 +245,117 @@ struct ChatScroll: View {
     }
 }
 
+/// The assistant text, split by how far along it is.
+///
+/// An empty message is "thinking…"; a streaming one is plain `Text`; a finished
+/// one is selectable. Text selection is off mid-stream because a selectable
+/// `Text` rebuilds its text-kit view on every character, and the model streams
+/// ~1.5 characters per chunk — a 2k-character answer would be 1300 rebuilds of a
+/// view that cannot be laid out incrementally.
+struct AssistantLine: View {
+    let text: String
+    let streaming: Bool
+
+    var body: some View {
+        if text.isEmpty {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("thinking…").foregroundStyle(.secondary)
+            }
+        } else if streaming {
+            Text(text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 struct LineView: View {
     let line: TranscriptLine
 
+    // `body` must be declared here, not in an extension: Swift applies the
+    // result-builder transform to a `body` in the type's own declaration and
+    // not to one in an extension, so a `switch` body in an extension fails with
+    // "branches have mismatching types" for branches that are all Views.
+
     var body: some View {
+        // One struct per row kind. A single switch with inline bodies is one
+        // enormous result-builder expression, and the type checker gives up on
+        // it ("branches have mismatching types", for branches that are all
+        // Views). It is also the unit SwiftUI diffs: a row whose TranscriptLine
+        // did not change is skipped only if the row is a view of its own.
         switch line.kind {
         case .user(let text):
-            Text(text)
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
-
+            UserLine(text: text)
         case .assistant(let text):
-            if text.isEmpty {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("thinking…").foregroundStyle(.secondary)
-                }
-            } else {
-                Text(text)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
+            AssistantLine(text: text, streaming: line.streaming)
         case .messageFailed(let error):
-            Label(error, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .font(.callout)
-
+            FailedLine(error: error)
         case .tool(let row):
             ToolLine(row: row)
-
         case .permission(let outcome):
             PermissionLine(outcome: outcome)
-
         case .compaction(let row):
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                Text("compacting context — \(row.reason)")
-                switch row.state {
-                case .running: ProgressView().controlSize(.small)
-                case .done: Text("done").foregroundStyle(.secondary)
-                case .failed(let error): Text("failed: \(error)").foregroundStyle(.orange)
-                }
-            }
-            .font(.callout)
-            .foregroundStyle(.secondary)
-
+            CompactionLine(row: row)
         case .note(let text):
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            NoteLine(text: text)
         }
+    }
+}
+
+/// `ForEach` can then skip a line whose `TranscriptLine` did not change,
+/// instead of re-running every visible line's body on every publish.
+extension LineView: Equatable {}
+
+struct UserLine: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct FailedLine: View {
+    let error: String
+
+    var body: some View {
+        Label(error, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+            .font(.callout)
+    }
+}
+
+struct CompactionLine: View {
+    let row: CompactionRow
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+            Text("compacting context — \(row.reason)")
+            switch row.state {
+            case .running: ProgressView().controlSize(.small)
+            case .done: Text("done").foregroundStyle(.secondary)
+            case .failed(let error): Text("failed: \(error)").foregroundStyle(.orange)
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
+}
+
+struct NoteLine: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
     }
 }
 

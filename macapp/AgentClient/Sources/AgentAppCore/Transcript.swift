@@ -96,6 +96,13 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public var kind: Kind
     /// The message this line belongs to, for delta routing.
     public var messageId: String?
+    /// True while the text is still arriving.
+    ///
+    /// The view turns text selection off while streaming: a selectable `Text`
+    /// rebuilds its text-kit view on every character, and the model streams ~1.5
+    /// characters per chunk, so a 2k-character answer is 1300 rebuilds of a view
+    /// that cannot be laid out incrementally.
+    public var streaming: Bool = false
 }
 
 public enum RunState: Equatable, Sendable {
@@ -204,7 +211,7 @@ public struct Transcript: Equatable, Sendable {
 
         case .messageStarted(let e):
             lines.append(
-                TranscriptLine(id: e.messageId, kind: .assistant(""), messageId: e.messageId)
+                TranscriptLine(id: e.messageId, kind: .assistant(""), messageId: e.messageId, streaming: true)
             )
             state = .streaming
 
@@ -214,7 +221,7 @@ public struct Transcript: Equatable, Sendable {
                 // drop it. A missing message_started is the server's bug, and
                 // the user should see the text.
                 lines.append(
-                    TranscriptLine(id: e.messageId, kind: .assistant(e.delta), messageId: e.messageId)
+                    TranscriptLine(id: e.messageId, kind: .assistant(e.delta), messageId: e.messageId, streaming: true)
                 )
                 return
             }

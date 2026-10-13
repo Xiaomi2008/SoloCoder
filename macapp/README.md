@@ -106,8 +106,48 @@ sheet driven by `permission_requested`, a model picker from `model.list`, and a
 session browser from `session.list` / `session.load`. Choose a working directory
 from the toolbar — a run needs one, and the app refuses to send without it.
 
+## Why a streamed answer feels slow (measured, not guessed)
+
+The model is not the bottleneck, and the UI was. Numbers from
+`swift run ui-cost` and a direct stream to `lan/swift-1.5-iq3_s`:
+
+| What | Cost |
+|---|---|
+| Model, first token | 18–97 ms |
+| Model, generation | 8–60 tok/s depending on context |
+| One turn, real shape (8.5k-char prompt + 19 tool schemas) | 1.4–4.4 s |
+| Folding one event into `Transcript` | 6.5 µs (9,726 events in 63 ms) |
+| One `@Published` write | a SwiftUI invalidation of every view observing `AppModel` |
+
+The model streams ~1.5 characters per chunk, so a 2k-character answer is ~1300
+`message_delta` events. Each published write re-ran the toolbar, the model
+picker, the session menu and every visible line, and a *selectable* streaming
+`Text` rebuilt its text-kit view on every character. Three fixes:
+
+- **`AppModel` buffers deltas and publishes on a 60 ms cadence.** 200 deltas
+  cost 4 publishes, not 200 (checked). Order is preserved: any non-delta event
+  flushes the buffer first, so `message_completed`, a permission request, a tool
+  row and the terminal event land after the deltas they follow.
+- **`LineView` is `Equatable` and one struct per row kind**, so `ForEach` skips
+  lines whose `TranscriptLine` did not change.
+- **Text selection is off while a line streams** (`TranscriptLine.streaming`),
+  on once `message_completed` lands.
+
+The floor that remains is the model: at 20 tok/s a 400-word answer is ~30 s, and
+every tool round trip re-sends the whole context (~18k chars of system prompt
+and tool schema, plus every prior tool result).
+
 ## Things to know
 
+- **A `body` with a `switch` must be declared in the struct, not an
+  extension.** Swift applies the result-builder transform to a `body` in the
+  type's own declaration and not to one in an extension; in an extension a
+  multi-branch `switch` fails with "branches have mismatching types" for
+  branches that are all `View`s.
+- **The app watches its own sidecar's stdin.** `Sidecar` hands the service a
+  pipe on stdin and the service exits when it EOFs. A killed app leaves nothing
+  behind; `willTerminateNotification` covers a normal quit, and this covers
+  `kill` and SIGKILL.
 - **The wire is snake_case.** Swift types are camelCase and every decoder that
   touches the wire uses `.convertFromSnakeCase`. `AgentEvent` decodes with the
   strategy **off**, because its payload keys are snake_case literals and
