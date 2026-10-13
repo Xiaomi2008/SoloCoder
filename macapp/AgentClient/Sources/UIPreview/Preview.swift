@@ -159,6 +159,47 @@ private func script() -> [AgentEvent] {
         "granted": .bool(false), "scope": .string("once"), "reason": .string("user refused"),
     ])
 
+    // A prompt left unanswered, for the sheet preview. The sheet is the one view
+    // the scripted stream cannot otherwise show: it is presented while a
+    // `permission_requested` is pending, and every prompt this script makes it
+    // also answers. So the prompt is made worth reading — a multi-line command
+    // with a timeout, a 30-line file — and the stream stops there.
+    // One prompt, left unanswered, for the sheet preview. The sheet is the one
+    // view the scripted stream cannot otherwise show: it is presented while a
+    // `permission_requested` is pending, and every prompt this script makes it
+    // also answers. So the prompt is made worth reading — a multi-line command
+    // with a timeout, a 30-line file — and the stream stops there.
+    //
+    // Exactly one, not both: `.sheet(item:)` presents the first pending request
+    // and keeps its content, so a stream with two prompts shows the first one
+    // and a preview of the `write` sheet would be a picture of the `bash` one.
+    let sheet = ProcessInfo.processInfo.environment["UI_PREVIEW_SHEET"]
+    switch sheet {
+    case "write":
+        add([
+            "type": .string("permission_requested"), "run_id": .string("r1"), "request_id": .string("p4"),
+            "tool_name": .string("write"), "reason": .string("write: modifies files in the session directory"),
+            "arguments": object([
+                "path": .string("/Users/dev/Projects/SoloCoder/scripts/release.sh"),
+                "content": .string(
+                    (1...30).map { "echo step \($0) — building the release" }.joined(separator: "\n")
+                ),
+            ]),
+        ])
+    case .some:
+        add([
+            "type": .string("permission_requested"), "run_id": .string("r1"), "request_id": .string("p3"),
+            "tool_name": .string("bash"), "reason": .string("exec: runs arbitrary commands"),
+            "arguments": object([
+                "command": .string("set -euo pipefail\nrm -rf .build\nswift build -c release\nswift run agent-checks"),
+                "timeout": .int(120),
+                "working_dir": .string("/Users/dev/Projects/SoloCoder"),
+            ]),
+        ])
+    case nil:
+        break
+    }
+
     // An event this client has never heard of, and the answer after it.
     add(["type": .string("quantum_leap"), "run_id": .string("r1"), "why": .string("forward compatibility")])
     add(["type": .string("message_started"), "run_id": .string("r1"), "message_id": .string("m2")])
@@ -182,6 +223,19 @@ private func script() -> [AgentEvent] {
     if !dropped.isEmpty, let data = "ui-preview: events dropped (malformed): \(dropped)\n".data(using: .utf8) {
         FileHandle.standardError.write(data)
     }
+    // The sheet preview stops at the prompt and leaves it pending, so the real
+    // state machine presents the real sheet. No terminal event: a finished run
+    // would clear `pendingPermission` and the sheet would never open.
+    if let sheet = ProcessInfo.processInfo.environment["UI_PREVIEW_SHEET"] {
+        let wanted = sheet == "write" ? "p4" : "p3"
+        if let index = events.firstIndex(where: {
+            if case .permissionRequested(let e) = $0 { return e.requestId == wanted }
+            return false
+        }) {
+            return Array(events.prefix(index + 1))
+        }
+    }
+
     // Short mode stops after the answer, and keeps the terminal event: a preview
     // that ends mid-run shows "Streaming" and a Cancel button, which reads as a
     // hang and is not a thing anyone is looking for in a screenshot.

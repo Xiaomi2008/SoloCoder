@@ -495,6 +495,8 @@ do {
     try transcriptChecks(checks)
     stage = "markdown"
     markdownChecks(checks)
+    stage = "tool display"
+    toolDisplayChecks(checks)
     stage = "live"
     _ = await liveChecks(checks)
     stage = "app"

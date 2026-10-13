@@ -462,9 +462,7 @@ struct ToolLine: View {
                 Text("arguments")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text(pretty(row.arguments))
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
+                ArgumentSections(sections: ToolDisplay.sections(tool: row.name, arguments: row.arguments))
 
                 // The output. The row used to store only a 240-character
                 // one-liner, so expanding it showed the arguments and never what
@@ -572,12 +570,13 @@ struct PermissionSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             ScrollView {
-                Text(pretty(request.arguments))
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                ArgumentSections(
+                    sections: ToolDisplay.sections(tool: request.toolName, arguments: request.arguments),
+                    prominent: true
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 220)
+            .frame(maxHeight: 260)
 
             HStack {
                 Button("Deny") { model.answer(granted: false, scope: .once) }
@@ -607,6 +606,53 @@ struct ContentUnavailable: View {
             Text(detail).font(.callout).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// A tool call's arguments, as the core renders them.
+///
+/// The folding is in `ToolDisplay`, in the core, where a check can reach it:
+/// what a `bash` prompt shows is the thing the user is asked to decide on, and a
+/// view is not a place an automated check can look. This view only draws the
+/// blocks the core produced.
+///
+/// `prominent` is the permission sheet: there the command is the decision, so it
+/// is body text. In a tool row it is history, so it is caption text.
+struct ArgumentSections: View {
+    let sections: [ToolDisplay.Section]
+    var prominent = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if sections.isEmpty {
+                Text("(no arguments)").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                VStack(alignment: .leading, spacing: 2) {
+                    if !section.label.isEmpty {
+                        Text(section.label)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    switch section.style {
+                    case .code:
+                        Text(section.text)
+                            .font(.system(prominent ? .body : .caption, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    case .text:
+                        Text(section.text)
+                            .font(prominent ? .callout : .caption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    case .note:
+                        Text(section.text)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
     }
 }
 
