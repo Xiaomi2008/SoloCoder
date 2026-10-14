@@ -358,7 +358,9 @@ class Agent:
         grace_used = False
 
         # Loop settings are split out of kwargs so they never reach the provider.
-        settings, provider_kwargs = LoopSettings.from_kwargs(kwargs)
+        settings, provider_kwargs = LoopSettings.from_kwargs(
+            {**getattr(self, "loop_defaults", {}), **kwargs}
+        )
         settings.apply_instance_override(self)
         guard = EmptyResponseGuard(settings.max_empty_response_retries)
 

@@ -70,6 +70,9 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
         enable_learning: bool = False,
         learning_storage_path: str | None = None,
         auto_save: str | None = None,  # Reserved for future use
+        max_context_tokens: int | None = None,
+        compact_threshold: float | None = None,
+        disable_compaction: bool | None = None,
     ) -> None:
         """Initialize the CoderAgent with all built-in tools.
 
@@ -137,6 +140,17 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             skill_manager=skill_manager or get_skill_manager(),
             working_dir=working_dir,
         )
+
+        # Turn-loop defaults for run(); per-call kwargs still override them
+        self.loop_defaults = {
+            k: v
+            for k, v in {
+                "max_context_tokens": max_context_tokens,
+                "compact_threshold": compact_threshold,
+                "disable_compaction": disable_compaction,
+            }.items()
+            if v is not None
+        }
 
     @property
     def working_dir(self) -> str:
