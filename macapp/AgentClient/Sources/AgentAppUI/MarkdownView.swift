@@ -85,8 +85,8 @@ struct BlockView: View {
             .overlay(alignment: .leading) {
                 Rectangle().fill(.tertiary).frame(width: 2)
             }
-        case .table(let rows):
-            TableView(rows: rows)
+        case .table(let rows, let alignment):
+            TableView(rows: rows, alignment: alignment)
         case .rule:
             Divider()
         }
@@ -198,25 +198,80 @@ struct LabeledItemView: View {
 ///
 /// Rendered as a grid, not as the model's own aligned text: the pipes line up
 /// only in a monospaced font, and the answer is not set in one.
+///
+/// Three things the grid needs that the markup does not give it:
+///
+/// - **The columns follow the delimiter row's colons.** `---:` is the model
+///   saying a column is a count, and a left-aligned column of counts does not
+///   read as one. The parser read them (`MarkdownBlock.table`'s `alignment`);
+///   this is where they become an `Alignment`.
+/// - **A hairline under every row, not only under the header.** In a
+///   proportional font a row of cells with nothing between them reads as a wide
+///   paragraph, not as rows you can follow across. The header's rule is the
+///   darker of the theme's two hairlines, so the header still separates from the
+///   body.
+/// - **A cell is capped.** One long cell — a path, a sentence — would widen its
+///   column and push the rest of the table out of the reading column; capped, it
+///   wraps inside its own column.
+///
+/// No fills. Bionic separates with hairlines at 4–12% alpha and adds no grey
+/// rectangle, and a filled header is a second border doing the work of one rule.
 struct TableView: View {
     let rows: [[String]]
+    let alignment: [ColumnAlignment]
+
+    /// How wide one cell may get before it wraps. Four of these plus the spacing
+    /// fill the 760 pt reading column, which is the widest table a model writes
+    /// with a straight face; a fifth column shares what is left.
+    private static let cellCap: CGFloat = 220
 
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
+        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 GridRow {
-                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                    ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
                         markdownText(cell)
                             .fontWeight(index == 0 ? .semibold : .regular)
-                            .gridColumnAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: Self.cellCap, alignment: Alignment(horizontal: align(column), vertical: .top))
+                            .gridColumnAlignment(align(column))
+                            .padding(.vertical, 4)
                     }
                 }
-                if index == 0 {
-                    Divider().gridCellUnsizedAxes(.horizontal)
-                }
+                // A 1pt rule, not a `Divider`. A `Divider` carries its own
+                // vertical padding, and in a grid row that padding is the row's
+                // height: a single-line row measured 40 pt, which is a form
+                // field, not a row of a table.
+                Rectangle()
+                    .fill(index == 0 ? Theme.edge : Theme.hairline)
+                    .frame(height: 1)
+                    .gridCellUnsizedAxes(.horizontal)
             }
         }
+        // The grid takes the reading column's width, and a `Grid` divides the
+        // surplus among its columns, so the rules run the full 760 pt and a short
+        // first column ends up wide. That is the width of a data table, and it is
+        // what GitHub does with a markdown table; the alternative is not taken.
+        // `fixedSize` on a `Grid` — either axis — reports the height of a
+        // single-line layout while its cells wrap, and the block under the table
+        // draws over its last row. Measured, not theorised: the capture shows the
+        // overlap.
         .font(.callout)
         .padding(.vertical, 2)
+    }
+
+    /// The column's alignment, falling back to leading for a table whose rows
+    /// are wider than its delimiter row — which `Markdown` squares, so only a
+    /// hand-built block can reach it.
+    ///
+    /// A `HorizontalAlignment`, because that is what `gridColumnAlignment`
+    /// takes; the frame wraps it in an `Alignment` for its own side.
+    private func align(_ column: Int) -> HorizontalAlignment {
+        guard column < alignment.count else { return .leading }
+        switch alignment[column] {
+        case .leading: return .leading
+        case .trailing: return .trailing
+        case .center: return .center
+        }
     }
 }

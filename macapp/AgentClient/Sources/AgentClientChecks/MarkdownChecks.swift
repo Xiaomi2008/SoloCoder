@@ -147,8 +147,49 @@ func markdownChecks(_ checks: Checks) {
     let table = Markdown.blocks("| file | lines |\n| --- | --- |\n| a.swift | 12 |\n| b.swift | 7 |")
     checks.equal(
         table,
-        [.table(rows: [["file", "lines"], ["a.swift", "12"], ["b.swift", "7"]])],
+        [
+            .table(
+                rows: [["file", "lines"], ["a.swift", "12"], ["b.swift", "7"]],
+                alignment: [.leading, .leading]
+            )
+        ],
         "a pipe table: header, delimiter row dropped, rows kept"
+    )
+
+    // The delimiter row's colons are the model saying how a column sits, and
+    // that row is the only place the claim exists — drop it and a count column
+    // renders left-aligned, which is the difference between a table of numbers
+    // and a table of strings that happen to be digits.
+    checks.equal(
+        Markdown.blocks("| file | lines |\n| :--- | ---: |\n| a.swift | 12 |").first,
+        .table(rows: [["file", "lines"], ["a.swift", "12"]], alignment: [.leading, .trailing]),
+        "`:---` leads, `---:` trails"
+    )
+    checks.equal(
+        Markdown.blocks("| a | b |\n| :---: | :- | \n| 1 | 2 |").first,
+        .table(rows: [["a", "b"], ["1", "2"]], alignment: [.center, .leading]),
+        "`:---:` centres; `:-` is a leading column written short"
+    )
+
+    // A model that drops a trailing `|` drops its last cell with it, and a grid
+    // built from ragged rows shifts every cell after the gap: the value that
+    // belongs under "lines" lands under "why". An empty cell is the honest
+    // answer and leaves the columns where the header put them.
+    checks.equal(
+        Markdown.blocks("| a | b | c |\n| --- | --- | --- |\n| 1 | 2 |").first,
+        .table(
+            rows: [["a", "b", "c"], ["1", "2", ""]],
+            alignment: [.leading, .leading, .leading]
+        ),
+        "a short row is padded, not shifted"
+    )
+    checks.equal(
+        Markdown.blocks("| a | b |\n| --- | --- |\n| 1 | 2 | 3 |").first,
+        .table(
+            rows: [["a", "b", ""], ["1", "2", "3"]],
+            alignment: [.leading, .leading, .leading]
+        ),
+        "a row wider than the delimiter row pads the alignment too"
     )
 
     checks.equal(
@@ -191,7 +232,7 @@ func markdownChecks(_ checks: Checks) {
         case .heading(_, let text), .paragraph(let text), .code(_, let text): return text
         case .bullets(let items), .quote(let items): return items.joined(separator: "\n")
         case .numbered(let items): return items.map(\.text).joined(separator: "\n")
-        case .table(let rows): return rows.joined(separator: [" "]).joined(separator: "\n")
+        case .table(let rows, _): return rows.joined(separator: [" "]).joined(separator: "\n")
         case .rule: return ""
         }
     }.joined(separator: "\n")

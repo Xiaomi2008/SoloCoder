@@ -705,21 +705,23 @@ func transcriptChecks(_ checks: Checks) throws {
         shownLong.hiddenBlocks == (longLine?.blocks.count ?? 0) - shownLong.shown.count,
         "and the row says what it left out: \(shownLong.hiddenBlocks) blocks"
     )
+    // A finished answer has no tail: the whole text is parsed, so the run-on
+    // ending is a block like any other, and the bound reaches it as a cut.
     checks.expect(
-        shownLong.tailHidden == (longLine?.tailText ?? "").utf8.count - shownLong.tail.utf8.count
-            && shownLong.tailHidden > 10_000,
-        "and the characters of the tail: \(shownLong.tailHidden)"
+        (longLine?.tailText ?? "").isEmpty && shownLong.tail.isEmpty,
+        "a finished answer's last block is not a tail: \(longLine?.tailText ?? "")"
     )
-    // The drawn blocks and the drawn tail are the answer's end, with nothing
-    // missing between them: `Markdown.split` cuts the tail at the last blank line,
-    // so the last paragraph is in the blocks and the run-on ending is the tail.
+    checks.expect(
+        shownLong.cutChars > 10_000,
+        "the run-on ending is bounded as a cut block: \(shownLong.cutChars) characters"
+    )
     checks.expect(
         blocksText(shownLong.shown).contains(longParagraphs[longParagraphs.count - 1]),
         "the drawn blocks reach the last paragraph: \(longParagraphs[longParagraphs.count - 1])"
     )
     checks.expect(
-        shownLong.tail.hasSuffix("tailword"),
-        "and the tail is the end of the answer — that is what the user reads"
+        blocksText(shownLong.shown).contains("tailword"),
+        "and the run-on ending is markdown, drawn as a block"
     )
     var storedLong = ""
     if case .assistant(let t) = longLine?.kind { storedLong = t }
@@ -768,8 +770,35 @@ func transcriptChecks(_ checks: Checks) throws {
         "a paragraphed answer is counted in blocks: \(shownLong.hiddenSummary)"
     )
     checks.expect(
-        shownLong.revealLabel == "Show all \(shownLong.blocksTotal) blocks and \((longLine?.tailText ?? "").utf8.count) characters",
+        shownLong.revealLabel == "Show all \(shownLong.blocksTotal) blocks and \(shownLong.cutChars) characters",
         "and its button names both: \(shownLong.revealLabel)"
+    )
+
+    // The bug this pins. A model writes its summary table last and omits the
+    // blank line after it — that is what "last" means — so `Markdown.split` put
+    // the table in the tail, the view draws the tail as plain text, and the
+    // finished answer reached the screen as `| file | lines |`. The live app
+    // showed exactly that. A finished answer parses whole, so its last block is
+    // markdown and there is no tail to draw.
+    let tableAnswer = "| file | lines |\n| --- | ---: |\n| Markdown.swift | 240 |\n| RootView.swift | 1,208 |"
+    let tableRun = try fold([
+        ev(#"{"type":"run_started","run_id":"r1"}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"| file | lines |\n"}"#),
+        ev(#"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":\#(jsonLiteral(tableAnswer))}"#),
+    ])
+    let tableLine = tableRun.lines.last { if case .assistant = $0.kind { return true } else { return false } }
+    checks.expect(
+        tableLine?.blocks.last.map { if case .table = $0 { return true } else { return false } } ?? false,
+        "a finished answer's last block is a table, not a tail: \(tableLine?.blocks.last.map { blocksText([$0]) } ?? "nil")"
+    )
+    checks.expect(
+        (tableLine?.tailText ?? "").isEmpty,
+        "and nothing is left in the tail: \(tableLine?.tailText ?? "")"
+    )
+    checks.expect(
+        blocksText(tableLine?.blocks ?? []).contains("1,208"),
+        "every row of the table reaches the blocks the view draws"
     )
 }
 
@@ -782,7 +811,7 @@ private func blockText(_ block: MarkdownBlock) -> String {
     case .bullets(let items): return items.joined(separator: "\n")
     case .numbered(let items): return items.map(\.text).joined(separator: "\n")
     case .quote(let lines): return lines.joined(separator: "\n")
-    case .table(let rows): return rows.map { $0.joined(separator: " ") }.joined(separator: "\n")
+    case .table(let rows, _): return rows.map { $0.joined(separator: " ") }.joined(separator: "\n")
     case .rule: return "---"
     }
 }

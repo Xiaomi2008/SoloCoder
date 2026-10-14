@@ -61,9 +61,10 @@ private let answer = """
     3. parse markdown once, on the finished line
 
     | file | lines | why |
-    | --- | --- | --- |
-    | Markdown.swift | 240 | the block parser |
+    | --- | ---: | --- |
+    | Markdown.swift | 240 | the block parser, and the rule that no input line is ever dropped |
     | Transcript.swift | 40 | the result is kept, not previewed |
+    | RootView.swift | 1,208 | the composer, the sidebar, the model menu, the refusal that wore a modal, and the answer a run leaves behind |
 
     > The answer is uncapped: it is the product.
     """

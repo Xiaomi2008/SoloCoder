@@ -159,6 +159,9 @@ public struct ShownBlocks: Equatable, Sendable {
     /// run-on answer has no blocks at all: 20,000 characters of "apple" with no
     /// blank line is one tail and zero blocks, and a row that said "0 blocks are
     /// not shown" about it would be reading from the wrong axis.
+    ///
+    /// The drawn blocks' own cuts are not in this string: the row prints them on
+    /// the line under the blocks, where "of this answer" reads.
     public var hiddenSummary: String {
         var parts: [String] = []
         if hiddenBlocks > 0 { parts.append("\(hiddenBlocks) blocks") }
@@ -171,10 +174,17 @@ public struct ShownBlocks: Equatable, Sendable {
     /// The counts are the totals, not the hidden ones, because that is what the
     /// user gets — "Show all 3,999 blocks" is the answer's size, and the row has
     /// already said what is missing. Empty when there is nothing to reveal.
+    ///
+    /// The characters are the tail's and the drawn blocks' cuts together, because
+    /// the button lifts both bounds at once. A finished answer has no tail, so a
+    /// short answer whose one block is 24,000 characters long would print "22,000
+    /// characters are not shown" over a row with no button on it — text hidden
+    /// with nothing to reveal it.
     public var revealLabel: String {
         var parts: [String] = []
         if hiddenBlocks > 0 { parts.append("\(blocksTotal) blocks") }
-        if tailHidden > 0 { parts.append("\(tailHidden + tail.utf8.count) characters") }
+        let chars = tailHidden + tail.utf8.count + cutChars
+        if chars > 0 { parts.append("\(chars) characters") }
         guard !parts.isEmpty else { return "" }
         return "Show all \(parts.joined(separator: " and "))"
     }
@@ -344,11 +354,25 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     /// with.
     mutating func parseAnswer() {
         guard case .assistant(let text) = kind else { return }
-        let (complete, tail) = Markdown.split(text)
-        blocks = Markdown.blocks(complete)
-        parsedPrefix = complete
+        // A finished answer has no tail.
+        //
+        // `Markdown.split` cuts the tail at the last blank line, which is the
+        // right rule while the answer is arriving: the block after that line is
+        // not finished, and parsing it per character is the O(n²) the streaming
+        // path exists to avoid. It is the wrong rule once the answer is done. The
+        // answer's last block has no blank line after it — that is what makes it
+        // last — so the split handed it to the tail, and the view draws the tail
+        // as plain text. A table is the block a model writes last, and the blank
+        // line after it is the one thing it usually omits, so the answer's own
+        // summary table reached the screen as `| file | lines |`. Measured on the
+        // live app: a finished answer, its table, and the pipes.
+        //
+        // The whole text is parsed here, once, and the tail is empty. The cost is
+        // one parse of a string that stopped growing.
+        blocks = Markdown.blocks(text)
+        parsedPrefix = text
         parsedLength = text.utf8.count
-        tailText = tail
+        tailText = ""
     }
 
     /// Fold a delta into the answer, and re-parse the part of it that is finished.
@@ -1021,7 +1045,7 @@ public struct Transcript: Equatable, Sendable {
             let (k, d) = cutItems(items.map(\.text)); return (.numbered(Array(items.prefix(k.count))), d)
         case .quote(let lines):
             let (k, d) = cutItems(lines); return (.quote(k), d)
-        case .table(let rows):
+        case .table(let rows, let alignment):
             var kept: [[String]] = []
             var used = 0
             for row in rows {
@@ -1031,7 +1055,7 @@ public struct Transcript: Equatable, Sendable {
                 used += n
             }
             let dropped = rows.dropFirst(kept.count).reduce(0) { r, row in r + row.reduce(0) { $0 + $1.utf8.count } }
-            return (.table(rows: kept), dropped)
+            return (.table(rows: kept, alignment: alignment), dropped)
         case .rule:
             return (block, 0)
         }

@@ -9,10 +9,10 @@ own service and drives real runs, and `scripts/build_app.sh` produces a signed
 119 MB `SoloCoder.app` with the interpreter, its dependencies and the source
 inside it. `scripts/package_check.sh` is the gate that says so.
 
-- Branch: `feat/computer-use-macos`, 33 commits ahead of origin — the phase 0–3i
+- Branch: `feat/computer-use-macos`, 34 commits ahead of origin — the phase 0–3i
   commits plus the streaming and finished-answer bounds, nothing pushed
 - Python suite: **609 passed** (`.venv/bin/python -m pytest tests -q`)
-- Swift suite: **438 checks passed** (`swift run agent-checks`), **451** with
+- Swift suite: **446 checks passed** (`swift run agent-checks`), **459** with
   `AGENT_REPO_ROOT` (the app-model checks against a real sidecar); 41 of them are
   the row vocabulary the restyle put in the core, where `agent-checks` can reach
   it; add
@@ -44,7 +44,10 @@ inside it. `scripts/package_check.sh` is the gate that says so.
 - A launch remembers its scope, its model, its permission mode and its thinking
   setting, and drops a remembered model the table no longer has — with a line
   saying so — and the model menu has a Refresh (phase 3i+)
-- Working tree: clean as of the sidebar-naming commit (2026-10-13).
+- A finished answer's last block is markdown: the summary table a model writes
+  last reaches the screen as a table, with the delimiter row's colons setting the
+  columns and a hairline under every row (phase 3i+)
+- Working tree: clean as of the table commit (2026-10-13).
   `.build/app/SoloCoder.app` (120 MB) is four commits behind it — it ships
   `session.delete` and the streaming bound, not the finished-answer bound, the
   remembered scope and settings, the in-window refusal or the prompt a refusal
@@ -608,6 +611,70 @@ Traps this phase added:
   dismisses it — the click after it goes to the window, not the menu.
 
 Gates: **435 checks** (`swift run agent-checks`), **448** with `AGENT_REPO_ROOT`.
+
+## Phase 3i+: the table the answer writes last
+
+The brief came back as *"the markdown table seems still not well rendered"*. It
+was three defects, and the renderer was the smallest of them.
+
+**The answer's last block was plain text.** `Markdown.split` cuts a streaming
+answer at its last blank line: above it is committed structure, below it is the
+block still arriving, drawn as text. `parseAnswer` — the finished answer, at
+`message_completed` and on a history load — used the same cut. A finished
+answer's last block has no blank line after it, because that is what *last*
+means, so the split handed it to the tail and the view drew the tail as text.
+The block a model writes last is a summary table, and the blank line after it is
+the one thing it usually omits, so the live app showed a finished answer with
+its table as `| file | lines |`. A finished answer parses whole now, and has no
+tail.
+
+The bound had to follow. The run-on ending that used to be the tail is a block
+now, so the block cap reaches it: a 24,000-character ending draws its first 2,000
+and the row says so. `revealLabel` counts the drawn blocks' cuts together with
+the tail's characters, because the button lifts both bounds at once — a short
+answer whose one block is 24,000 characters printed "22,000 characters are not
+shown" over a row with no button on it.
+
+**The delimiter row's colons were dropped.** `:---`, `---:` and `:---:` are the
+model saying how a column sits, and the delimiter row is the only place that
+claim exists. `MarkdownBlock.table` carries `[ColumnAlignment]`, padded to the
+width of the widest row, and every row is padded to that width: a model that
+drops a trailing `|` drops its last cell with it, and a grid built from ragged
+rows shifts every cell after the gap.
+
+**The renderer**: the columns follow those colons, a 1 pt rule runs under every
+row (the header's is the darker of the theme's two hairlines), a cell is capped
+at 220 pt so a long one wraps inside its column, and there are no fills —
+Bionic's rule, a hairline does the work a grey rectangle would.
+
+Measured on the screen, in order: the counts left-aligned and the rows with
+nothing between them; then, with the colons read and the rules drawn, a table
+whose numbers sit right and whose rows you can follow across. The live app's
+answer — a real model, `ask` mode, no tools — renders the same way.
+
+Traps this added:
+
+- **`TableColumnAlignment` is a SwiftUI type.** A core enum of that name is
+  ambiguous in every file that imports SwiftUI. It is `ColumnAlignment`.
+- **`gridColumnAlignment` takes `HorizontalAlignment?`, not `Alignment`**, and
+  `Alignment(horizontal:)` needs its `vertical:` argument as well.
+- **`.fixedSize` on a `Grid` — either axis — reports the height of a single-line
+  layout while its cells wrap**, and the block under the table draws over the
+  table's last row. The capture shows the overlap; the grid keeps the reading
+  column's width, divides the surplus among its columns, and its rules run the
+  full 760 pt. That is what a markdown table is on GitHub, and the alternative
+  is not taken.
+- **A `Divider` in a grid row is not 1 pt tall.** It carries its own vertical
+  padding, and that padding is the row's height: a single-line row measured 40 pt,
+  which is a form field. A `Rectangle().frame(height: 1)` is the rule.
+- **The dev app can die with nothing in its log.** Between two captures the
+  process was gone (`pgrep -x solocoder` → 1), its log's last line was an ordinary
+  event, and there was no crash line — so the prompt the test was going to send
+  was never sent, and the capture showed the terminal in front of the window.
+  Check the process is alive before reading a screenshot, and raise the window
+  first: an occluded window captures what is on top of it.
+
+Gates: **446 checks** (`swift run agent-checks`), **459** with `AGENT_REPO_ROOT`.
 
 ## Phase 3f: a `.app`, and what the packaging gate found
 

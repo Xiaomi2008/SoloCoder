@@ -35,6 +35,11 @@ public struct MarkdownItem: Equatable, Sendable {
     }
 }
 
+/// How a table column sits, read off the delimiter row's colons.
+public enum ColumnAlignment: String, Equatable, Sendable {
+    case leading, trailing, center
+}
+
 public enum MarkdownBlock: Equatable, Sendable {
     /// `# Title` … `###### Title`.
     case heading(level: Int, text: String)
@@ -54,7 +59,14 @@ public enum MarkdownBlock: Equatable, Sendable {
     /// `> quoted`, markers stripped.
     case quote([String])
     /// A pipe table: the first row is the header, the `---` row is dropped.
-    case table(rows: [[String]])
+    ///
+    /// `alignment` is that delimiter row read for its colons — `:---`, `---:`,
+    /// `:---:` are the model saying how a column should sit, and the row it is
+    /// written on is the only place that claim exists. It is padded to the width
+    /// of the widest row, and every row is padded to that width, because a model
+    /// that drops a trailing `|` on one line drops its last cell too, and a grid
+    /// built from ragged rows shifts every cell after the gap.
+    case table(rows: [[String]], alignment: [ColumnAlignment])
     /// `---`, `***`, `___`.
     case rule
 }
@@ -110,12 +122,14 @@ public enum Markdown {
             // be here, because a bare `|` line is a model writing a shell pipe.
             if index + 1 < lines.count, isTableRow(line), isTableDelimiter(lines[index + 1]) {
                 var rows: [[String]] = [cells(of: line)]
+                let declared = tableAlignment(of: lines[index + 1])
                 index += 2
                 while index < lines.count, isTableRow(lines[index]) {
                     rows.append(cells(of: lines[index]))
                     index += 1
                 }
-                blocks.append(.table(rows: rows))
+                let (squared, alignment) = square(rows, declared)
+                blocks.append(.table(rows: squared, alignment: alignment))
                 continue
             }
 
@@ -254,6 +268,35 @@ public enum Markdown {
         let marks = line.trimmingCharacters(in: .whitespaces).filter { !$0.isWhitespace }
         guard marks.contains("-"), marks.contains("|") else { return false }
         return marks.allSatisfy { $0 == "-" || $0 == "|" || $0 == ":" }
+    }
+
+    /// The delimiter row's colons: `:---` leads, `---:` trails, `:---:` centres.
+    /// A model writes them for a reason — a count column is the case — and the
+    /// row it writes them on is the only place that claim exists.
+    private static func tableAlignment(of line: String) -> [ColumnAlignment] {
+        cells(of: line).map { cell in
+            let left = cell.hasPrefix(":")
+            let right = cell.hasSuffix(":")
+            if left, right { return .center }
+            if right { return .trailing }
+            return .leading
+        }
+    }
+
+    /// Rows and alignments to the width of the widest row.
+    ///
+    /// A model that drops a trailing `|` on one line drops its last cell with it,
+    /// and a grid built from ragged rows shifts every cell after the gap: the
+    /// value that belongs under "lines" lands under "why". An empty cell is the
+    /// honest answer, and it leaves the columns where the header put them.
+    private static func square(
+        _ rows: [[String]], _ alignment: [ColumnAlignment]
+    ) -> ([[String]], [ColumnAlignment]) {
+        let width = max(rows.map(\.count).max() ?? 0, alignment.count)
+        let filled = rows.map { $0 + Array(repeating: "", count: width - $0.count) }
+        let filledAlignment = alignment
+            + Array(repeating: ColumnAlignment.leading, count: width - alignment.count)
+        return (filled, filledAlignment)
     }
 
     private static func cells(of line: String) -> [String] {
