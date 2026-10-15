@@ -19,8 +19,6 @@ from openagent.tools import (
     bash_background,
     bash_output,
     edit,
-    enter_plan_mode,
-    exit_plan_mode,
     glob,
     grep,
     kill_shell,
@@ -37,11 +35,13 @@ from openagent.tools import (
 )
 
 
-def build_solocoder_tools(computer_use: bool = True) -> list[Callable[..., Any]]:
+def build_solocoder_tools(computer_use: bool = True, notebooks: bool = True) -> list[Callable[..., Any]]:
     """Build the default SoloCoder tool set.
 
     Args:
         computer_use: Include computer use tools (screenshot, click, etc.) for GUI automation.
+        notebooks: Include notebook_edit. Every tool schema is prompt the model reads before the first
+            token, so small local models leave out tools they rarely need.
     """
     tools: list[Callable[..., Any]] = [
         read,
@@ -49,7 +49,7 @@ def build_solocoder_tools(computer_use: bool = True) -> list[Callable[..., Any]]
         edit,
         glob,
         grep,
-        notebook_edit,
+        *([notebook_edit] if notebooks else []),
         bash,
         bash_background,
         bash_output,
@@ -57,8 +57,6 @@ def build_solocoder_tools(computer_use: bool = True) -> list[Callable[..., Any]]
         todo_write,
         todo_update,
         todo_list,
-        enter_plan_mode,
-        exit_plan_mode,
         ask_user_question,
         skill,
         web_search,

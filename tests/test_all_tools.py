@@ -14,8 +14,6 @@ def main():
         bash_background,
         bash_output,
         edit,
-        enter_plan_mode,
-        exit_plan_mode,
         glob,
         grep,
         kill_shell,
@@ -108,16 +106,8 @@ def extract_session_id(result: str) -> str | None:
     print(f"   Result: {result}")
 
     # ========================================================================
-    # Planning & Workflow (NEW - with task manager integration)
+    # Workflow (with task manager integration)
     # ========================================================================
-    print("\n11. Testing 'enter_plan_mode' tool...")
-    result = enter_plan_mode("Need to design implementation first")
-    print(f"   Result: {result}")
-
-    print("\n12. Testing 'exit_plan_mode' tool...")
-    result = exit_plan_mode("Plan approved: Use file operations for this task")
-    print(f"   Result: {result}")
-
     print("\n13. Testing 'todo_write' tool (NEW)...")
     tasks = [
         {"subject": "Implement feature A", "description": "Add new functionality", "activeForm": "Implementing feature A"},

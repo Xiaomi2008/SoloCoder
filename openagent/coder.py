@@ -95,8 +95,6 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
             bash_background,
             bash_output,
             edit,
-            enter_plan_mode,
-            exit_plan_mode,
             glob,
             grep,
             kill_shell,
@@ -129,7 +127,6 @@ Be thorough but efficient. Prefer minimal, clean solutions. Always verify your c
                 read, write, edit, glob, grep, notebook_edit,  # File operations
                 bash, bash_background, bash_output, kill_shell,  # Shell commands
                 todo_write, todo_update, todo_list,  # Task management
-                enter_plan_mode, exit_plan_mode,  # Planning mode
                 ask_user_question,  # User interaction
                 web_search, web_fetch,  # Web tools
                 awk,  # Text processing
