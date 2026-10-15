@@ -638,7 +638,7 @@ extension AnswerLine: Equatable {}
 
 /// The assistant text, split by how far along it is.
 ///
-/// An empty message is "thinking…"; a streaming one is the markdown it has
+/// An empty message is "thinking…" while it streams (and nothing once finished); a streaming one is the markdown it has
 /// finished plus the block it is still writing; a finished one is markdown,
 /// selectable, parsed once.
 ///
@@ -692,9 +692,13 @@ struct AssistantLine: View {
 
     var body: some View {
         if text.isEmpty {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("thinking…").foregroundStyle(Theme.muted)
+            // Only while it streams: a finished message with no text (a turn that was only tool calls) is
+            // not thinking, and a spinner on it outlives the run.
+            if streaming {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("thinking…").foregroundStyle(Theme.muted)
+                }
             }
         } else if streaming {
             VStack(alignment: .leading, spacing: 8) {
