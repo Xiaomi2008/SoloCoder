@@ -151,7 +151,7 @@ class ModelCatalog:
                     caps=item.caps,
                     label=item.label,
                 )
-                for item in _parse_listing(spec.wire_api, payload)
+                for item in _parse_listing(spec.wire_api, payload, spec.default_caps.context_window)
             ]
             return spec.provider, refs
 
@@ -237,8 +237,14 @@ def _discovery_error(spec: Any, url: str, exc: Exception, timeout: float) -> str
     return f"{urlsplit(url).netloc} is not answering — is the server running?"
 
 
-def _parse_listing(wire_api: WireAPI, payload: Any) -> list[DiscoveredModel]:
-    """Normalize the three listing dialects we speak."""
+def _parse_listing(
+    wire_api: WireAPI, payload: Any, default_context: int = 32768
+) -> list[DiscoveredModel]:
+    """Normalize the three listing dialects we speak.
+
+    ``default_context`` is the endpoint's configured window, used when the
+    server does not report one (most OpenAI-compatible servers don't).
+    """
     out: list[DiscoveredModel] = []
 
     if wire_api is WireAPI.OLLAMA_CHAT:
@@ -258,7 +264,7 @@ def _parse_listing(wire_api: WireAPI, payload: Any) -> list[DiscoveredModel]:
                         tools="tools" in declared,
                         vision="vision" in declared,
                         streaming=True,
-                        context_window=int(context) if context else 32768,
+                        context_window=int(context) if context else default_context,
                         max_output_tokens=8192,
                     ),
                 )
@@ -282,7 +288,7 @@ def _parse_listing(wire_api: WireAPI, payload: Any) -> list[DiscoveredModel]:
                     caps=Capabilities(
                         tools=True,
                         streaming=True,
-                        context_window=int(context) if context else 32768,
+                        context_window=int(context) if context else default_context,
                         max_output_tokens=8192,
                     ),
                 )
