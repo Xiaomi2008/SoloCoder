@@ -50,6 +50,13 @@ def test_openai_compatible_listing_covers_lm_studio_mlx_and_vllm():
     assert models[1].caps.context_window == 65536
 
 
+def test_unreported_context_falls_back_to_the_endpoint_window():
+    payload = {"data": [{"id": "Qwen3.5-9B"}, {"id": "big", "meta": {"context_length": 65536}}]}
+    models = _parse_listing(WireAPI.OPENAI_CHAT, payload, 14000)
+    assert models[0].caps.context_window == 14000
+    assert models[1].caps.context_window == 65536
+
+
 def test_unrecognised_payload_yields_nothing():
     assert _parse_listing(WireAPI.OPENAI_CHAT, {"unexpected": True}) == []
     assert _parse_listing(WireAPI.OLLAMA_CHAT, None) == []
