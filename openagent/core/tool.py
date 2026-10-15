@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from pathlib import Path
-from typing import Any, Callable, get_type_hints
+from types import UnionType
+from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 from dataclasses import dataclass
 
 from .types import ToolDef, ToolResultBlock, ToolUseBlock
@@ -18,11 +20,71 @@ PYTHON_TYPE_TO_JSON: dict[type, str] = {
 }
 
 
+_SECTION_RE = re.compile(r"^([A-Z][A-Za-z ]*):\s*$")
+
+
+def _parse_docstring(doc: str | None) -> tuple[str, dict[str, str]]:
+    """Split a Google-style docstring into the text the model reads and per-argument descriptions.
+
+    ``Args:`` entries move into the parameter schema, ``Returns:`` is dropped (the model sees the
+    result), and every other section (Example, Note, ...) stays in the description. Source
+    indentation is removed: every character is prompt a local model prefills on each request.
+    """
+    lines = inspect.cleandoc(doc or "").splitlines()
+    kept: list[str] = []
+    args: dict[str, str] = {}
+    section: str | None = None
+    current: str | None = None
+    for line in lines:
+        header = _SECTION_RE.match(line)
+        if header and not line.startswith(" "):
+            section, current = header.group(1), None
+            if section not in ("Args", "Returns"):
+                kept.append(line)
+            continue
+        if section == "Args":
+            entry = re.match(r"^\s{1,8}(\w+)(?:\s*\([^)]*\))?:\s*(.*)$", line)
+            if entry and (current is None or len(line) - len(line.lstrip()) <= _indent_of_args(lines)):
+                current = entry.group(1)
+                args[current] = entry.group(2).strip()
+            elif current is not None and line.strip():
+                args[current] = f"{args[current]} {line.strip()}".strip()
+        elif section == "Returns":
+            continue
+        else:
+            kept.append(line)
+    return "\n".join(kept).strip(), args
+
+
+def _indent_of_args(lines: list[str]) -> int:
+    """Indentation of the argument names in an Args section (continuation lines are deeper)."""
+    in_args = False
+    for line in lines:
+        if line.strip() == "Args:":
+            in_args = True
+            continue
+        if in_args and line.strip():
+            return len(line) - len(line.lstrip())
+    return 4
+
+
+def _json_type(hint: Any) -> str:
+    """JSON schema type for an annotation, looking through ``X | None`` and generics like ``list[str]``."""
+    origin = get_origin(hint)
+    if origin in (Union, UnionType):
+        non_none = [a for a in get_args(hint) if a is not type(None)]
+        return _json_type(non_none[0]) if len(non_none) == 1 else "string"
+    if origin is not None:
+        return PYTHON_TYPE_TO_JSON.get(origin, "string")
+    return PYTHON_TYPE_TO_JSON.get(hint, "string")
+
+
 def _build_parameters_schema(func: Callable[..., Any]) -> dict[str, Any]:
     hints = get_type_hints(func)
     sig = inspect.signature(func)
     properties: dict[str, Any] = {}
     required: list[str] = []
+    _, arg_docs = _parse_docstring(func.__doc__)
 
     for name, param in sig.parameters.items():
         if name == "self":
@@ -30,8 +92,9 @@ def _build_parameters_schema(func: Callable[..., Any]) -> dict[str, Any]:
         if name in _INJECTED_PARAMS:
             continue
         hint = hints.get(name, str)
-        json_type = PYTHON_TYPE_TO_JSON.get(hint, "string")
-        properties[name] = {"type": json_type}
+        properties[name] = {"type": _json_type(hint)}
+        if arg_docs.get(name):
+            properties[name]["description"] = arg_docs[name]
 
         if param.default is inspect.Parameter.empty:
             required.append(name)
@@ -55,7 +118,7 @@ def tool(
 ) -> Any:
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         fn._tool_name = name or fn.__name__  # type: ignore[attr-defined]
-        fn._tool_description = description or fn.__doc__ or ""  # type: ignore[attr-defined]
+        fn._tool_description = description or _parse_docstring(fn.__doc__)[0]  # type: ignore[attr-defined]
         fn._tool_parameters = _build_parameters_schema(fn)  # type: ignore[attr-defined]
         return fn
 
