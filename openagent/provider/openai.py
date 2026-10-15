@@ -215,11 +215,11 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         except ImportError:
             raise ImportError("Install openai: pip install openai")
 
-        # For local/compatible APIs (custom base_url), use empty string for API key if not provided
-        # This allows servers like Ollama, LM Studio to work without authentication
+        # For local/compatible APIs (custom base_url), use a placeholder API key if not provided.
+        # Servers like Ollama, LM Studio and tinygrad ignore it; openai>=3 rejects an empty key as missing.
         effective_api_key = api_key
         if base_url and not api_key:
-            effective_api_key = ""  # Empty string tells OpenAI client no auth required
+            effective_api_key = "not-needed"
 
         self._client = AsyncOpenAI(
             api_key=effective_api_key, base_url=base_url or None, **kwargs

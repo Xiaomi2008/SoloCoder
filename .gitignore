@@ -174,3 +174,6 @@ logs/
 .build/
 .swiftpm/
 *.xcodeproj
+
+# JavaScript dependencies (installed by npm, never committed)
+node_modules/
