@@ -918,38 +918,8 @@ def web_fetch(
 
 
 # ============================================================================
-# Planning & Workflow Tools
+# Workflow Tools
 # ============================================================================
-
-
-@tool
-def enter_plan_mode(
-    reason: str | None = None,
-) -> str:
-    """Switch into planning mode to design implementation before coding.
-
-    Args:
-        reason: Optional reason for entering plan mode
-
-    Returns:
-        Confirmation message
-    """
-    return f"Entering plan mode. Reason: {reason or 'Not specified'}. Use exit_plan_mode when ready to implement."
-
-
-@tool
-def exit_plan_mode(
-    approved_plan: str | None = None,
-) -> str:
-    """Exit planning mode and begin execution of the approved plan.
-
-    Args:
-        approved_plan: The plan that was approved for implementation
-
-    Returns:
-        Confirmation message
-    """
-    return f"Exiting plan mode. Approved plan: {approved_plan or 'Not specified'}. Starting implementation."
 
 
 @tool
@@ -1219,9 +1189,7 @@ __all__ = [
     # Web & search
     "web_search",
     "web_fetch",
-    # Planning & workflow
-    "enter_plan_mode",
-    "exit_plan_mode",
+    # Workflow
     "todo_write",
     "todo_update",
     "todo_list",

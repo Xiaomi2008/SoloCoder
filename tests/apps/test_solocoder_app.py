@@ -15,6 +15,15 @@ def test_build_solocoder_tools_includes_workflow_tools():
     assert "skill" in tool_names
 
 
+def test_build_solocoder_tools_can_leave_out_notebooks():
+    from openagent.apps.solocoder import build_solocoder_tools
+
+    assert "notebook_edit" in {tool._tool_name for tool in build_solocoder_tools()}
+    tool_names = {tool._tool_name for tool in build_solocoder_tools(notebooks=False)}
+    assert "notebook_edit" not in tool_names
+    assert "edit" in tool_names
+
+
 def test_coder_agent_exists():
     from openagent.apps.solocoder.agent import CoderAgent
 

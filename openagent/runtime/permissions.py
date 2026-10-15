@@ -42,8 +42,6 @@ TOOL_RISK: dict[str, Risk] = {
     "sed": "write",
     "todo_write": "write",
     "todo_update": "write",
-    "enter_plan_mode": "write",
-    "exit_plan_mode": "write",
     # Arbitrary compute.
     "bash": "exec",
     "bash_background": "exec",

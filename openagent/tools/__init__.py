@@ -8,7 +8,6 @@ Tools are organized into categories:
 - Web & Search: web_search, web_fetch
 - Text Processing: awk, sed
 - Computer Use: screenshot, click, type_text, key_combination (macOS GUI automation)
-- Planning & Workflow: enter_plan_mode, exit_plan_mode
 - User Interaction: ask_user_question (requires agent integration)
 - Memory & Learning: recall (auto-registered when auto_learn=True)
 
@@ -28,8 +27,6 @@ from .builtin import (
     bash_background,
     bash_output,
     edit,
-    enter_plan_mode,
-    exit_plan_mode,
     glob,
     grep,
     kill_shell,
@@ -93,8 +90,6 @@ __all__ = [
     "todo_write",
     "todo_update",
     "todo_list",
-    "enter_plan_mode",
-    "exit_plan_mode",
     # User interaction (requires agent integration)
     "ask_user_question",
     # Extensibility (requires agent integration)

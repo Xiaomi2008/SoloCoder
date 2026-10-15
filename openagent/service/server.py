@@ -605,7 +605,7 @@ class AgentService:
             runner = AgentRunner(
                 provider,
                 session=session,
-                tools=self._tools(),
+                tools=self._tools(ref),
                 tool_context=ToolContext(working_dir=str(working_dir)),
                 max_turns=max_turns,
                 permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
@@ -865,12 +865,14 @@ class AgentService:
 
     # ------------------------------------------------------------------ tools
 
-    def _tools(self) -> list[Callable[..., Any]]:
+    def _tools(self, ref: Any = None) -> list[Callable[..., Any]]:
         if self.settings.tools is not None:
             return list(self.settings.tools)
         from openagent.apps.solocoder.agent import build_solocoder_tools
 
-        return build_solocoder_tools(computer_use=self.settings.computer_use)
+        # local models pay for every tool schema in prefill time on each new conversation
+        local = bool(getattr(ref, "is_local", False))
+        return build_solocoder_tools(computer_use=self.settings.computer_use, notebooks=not local)
 
     async def _tool_list(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
         from openagent.core.tool import ToolRegistry
