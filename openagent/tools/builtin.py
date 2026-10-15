@@ -132,16 +132,16 @@ def edit(
     expected_replacements: int | None = None,
     tool_context: ToolContext | None = None,
 ) -> str:
-    """Make targeted edits to existing files using find-and-replace.
+    """Make targeted edits to an existing file with find-and-replace.
 
     Args:
-        path: Absolute path to the file to edit
-        find: String to search for in the file
-        replace: Replacement string
-        expected_replacements: Optional. If set, validates that exactly this many replacements are made.
+        path: Absolute path of the file
+        find: Exact text to find
+        replace: Replacement text
+        expected_replacements: If set, warn when the number of replacements differs
 
     Returns:
-        Result message with number of replacements and unified diff showing changes
+        Number of replacements and a unified diff
     """
     file_path = (tool_context or ToolContext()).resolve(path)
 
@@ -323,15 +323,14 @@ def grep(
     """Search file contents by keyword/regex (replaces grep/rg).
 
     Args:
-        pattern: Pattern to search for
-        path: Base directory or file to search in. If None, searches current working directory.
-              For security, this should be within the project folder.
-        regex: If True, treat pattern as a regular expression (default: True)
-        max_results: Maximum number of matches to return (default: 50)
-        context_lines: Number of lines of context before and after each match (default: 2)
+        pattern: Text or regex to search for
+        path: File or directory to search, inside the project folder (default: working directory)
+        regex: Treat pattern as a regular expression
+        max_results: Maximum matches to return
+        context_lines: Lines of context before and after each match
 
     Returns:
-        Formatted search results with file paths, line numbers, and matching content
+        Matches with file paths, line numbers and context
     """
     base = (tool_context or ToolContext()).resolve(path)
 
@@ -438,15 +437,13 @@ def bash(
     working_dir: str | None = None,
     tool_context: ToolContext | None = None,
 ) -> str:
-    """Execute shell commands with optional timeout and background execution.
+    """Run a shell command.
 
     Args:
-        command: Shell command to execute
-        timeout: Optional timeout in seconds. If exceeded, process is terminated.
-        background: If True, run asynchronously and return immediately with session ID.
-                   Use bash_output to retrieve results later.
-        working_dir: Working directory for the command. If None, uses the session's
-                   working directory (the agent's project), not the process directory.
+        command: Shell command to run
+        timeout: Seconds before the process is terminated
+        background: Return immediately with a session ID; read the output later with bash_output
+        working_dir: Directory to run in (default: the project directory, not the process directory)
 
     Returns:
         Command output (stdout), or session ID for background processes
