@@ -27,6 +27,22 @@ class ProviderTextDelta(ProviderStreamEvent):
 
 
 @dataclass(frozen=True)
+class ProviderReasoningDelta(ProviderStreamEvent):
+    """A chunk of the model's private reasoning, streamed before the answer.
+
+    Reasoning models (Swift 1.5, DeepSeek-R1, Claude with thinking, o-series)
+    spend most of their generation budget here: measured on `swift-1.5-iq3_s`,
+    ~1,900 reasoning tokens before the first answer character, ~10 seconds of
+    it. A client that reads only text deltas shows a frozen spinner for that
+    whole time, which reads as a hang. It is not a hang, and it should not look
+    like one.
+    """
+
+    delta: str
+    type: ClassVar[Literal["provider_reasoning_delta"]] = "provider_reasoning_delta"
+
+
+@dataclass(frozen=True)
 class ProviderMessageCompleted(ProviderStreamEvent):
     type: ClassVar[Literal["provider_message_completed"]] = "provider_message_completed"
 
@@ -52,6 +68,7 @@ __all__ = [
     "ProviderError",
     "ProviderMessageCompleted",
     "ProviderMessageStarted",
+    "ProviderReasoningDelta",
     "ProviderStreamEvent",
     "ProviderTerminalEvent",
     "ProviderTextDelta",

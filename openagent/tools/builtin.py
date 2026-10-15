@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from ..core.tool import tool
+from ..core.tool import ToolContext, tool
 
 
 # ============================================================================
@@ -26,6 +26,7 @@ def read(
     path: str,
     line_start: int | None = None,
     line_end: int | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Read files (including images) by absolute path.
 
@@ -37,7 +38,7 @@ def read(
     Returns:
         File contents as string, or base64-encoded image data for image files
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -88,6 +89,7 @@ def write(
     path: str,
     content: str,
     create_parents: bool = True,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Create or overwrite files.
 
@@ -99,7 +101,7 @@ def write(
     Returns:
         Success message with file size
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -128,6 +130,7 @@ def edit(
     find: str,
     replace: str,
     expected_replacements: int | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Make targeted edits to existing files using find-and-replace.
 
@@ -140,7 +143,7 @@ def edit(
     Returns:
         Result message with number of replacements and unified diff showing changes
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -206,6 +209,7 @@ def notebook_edit(
     cell_index: int,
     new_source: str,
     cell_type: str = "code",
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Edit Jupyter notebook cells.
 
@@ -218,7 +222,7 @@ def notebook_edit(
     Returns:
         Result message with cell update info
     """
-    file_path = Path(path).resolve()
+    file_path = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -263,19 +267,19 @@ def notebook_edit(
 
 
 @tool
-def glob(pattern: str, path: str | None = None, max_results: int = 100) -> str:
+def glob(pattern: str, path: str | None = None, max_results: int = 100, tool_context: ToolContext | None = None) -> str:
     """Search for files by pattern (replaces find/ls).
 
     Args:
         pattern: Glob pattern to search for (e.g., "*.py", "**/*.md")
-        path: Base directory to search in. If None, searches current working directory.
+        path: Base directory to search in. If None, searches the session's working directory.
               For security, this should be within the project folder.
         max_results: Maximum number of results to return (default: 100)
 
     Returns:
         Newline-separated list of matching file paths
     """
-    base = Path(path).resolve() if path else Path.cwd()
+    base = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -314,6 +318,7 @@ def grep(
     regex: bool = True,
     max_results: int = 50,
     context_lines: int = 2,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Search file contents by keyword/regex (replaces grep/rg).
 
@@ -328,7 +333,7 @@ def grep(
     Returns:
         Formatted search results with file paths, line numbers, and matching content
     """
-    base = Path(path).resolve() if path else Path.cwd()
+    base = (tool_context or ToolContext()).resolve(path)
 
     # Security check: ensure path is within allowed directory if set
     import os
@@ -431,6 +436,7 @@ def bash(
     timeout: int | None = None,
     background: bool = False,
     working_dir: str | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Execute shell commands with optional timeout and background execution.
 
@@ -439,7 +445,8 @@ def bash(
         timeout: Optional timeout in seconds. If exceeded, process is terminated.
         background: If True, run asynchronously and return immediately with session ID.
                    Use bash_output to retrieve results later.
-        working_dir: Working directory for the command. If None, uses current directory.
+        working_dir: Working directory for the command. If None, uses the session's
+                   working directory (the agent's project), not the process directory.
 
     Returns:
         Command output (stdout), or session ID for background processes
@@ -450,9 +457,9 @@ def bash(
 
     try:
         # Set up working directory
-        cwd = Path(working_dir).resolve() if working_dir else None
-        if cwd and not cwd.exists():
-            return f"Error: Working directory '{working_dir}' does not exist."
+        cwd = (tool_context or ToolContext()).resolve(working_dir)
+        if not cwd.exists():
+            return f"Error: Working directory '{working_dir or cwd}' does not exist."
 
         # Security check: ensure working_dir is within allowed directory if set
         import os
@@ -486,15 +493,181 @@ def bash(
 
 
 @tool
+def awk(
+    pattern: str,
+    input_text: str,
+    field: int | None = None,
+) -> str:
+    """Process text with awk-style field extraction and filtering.
+
+    Args:
+        pattern: AWK-compatible expression (e.g., '{print $1,$2}', '$1 > 10 {print $0}')
+        input_text: Text to process
+        field: If set, extract a specific field number (1-indexed, default field separator is whitespace)
+               Overrides pattern when provided.
+
+    Returns:
+        Processed text output
+    """
+    try:
+        lines = input_text.splitlines()
+        results: list[str] = []
+
+        if field is not None:
+            # Simple field extraction
+            for line in lines:
+                fields = line.split()
+                if 1 <= field <= len(fields):
+                    results.append(fields[field - 1])
+        else:
+            # AWK-style pattern evaluation
+            # Support: "{print $0}", "{print $1,$2}", "$1 > 10 {print $0}"
+            pattern = pattern.strip()
+            condition = ""
+            action = ""
+
+            if "{" in pattern and "}" in pattern:
+                brace_start = pattern.index("{")
+                condition = pattern[:brace_start].strip()
+                action = pattern[brace_start:]
+            elif "{print" in pattern:
+                # Pure action like "{print $1,$2}" with no condition
+                action = pattern
+
+            if not condition:
+                # No condition — print all lines, just apply action
+                for line in lines:
+                    fields = line.split()
+                    inner = action[action.index("{") + 7 : action.index("}")]
+                    inner = inner.strip()
+                    if inner == "$0" or inner == "*":
+                        results.append(line)
+                    else:
+                        selected = []
+                        for part in inner.split(","):
+                            part = part.strip()
+                            if part.startswith("$"):
+                                try:
+                                    idx = int(part[1:])
+                                    if 0 < idx <= len(fields):
+                                        selected.append(fields[idx - 1])
+                                except ValueError:
+                                    pass
+                        if selected:
+                            results.append(" ".join(selected))
+            else:
+                # Condition + action: evaluate condition, apply action on match
+                for line in lines:
+                    fields = line.split()
+                    try:
+                        ns: dict[str, int | str] = {}
+                        for i, f in enumerate(fields):
+                            try:
+                                ns[f"f{i + 1}"] = int(f)
+                            except ValueError:
+                                ns[f"f{i + 1}"] = f
+                        safe = condition
+                        for i in range(1, len(fields) + 1):
+                            safe = safe.replace(f"${i}", f"f{i}")
+                        if eval(safe, {"__builtins__": {}}, ns):  # noqa: S307
+                            # Apply action
+                            inner = action[action.index("{") + 7 : action.index("}")]
+                            inner = inner.strip()
+                            if inner == "$0" or inner == "*":
+                                results.append(line)
+                            else:
+                                selected = []
+                                for part in inner.split(","):
+                                    part = part.strip()
+                                    if part.startswith("$"):
+                                        try:
+                                            idx = int(part[1:])
+                                            if 0 < idx <= len(fields):
+                                                selected.append(fields[idx - 1])
+                                        except ValueError:
+                                            pass
+                                if selected:
+                                    results.append(" ".join(selected))
+                    except Exception:
+                        pass
+
+        return "\n".join(results) if results else "(no output)"
+    except Exception as e:
+        return f"Error processing text with awk: {e}"
+
+
+@tool
+def sed(
+    expression: str,
+    input_text: str,
+) -> str:
+    """Process text with sed-style find-and-replace.
+
+    Args:
+        expression: sed-compatible expression in the form 's/pattern/replacement/flags'
+                    Supports: 's/old/new/' (replace first), 's/old/new/g' (replace all),
+                             's/old/new/i' (case-insensitive), 's/old/new/gi' (global + case-insensitive)
+        input_text: Text to process
+
+    Returns:
+        Processed text with substitutions applied
+    """
+    try:
+        if not expression.startswith("s/") or expression.count("/") < 3:
+            return f"Error: Invalid sed expression '{expression}'. Use format: s/pattern/replacement/[flags]"
+
+        # Parse: s/pattern/replacement/flags
+        parts = expression[2:].rsplit("/", 2)  # Split from right to handle / in replacement
+        if len(parts) < 2:
+            return f"Error: Invalid sed expression '{expression}'. Use format: s/pattern/replacement/[flags]"
+
+        import re
+
+        pattern = parts[0]
+        replacement = parts[1]
+        flags = parts[2] if len(parts) > 2 else ""
+
+        flags = flags.lower()
+        case_insensitive = "i" in flags
+        global_replace = "g" in flags
+        compile_flags = re.IGNORECASE if case_insensitive else 0
+
+        def _replace(m: re.Match) -> str:
+            result = replacement
+            # Handle & for matched text in replacement
+            result = result.replace("&", m.group(0))
+            # Handle backreferences \1, \2, etc.
+            for i in range(9, 0, -1):
+                result = result.replace(
+                    f"\\{i}",
+                    m.group(i) if m.lastindex and i <= m.lastindex else "",
+                )
+            return result
+
+        compiled = re.compile(pattern, flags=compile_flags)
+
+        if global_replace:
+            result_text = compiled.sub(_replace, input_text)
+        else:
+            result_text = compiled.subn(_replace, input_text, count=1)[0]
+
+        return result_text
+    except Exception as e:
+        return f"Error processing text with sed: {e}"
+
+
+@tool
 def bash_background(
     command: str,
     working_dir: str | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
     """Start a background shell session and execute commands.
 
     Args:
         command: Shell command to execute in the background session
-        working_dir: Working directory for the session. If None, uses current directory.
+        working_dir: Working directory for the session. If None, uses the session's
+                   working directory.
 
     Returns:
         Session ID for tracking the background process
@@ -503,11 +676,12 @@ def bash_background(
 
     try:
         manager = get_bash_manager()
+        session_dir = working_dir or (tool_context.working_dir if tool_context else None)
         # Run the async function in a new event loop if needed
         session_id = asyncio.run(
-            manager.start_session(command=command, working_dir=working_dir)
+            manager.start_session(command=command, working_dir=session_dir)
         )
-        return f"Started bash session '{session_id}' in '{working_dir or '.'}'. Use bash_output to retrieve output."
+        return f"Started bash session '{session_id}' in '{session_dir or '.'}'. Use bash_output to retrieve output."
     except Exception as e:
         return f"Error starting bash session: {e}"
 
@@ -573,6 +747,8 @@ def web_search(
 ) -> str:
     """Search the web for current information.
 
+    Automatically uses Tavily (preferred) or DuckDuckGo based on configuration.
+
     Args:
         query: Search query string
         num_results: Number of results to return (default: 5)
@@ -580,28 +756,112 @@ def web_search(
     Returns:
         Formatted search results with titles and snippets
     """
+    from ..core.config import get_config
+
     try:
-        from duckduckgo_search import DDGS
+        config = get_config()
+        provider = config.search.provider
 
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=num_results))
+        # Try Tavily first
+        if provider == "tavily":
+            try:
+                from ..core.config import SecretManager
 
-        if not results:
-            return "No search results found."
+                api_key = SecretManager.get_api_key("tavily")
 
-        output = []
-        for i, result in enumerate(results, 1):
-            output.append(f"{i}. {result.get('title', 'No title')}")
-            output.append(f"   URL: {result.get('href', 'N/A')}")
-            snippet = result.get("body", "")[:200]
-            output.append(f"   {snippet}...")
-            output.append("")
+                if api_key:
+                    try:
+                        from tavily import TavilyClient
 
-        return "\n".join(output)
-    except ImportError:
-        return "Error: Please install duckduckgo_search (pip install duckduckgo-search)"
+                        client = TavilyClient(api_key=api_key)
+                        response = client.search(
+                            query=query,
+                            max_results=num_results,
+                            include_images=False,
+                        )
+                        results = response.get("results", [])
+
+                        if results:
+                            output = []
+                            for i, result in enumerate(results, 1):
+                                output.append(f"{i}. {result.get('title', 'No title')}")
+                                output.append(f"   URL: {result.get('url', 'N/A')}")
+                                snippet = result.get("content", "")[:200]
+                                output.append(f"   {snippet}...")
+                                if result.get("score"):
+                                    output.append(
+                                        f"   Relevance: {result['score']:.2f}"
+                                    )
+                                if result.get("published_date"):
+                                    output.append(
+                                        f"   Date: {result['published_date']}"
+                                    )
+                                output.append("")
+                            return "\n".join(output)
+                    except ImportError:
+                        error_msg = "Error: Tavily not installed. Install with: pip install tavily-python"
+                    except Exception as e:
+                        error_msg = f"Tavily search failed: {e}"
+                else:
+                    error_msg = "Error: Tavily API key not configured. Please set TAVILY_API_KEY or save via: openagent config save-key"
+            except Exception as e:
+                error_msg = f"Tavily initialization failed: {e}"
+
+            # Fallback to DuckDuckGo
+            if (
+                config.search.fallback_to_duckduck
+                and "tavily" not in str(error_msg).lower()
+            ):
+                try:
+                    from duckduckgo_search import DDGS
+
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(query, max_results=num_results))
+
+                    if results:
+                        output = []
+                        for i, result in enumerate(results, 1):
+                            output.append(f"{i}. {result.get('title', 'No title')}")
+                            output.append(f"   URL: {result.get('href', 'N/A')}")
+                            snippet = result.get("body", "")[:200]
+                            output.append(f"   {snippet}...")
+                            output.append("")
+                        return "\n".join(output)
+                    return "No search results found."
+                except ImportError:
+                    return "Error: Please install duckduckgo-search (pip install duckduckgo-search)"
+                except Exception as e:
+                    return f"Search failed: {e}"
+
+            return error_msg if provider == "tavily" else f"Search failed: {error_msg}"
+
+        # DuckDuckGo as primary
+        else:
+            try:
+                from duckduckgo_search import DDGS
+
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=num_results))
+
+                if not results:
+                    return "No search results found."
+
+                output = []
+                for i, result in enumerate(results, 1):
+                    output.append(f"{i}. {result.get('title', 'No title')}")
+                    output.append(f"   URL: {result.get('href', 'N/A')}")
+                    snippet = result.get("body", "")[:200]
+                    output.append(f"   {snippet}...")
+                    output.append("")
+
+                return "\n".join(output)
+            except ImportError:
+                return "Error: Please install duckduckgo-search (pip install duckduckgo-search)"
+            except Exception as e:
+                return f"Search failed: {e}"
+
     except Exception as e:
-        return f"Search failed: {e}"
+        return f"Search configuration error: {e}"
 
 
 @tool
@@ -655,44 +915,6 @@ def web_fetch(
         return f"Error: HTTP {e.response.status_code} - {e.response.reason_phrase}"
     except Exception as e:
         return f"Fetch failed: {e}"
-
-
-# ============================================================================
-# Agent Orchestration Tools
-# ============================================================================
-
-
-@tool
-def task(
-    agent_type: str,
-    description: str,
-    context: str | None = None,
-) -> str:
-    """Launch specialized sub-agents (subprocesses) for complex multi-step work.
-
-    Args:
-        agent_type: Type of agent to launch. Options: general-purpose, explore, plan, claude-code-guide, statusline-setup
-        description: Description of the task for the sub-agent
-        context: Optional additional context or parameters for the task
-
-    Returns:
-        Result from the sub-agent execution
-    """
-    valid_types = [
-        "general-purpose",
-        "explore",
-        "plan",
-        "claude-code-guide",
-        "statusline-setup",
-    ]
-    if agent_type not in valid_types:
-        return f"Error: Invalid agent type '{agent_type}'. Valid types: {', '.join(valid_types)}"
-
-    result = f"Would launch {agent_type} agent for: {description}"
-    if context:
-        result += f"\nContext: {context}"
-    result += "\n\nNote: Full sub-agent spawning requires process manager integration."
-    return result
 
 
 # ============================================================================
@@ -855,6 +1077,76 @@ def ask_user_question(
 
 
 # ============================================================================
+# Memory & Learning Tools
+# ============================================================================
+
+
+@tool(name="recall", description="Retrieve relevant past experiences, patterns, and knowledge from memory")
+def recall(
+    context: str = "",
+    include_patterns: bool = True,
+    include_preferences: bool = True,
+    include_facts: bool = True,
+    project_id: str | None = None,
+) -> str:
+    """Recall relevant information from past sessions.
+
+    This tool queries the memory store for patterns, preferences, and facts
+    that may be relevant to the current task or context.
+
+    Args:
+        context: Description of current task/situation (used for pattern matching)
+        include_patterns: Include successful solution patterns (default: True)
+        include_preferences: Include user preferences (default: True)
+        include_facts: Include project-specific facts (default: True)
+        project_id: Filter to specific project (optional, required for facts)
+
+    Returns:
+        Formatted summary of relevant memories
+    """
+    from ..core.memory import get_memory_store
+
+    try:
+        store = get_memory_store()
+        results = []
+
+        # Recall patterns based on context
+        if include_patterns and context:
+            patterns = store.query_patterns(context, limit=3)
+            if patterns:
+                results.append("## Relevant Past Solutions")
+                for p in patterns:
+                    results.append(f"- **{p.task_description}**")
+                    results.append(f"  Solution: {p.solution_summary}")
+                    if p.code_snippet:
+                        results.append(f"  Code:\n```python\n{p.code_snippet}\n```\n")
+
+        # Recall preferences
+        if include_preferences:
+            prefs = store.get_preferences()
+            if prefs:
+                results.append("## User Preferences")
+                for pref in prefs[:5]:  # Limit to top 5 by confidence
+                    results.append(f"- [{pref.category}] {pref.preference}")
+
+        # Recall project facts (return all facts for the project, let LLM filter relevance)
+        if include_facts and project_id:
+            facts = store.query_project(project_id, keywords=None)
+            if facts:
+                results.append("## Project Knowledge")
+                for fact in facts[:5]:  # Limit to top 5
+                    results.append(f"- [{fact.category}] {fact.fact}")
+
+        if not results:
+            return "No relevant memories found. Proceed with the task using your general knowledge."
+
+        return "\n\n".join(results)
+
+    except Exception as e:
+        return f"Error recalling memory: {e}"
+
+
+# ============================================================================
 # Extensibility Tools
 # ============================================================================
 
@@ -919,14 +1211,14 @@ __all__ = [
     "grep",
     # Shell & process management
     "bash",
+    "awk",
+    "sed",
     "bash_background",
     "bash_output",
     "kill_shell",
     # Web & search
     "web_search",
     "web_fetch",
-    # Agent orchestration
-    "task",
     # Planning & workflow
     "enter_plan_mode",
     "exit_plan_mode",
@@ -935,6 +1227,8 @@ __all__ = [
     "todo_list",
     # User interaction
     "ask_user_question",
+    # Memory & learning
+    "recall",
     # Extensibility
     "skill",
     "slash_command",

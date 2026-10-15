@@ -10,6 +10,7 @@ from openagent.provider.base import BaseProvider
 
 from .types import (
     ContentBlock,
+    ImageBlock,
     Message,
     TextBlock,
     ToolResultBlock,
@@ -62,6 +63,10 @@ class Session:
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         blocks.append({"type": "text", "text": b.text})
+                    elif isinstance(b, ImageBlock):
+                        blocks.append(
+                            {"type": "image_url", "image_url": {"url": b.url}}
+                        )
                     elif isinstance(b, ToolUseBlock):
                         blocks.append(
                             {
@@ -84,16 +89,78 @@ class Session:
                 out.append({"role": msg.role, "content": blocks})
         return out
 
-    def save(self, path: str | Path) -> None:
+    def add_user_multimodal(
+        self,
+        text: str | None = None,
+        image_data: str | None = None,
+        image_mime_type: str = "image/png",
+    ) -> Message:
+        """Add a user message that can contain text, images, or both.
+
+        Args:
+            text: Optional text content
+            image_data: Optional base64-encoded image data
+            image_mime_type: MIME type for the image block
+
+        Returns:
+            Message with text and/or image blocks
+        """
+        blocks: list[ContentBlock] = []
+
+        if text:
+            blocks.append(TextBlock(text=text))
+
+        if image_data:
+            blocks.append(ImageBlock(data=image_data, mime_type=image_mime_type))
+
+        # If only image provided, wrap in user message
+        if not blocks:
+            return self.add("user", "")
+
+        # If only text, use text_message for consistency
+        if len(blocks) == 1 and isinstance(blocks[0], TextBlock):
+            return self.add("user", text)
+
+        msg = Message(role="user", content=blocks)
+        self._messages.append(msg)
+        return msg
+
+    def add_user_image(self, image_data: str, mime_type: str = "image/png") -> Message:
+        """Add an image message from the user (for vision-capable models).
+
+        Args:
+            image_data: Base64-encoded image data
+            mime_type: MIME type of the image (default: image/png)
+        """
+        image_block = ImageBlock(data=image_data, mime_type=mime_type)
+        msg = Message(role="user", content=[image_block])
+        self._messages.append(msg)
+        return msg
+
+    def add_text(
+        self, role: Literal["user", "assistant", "system"], text: str
+    ) -> Message:
+        """Add a text message with a specific role."""
+        msg = text_message(role, text)
+        self._messages.append(msg)
+        return msg
+
+    def save(self, path: str | Path, *, title: str | None = None) -> None:
         """Save session to a JSON file.
 
         Args:
             path: Path to save the session to
+            title: A display name for the session, written first so a reader can
+                find it at the head of the file. `Session` does not own its name
+                — the service does, the way it owns the id — so this is a
+                pass-through, not a field: the caller reads the stored title,
+                derives a new one, and hands it back here.
         """
-        data = {
-            "system_prompt": self.system_prompt,
-            "messages": self.to_list(),
-        }
+        data = {}
+        if title:
+            data["title"] = title
+        data["system_prompt"] = self.system_prompt
+        data["messages"] = self.to_list()
         Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     @classmethod
@@ -157,6 +224,10 @@ class Session:
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         blocks.append({"type": "text", "text": b.text})
+                    elif isinstance(b, ImageBlock):
+                        blocks.append(
+                            {"type": "image_url", "image_url": {"url": b.url}}
+                        )
                     elif isinstance(b, ToolUseBlock):
                         blocks.append(
                             {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+import inspect
 import uuid
 from typing import Any
 
@@ -20,6 +21,23 @@ class BaseProvider(ABC):
     def __init__(self, model: str, api_key: str | None = None, **kwargs: Any) -> None:
         self.model = model
         self.api_key = api_key
+
+    async def close(self) -> None:
+        """Release the underlying HTTP client.
+
+        Every adapter owns a client, and a long-lived app (the Mac shell, the
+        service) that builds a provider per turn and never closes it leaks a
+        connection pool each time. The default handles SDK clients, whose
+        ``close`` is sync on some SDKs and async on others; adapters with more
+        to clean up override this.
+        """
+        client = getattr(self, "_client", None)
+        closer = getattr(client, "close", None)
+        if not callable(closer):
+            return
+        result = closer()
+        if inspect.isawaitable(result):
+            await result
 
     @abstractmethod
     async def chat(

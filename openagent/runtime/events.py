@@ -9,6 +9,9 @@ class AgentResult:
     run_id: str
     final_message_id: str
     output_text: str
+    #: Why the loop stopped: "end_turn" | "max_turns" | "empty_response".
+    #: Defaults to end_turn so existing constructors keep working.
+    stop_reason: str = "end_turn"
 
 
 @dataclass
@@ -52,6 +55,21 @@ class MessageDelta:
     message_id: str
     delta: str
     type: Literal["message_delta"] = "message_delta"
+
+
+@dataclass
+class ReasoningDelta:
+    """The model thinking out loud, before it answers.
+
+    Not part of the answer and never sent back to the model as history: it is
+    progress for the user. A client that ignores it shows a frozen spinner for
+    the ~10 seconds a reasoning model spends on its private tokens.
+    """
+
+    run_id: str
+    message_id: str
+    delta: str
+    type: Literal["reasoning_delta"] = "reasoning_delta"
 
 
 @dataclass
@@ -101,6 +119,38 @@ class ToolCallFailed:
 
 
 @dataclass
+class PermissionRequested:
+    """A tool is about to run and needs the user's approval.
+
+    ``request_id`` is the correlation key for the answer, which arrives as a
+    ``permission.respond`` call on the same connection.
+    """
+
+    run_id: str
+    request_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    reason: str = ""
+    type: Literal["permission_requested"] = "permission_requested"
+
+
+@dataclass
+class PermissionResolved:
+    """The answer to a prompt, and why.
+
+    ``reason`` distinguishes "the user refused" from "nobody answered in 60s":
+    a UI shows those differently, and a silent timeout must be visible.
+    """
+
+    run_id: str
+    request_id: str
+    granted: bool
+    scope: str = "once"
+    reason: str = ""
+    type: Literal["permission_resolved"] = "permission_resolved"
+
+
+@dataclass
 class ContextCompactionStarted:
     run_id: str
     reason: str
@@ -129,6 +179,7 @@ RuntimeEvent = (
     | RunCancelled
     | MessageStarted
     | MessageDelta
+    | ReasoningDelta
     | MessageCompleted
     | MessageFailed
     | ToolCallStarted
@@ -137,6 +188,8 @@ RuntimeEvent = (
     | ContextCompactionStarted
     | ContextCompactionCompleted
     | ContextCompactionFailed
+    | PermissionRequested
+    | PermissionResolved
 )
 
 
@@ -149,6 +202,9 @@ __all__ = [
     "MessageDelta",
     "MessageFailed",
     "MessageStarted",
+    "ReasoningDelta",
+    "PermissionRequested",
+    "PermissionResolved",
     "RunCancelled",
     "RunCompleted",
     "RunFailed",

@@ -153,3 +153,27 @@ uv.lock
 secrets/
 *.pem
 *.key
+.worktrees/
+
+# Environment variables
+.env
+.env.local
+*.env
+
+# Secrets
+secrets.json
+
+# Streamlit
+streamlit.log
+
+# Logs
+*.log
+logs/
+
+# Swift package manager (macapp/AgentClient)
+.build/
+.swiftpm/
+*.xcodeproj
+
+# JavaScript dependencies (installed by npm, never committed)
+node_modules/

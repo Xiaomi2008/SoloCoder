@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
-from openagent.provider.base import BaseProvider
-from openagent.provider.converter import MessageConverterMixin
+from openagent.core.retry import get_provider_retryable_exceptions, with_retry
 from openagent.core.types import (
     ContentBlock,
     Message,
@@ -12,6 +12,8 @@ from openagent.core.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from openagent.provider.base import BaseProvider
+from openagent.provider.converter import MessageConverterMixin
 
 
 class AnthropicConverterMixin(MessageConverterMixin):
@@ -107,8 +109,9 @@ class AnthropicConverterMixin(MessageConverterMixin):
 
 
 class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
-    def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str | None = None, **kwargs: Any) -> None:
+    def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str | None = None, max_retries: int = 3, **kwargs: Any) -> None:
         super().__init__(model=model, api_key=api_key, **kwargs)
+        self._max_retries = max_retries
         try:
             from anthropic import AsyncAnthropic
         except ImportError:
@@ -125,21 +128,60 @@ class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
         system_prompt: str = "",
         **kwargs: Any,
     ) -> Message:
+        return await self._chat_with_retry(messages, tools, system_prompt, **kwargs)
+
+    async def _chat_with_retry(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef] | None,
+        system_prompt: str,
+        **kwargs: Any,
+    ) -> Message:
+        retryable = get_provider_retryable_exceptions("anthropic")
+
+        @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
+        async def _call() -> Message:
+            converted = self.convert_messages(messages, system_prompt)
+            api_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": converted["messages"],
+                "max_tokens": kwargs.pop("max_tokens", 4096),
+                **kwargs,
+            }
+            if "system" in converted:
+                api_kwargs["system"] = converted["system"]
+            if tools:
+                api_kwargs["tools"] = self.convert_tools(tools)
+            response = await self._client.messages.create(**api_kwargs)
+            return self.convert_response(response)
+
+        return await _call()
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef] | None = None,
+        system_prompt: str = "",
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Stream text chunks from Anthropic."""
         converted = self.convert_messages(messages, system_prompt)
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": converted["messages"],
             "max_tokens": kwargs.pop("max_tokens", 4096),
+            "stream": True,
             **kwargs,
         }
         if "system" in converted:
             api_kwargs["system"] = converted["system"]
         if tools:
             api_kwargs["tools"] = self.convert_tools(tools)
-        response = await self._client.messages.create(**api_kwargs)
-        return self.convert_response(response)
+
+        async with self._client.messages.stream(**api_kwargs) as response:
+            async for text in response.text_stream:
+                yield text
 
 
-# 
+#
 # python .\example.py anthropic
-

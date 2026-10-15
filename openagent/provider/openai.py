@@ -6,24 +6,25 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from openagent.provider.base import BaseProvider
-from openagent.provider.converter import MessageConverterMixin
-from openagent.providers import (
-    ProviderError,
-    ProviderMessageCompleted,
-    ProviderMessageStarted,
-    ProviderStreamEvent,
-    ProviderTextDelta,
-    ProviderToolCall,
-)
 from openagent.core.retry import get_provider_retryable_exceptions, with_retry
 from openagent.core.types import (
     ContentBlock,
+    ImageBlock,
     Message,
     TextBlock,
     ToolDef,
     ToolResultBlock,
     ToolUseBlock,
+)
+from openagent.provider.base import BaseProvider
+from openagent.provider.converter import MessageConverterMixin
+from openagent.providers.events import (
+    ProviderError,
+    ProviderMessageCompleted,
+    ProviderMessageStarted,
+    ProviderReasoningDelta,
+    ProviderTextDelta,
+    ProviderToolCall,
 )
 
 
@@ -32,6 +33,21 @@ logger = logging.getLogger("openagent.provider.openai")
 
 class OpenAIConverterMixin(MessageConverterMixin):
     """Converts between canonical message format and OpenAI's chat format."""
+
+    @staticmethod
+    def _reasoning_of(delta: Any) -> str:
+        """The model's private reasoning from a streaming delta, if it has any.
+
+        llama.cpp, vLLM and Ollama put it in ``reasoning_content``, which is not
+        an OpenAI field — the SDK keeps unknown fields in ``model_extra``. Two
+        lookups because the SDK's behaviour here has changed across versions,
+        and a missing one is ten seconds of invisible thinking.
+        """
+        value = getattr(delta, "reasoning_content", None)
+        if value is None:
+            extra = getattr(delta, "model_extra", None) or {}
+            value = extra.get("reasoning_content")
+        return value if isinstance(value, str) else ""
 
     def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
         """Hook for provider-specific response anomaly logging."""
@@ -71,7 +87,23 @@ class OpenAIConverterMixin(MessageConverterMixin):
                 converted.append({"role": "system", "content": msg.text})
 
             elif msg.role == "user":
-                converted.append({"role": "user", "content": msg.text})
+                entry: dict[str, Any] = {"role": "user"}
+
+                if isinstance(msg.content, str):
+                    entry["content"] = msg.content
+                elif msg.has_images:
+                    # Handle multimodal content with images for Qwen3.5-VL
+                    blocks: list[dict[str, Any]] = []
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            blocks.append({"type": "text", "text": block.text})
+                        elif isinstance(block, ImageBlock):
+                            blocks.append({"type": "image_url", "image_url": {"url": block.url}})
+                    entry["content"] = blocks if blocks else msg.text
+                else:
+                    entry["content"] = msg.text
+
+                converted.append(entry)
 
             elif msg.role == "assistant":
                 entry: dict[str, Any] = {"role": "assistant"}
@@ -183,16 +215,31 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         except ImportError:
             raise ImportError("Install openai: pip install openai")
 
-        # For local/compatible APIs (custom base_url), use empty string for API key if not provided
-        # This allows servers like Ollama, LM Studio to work without authentication
+        # For local/compatible APIs (custom base_url), use a placeholder API key if not provided.
+        # Servers like Ollama, LM Studio and tinygrad ignore it; openai>=3 rejects an empty key as missing.
         effective_api_key = api_key
         if base_url and not api_key:
-            effective_api_key = ""  # Empty string tells OpenAI client no auth required
+            effective_api_key = "not-needed"
 
         self._client = AsyncOpenAI(
             api_key=effective_api_key, base_url=base_url or None, **kwargs
         )
         self.base_url = base_url
+
+    @staticmethod
+    def _reasoning_of(delta: Any) -> str:
+        """The model's private reasoning from a streaming delta, if it has any.
+
+        llama.cpp, vLLM and Ollama put it in ``reasoning_content``, which is not
+        an OpenAI field — the SDK keeps unknown fields in ``model_extra``. Two
+        lookups because the SDK's behaviour here has changed across versions,
+        and a missing one is ten seconds of invisible thinking.
+        """
+        value = getattr(delta, "reasoning_content", None)
+        if value is None:
+            extra = getattr(delta, "model_extra", None) or {}
+            value = extra.get("reasoning_content")
+        return value if isinstance(value, str) else ""
 
     def _log_response_issue(self, issue: str, response: Any, **details: Any) -> None:
         metadata = {
@@ -228,6 +275,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             api_kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": converted["messages"],
+                "max_tokens": kwargs.pop("max_tokens", 8192),
                 **kwargs,
             }
             if tools:
@@ -270,6 +318,13 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
                 if not started:
                     started = True
                     yield ProviderMessageStarted(message_id=message_id)
+
+                if chunk.choices:
+                    reasoning = self._reasoning_of(chunk.choices[0].delta)
+                    if reasoning:
+                        yield ProviderReasoningDelta(
+                            message_id=message_id, delta=reasoning
+                        )
 
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield ProviderTextDelta(

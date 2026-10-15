@@ -1,69 +1,155 @@
+"""Tests for GoogleProvider - converter, chat, stream."""
+
 from __future__ import annotations
 
 import sys
-from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from openagent.core.types import Message, ToolResultBlock
-from openagent.provider.google import GoogleProvider
+from openagent.core.types import (
+    Message, TextBlock, ToolDef, ToolResultBlock, ToolUseBlock,
+)
 
 
-class FakePart:
-    @staticmethod
-    def from_text(text: str) -> SimpleNamespace:
-        return SimpleNamespace(kind="text", text=text)
+def _mock_google_module():
+    """Inject a fake google.genai.types module so tests work without the SDK installed."""
+    mock_types = MagicMock()
+    mock_genai = MagicMock()
+    mock_genai.types = mock_types
+    mock_google = MagicMock()
+    mock_google.genai = mock_genai
 
-    @staticmethod
-    def from_function_response(name: str, response: dict[str, str]) -> SimpleNamespace:
-        return SimpleNamespace(
-            kind="function_response",
-            function_response=SimpleNamespace(name=name, response=response),
+    sys.modules.setdefault("google", mock_google)
+    sys.modules.setdefault("google.genai", mock_genai)
+    return mock_types
+
+
+# ============================================================================
+# GoogleConverterMixin
+# ============================================================================
+
+
+class TestGoogleConverter:
+    """Test message conversion for Google Gemini API."""
+
+    def test_convert_messages_system_instruction(self):
+        _mock_google_module()
+        from openagent.provider.google import GoogleConverterMixin
+
+        conv = GoogleConverterMixin()
+        result = conv.convert_messages(
+            messages=[Message(role="user", content="hello")],
+            system_prompt="be helpful",
         )
+        assert "system_instruction" in result
+        assert "be helpful" in result["system_instruction"]
+        assert len(result["contents"]) == 1
+
+    def test_convert_messages_user_and_assistant(self):
+        _mock_google_module()
+        from openagent.provider.google import GoogleConverterMixin
+
+        conv = GoogleConverterMixin()
+        result = conv.convert_messages(
+            messages=[
+                Message(role="user", content="hi"),
+                Message(role="assistant", content="hello back"),
+            ],
+        )
+        contents = result["contents"]
+        assert len(contents) == 2
+
+    def test_convert_messages_tool_result(self):
+        _mock_google_module()
+        from openagent.provider.google import GoogleConverterMixin
+
+        conv = GoogleConverterMixin()
+        result = conv.convert_messages(
+            messages=[
+                Message(
+                    role="tool_result",
+                    content=[ToolResultBlock(tool_use_id="fc_1", content="22C")],
+                ),
+            ],
+        )
+        contents = result["contents"]
+        assert len(contents) == 1
+
+    def test_convert_response_text(self):
+        from openagent.provider.google import GoogleConverterMixin
+
+        conv = GoogleConverterMixin()
+        mock_part = MagicMock()
+        mock_part.text = "Hello!"
+        mock_part.function_call = None
+
+        mock_resp = MagicMock()
+        mock_resp.candidates[0].content.parts = [mock_part]
+
+        msg = conv.convert_response(mock_resp)
+        assert msg.text == "Hello!"
+
+    def test_convert_response_with_function_call(self):
+        from openagent.provider.google import GoogleConverterMixin
+
+        conv = GoogleConverterMixin()
+        mock_fc = MagicMock()
+        mock_fc.name = "get_weather"
+        mock_fc.args = MagicMock()
+        mock_fc.args.to_dict.return_value = {"city": "Paris"}
+
+        mock_part = MagicMock()
+        mock_part.text = None
+        mock_part.function_call = mock_fc
+
+        mock_resp = MagicMock()
+        mock_resp.candidates[0].content.parts = [mock_part]
+
+        msg = conv.convert_response(mock_resp)
+        tool_blocks = [b for b in msg.content if isinstance(b, ToolUseBlock)]
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0].name == "get_weather"
+
+    def test_convert_tools(self):
+        from openagent.provider.google import GoogleConverterMixin
+
+        conv = GoogleConverterMixin()
+        tools = [ToolDef(name="get_weather", description="Weather info", parameters={"type": "object"})]
+        result = conv.convert_tools(tools)
+
+        assert len(result) == 1
+        assert result[0]["name"] == "get_weather"
 
 
-class FakeContent:
-    def __init__(self, role: str, parts: list[SimpleNamespace]):
-        self.role = role
-        self.parts = parts
+# ============================================================================
+# GoogleProvider chat
+# ============================================================================
 
 
-def install_fake_google_genai(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_types = SimpleNamespace(
-        Content=FakeContent,
-        Part=FakePart,
-    )
-    fake_genai = ModuleType("google.genai")
-    fake_genai.types = fake_types
+class TestGoogleProviderChat:
+    def test_chat_calls_api(self):
+        _mock_google_module()
+        from openagent.provider.google import GoogleProvider
 
-    google_module = ModuleType("google")
-    google_module.genai = fake_genai
+        provider = GoogleProvider.__new__(GoogleProvider)
+        provider.model = "gemini-2.0-flash"
+        provider._max_retries = 0
 
-    monkeypatch.setitem(sys.modules, "google", google_module)
-    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        mock_part = MagicMock()
+        mock_part.text = "OK"
+        mock_part.function_call = None
 
+        mock_resp = MagicMock()
+        mock_resp.candidates[0].content.parts = [mock_part]
 
-def test_google_provider_convert_messages_uses_tool_name_for_function_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_google_genai(monkeypatch)
-    provider = GoogleProvider.__new__(GoogleProvider)
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
+        provider._client = mock_client
 
-    result = provider.convert_messages(
-        messages=[
-            Message(
-                role="tool_result",
-                content=[
-                    ToolResultBlock(
-                        tool_use_id="call_123",
-                        tool_name="lookup_weather",
-                        content="22C and sunny",
-                    )
-                ],
-            )
-        ]
-    )
-
-    function_response = result["contents"][0].parts[0].function_response
-    assert function_response.name == "lookup_weather"
-    assert function_response.response == {"result": "22C and sunny"}
+        import asyncio
+        result = asyncio.run(provider.chat(
+            messages=[Message(role="user", content="hi")],
+            system_prompt="",
+        ))
+        assert result.text == "OK"

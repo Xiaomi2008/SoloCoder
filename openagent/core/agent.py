@@ -1,29 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Callable
 
 # Changed imports for core modules
 from .bash_manager import BashManager, get_bash_manager
 from .display import (
     bold,
-    dim,
     cyan,
-    green,
-    red,
-    white,
+    dim,
+    diff_addition,
+    diff_deletion,
     display_tool_call_claude_style,
     display_tool_result_claude_style,
-    format_diff_output,
-    display_code_block,
-    display_diff_claude_style,
-    truncate_text,
+    green,
+    red,
+    yellow,
 )
 
 
 def display_write_result(file_path: str, result_content: str) -> None:
     """Display write operation result with file info."""
-    print(f"  ● {bold('write')}({cyan(f'"{file_path}"')})")
+    q = '"'
+    print(f"  ➜ {bold('write')}({cyan(q + file_path + q)})")
 
     # Parse the success message to show bytes written
     if "Successfully wrote" in result_content:
@@ -52,7 +52,8 @@ def display_write_result(file_path: str, result_content: str) -> None:
 
 def display_edit_result(file_path: str, result_content: str) -> None:
     """Display edit operation result with changed lines highlighted."""
-    print(f"  ● {bold('edit')}({cyan(f'"{file_path}"')})")
+    q = '"'
+    print(f"  ➜ {bold('edit')}({cyan(q + file_path + q)})")
 
     # Check if this is a unified diff format
     has_diff_format = "@@" in result_content and any(
@@ -102,6 +103,71 @@ def display_edit_result(file_path: str, result_content: str) -> None:
             print(f"    {dim(line)}")
 
 
+def display_edit_result_with_lines(file_path: str, result_content: str) -> None:
+    """Display edit operation result with line numbers like Claude Code."""
+    q = '"'
+    print(f"  ➜ {bold('edit')}({cyan(q + file_path + q)})")
+
+    lines = result_content.split("\n")
+    additions = 0
+    deletions = 0
+    current_line_num: int | None = None
+
+    # Count additions and deletions
+    for line in lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+
+    # Show summary
+    if additions > 0 or deletions > 0:
+        parts = []
+        if additions > 0:
+            parts.append(green(f"Added {additions} line(s)"))
+        if deletions > 0:
+            parts.append(red(f"Removed {deletions} line(s)"))
+        print(f"    ⎿ {', '.join(parts)}")
+
+    print()
+
+    # Display diff with line numbers
+    for line in lines:
+        if not line or "Successfully" in line:
+            continue
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        elif line.startswith("@@"):
+            print(f"{bold(cyan(line))}")
+            # Extract starting line number from hunk header
+            parts = line.split()
+            for part in parts:
+                if part.startswith("-") and "," in part:
+                    current_line_num = int(part[1:].split(",")[0])
+                    break
+
+        elif line.startswith("+") and not line.startswith("+++"):
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {green(num_str.ljust(4))} {diff_addition(line[1:])}")
+
+        elif line.startswith("-") and not line.startswith("---"):
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {red(num_str.ljust(4))} {diff_deletion(line[1:])}")
+
+        else:
+            num_str = str(current_line_num) if current_line_num else ""
+            if current_line_num is not None:
+                current_line_num += 1
+            print(f"    {dim(num_str.ljust(4))} {dim(line)}")
+
+    if additions > 0 or deletions > 0:
+        print()
+
+
 from .logging import AgentLogger
 from .session import Session
 from .skill_manager import (
@@ -111,9 +177,18 @@ from .skill_manager import (
     get_skill_manager,
 )
 from .task_manager import TaskManager, get_task_manager
-from .tool import ToolRegistry, tool
-from .types import Message
-from openagent.runtime.agent import Agent as RuntimeAgent
+from .tool import ToolContext, ToolRegistry, tool
+from .types import Message, ToolResultBlock
+from openagent.runtime.agent import RuntimeAgent
+from openagent.runtime.loop import (
+    EMPTY_RESPONSE_EXHAUSTED_MESSAGE,
+    EMPTY_RESPONSE_RETRY_MESSAGE as _RETRY_PROMPT,
+    EmptyResponseGuard,
+    LoopSettings,
+    add_screenshot_followup,
+    is_empty_final_response,
+    maybe_compact_context,
+)
 
 # BaseProvider is likely in parent package or sibling 'provider' package
 # Since we are in core/, provider/ is '../provider/'
@@ -122,10 +197,9 @@ from openagent.provider.base import BaseProvider
 
 
 class Agent:
-    EMPTY_RESPONSE_RETRY_MESSAGE = (
-        "Your previous response was empty. Continue the task and reply with either "
-        "a non-empty assistant message or valid tool calls."
-    )
+    EMPTY_RESPONSE_RETRY_MESSAGE = _RETRY_PROMPT
+    SCREENSHOT_TOOL_IMAGE_MIME_TYPE = "image/jpeg"
+    SCREENSHOT_FOLLOWUP_MAX_TOKENS = 2048
 
     def __init__(
         self,
@@ -138,12 +212,15 @@ class Agent:
         task_manager: TaskManager | None = None,
         skill_manager: SkillManager | None = None,
         mcp_client: Any | None = None,  # MCP client for tool discovery
+        working_dir: str | None = None,
     ) -> None:
         self.provider = provider
         self.session = Session(system_prompt=system_prompt)
         self.max_turns = max_turns
         self.tool_registry = ToolRegistry()
         self._logger = AgentLogger(agent_id)
+        # The directory relative tool paths mean. Sub-agents inherit it.
+        self.working_dir = str(Path(working_dir).expanduser().resolve()) if working_dir else str(Path.cwd())
 
         # Initialize managers (use provided or create new instances)
         self.bash_manager = bash_manager or get_bash_manager()
@@ -161,6 +238,11 @@ class Agent:
         self._mcp_client = mcp_client
         if mcp_client is not None:
             asyncio.run(self._integrate_mcp_tools())
+
+    @property
+    def tool_context(self) -> ToolContext:
+        """What tools get for this session (the model never sees it)."""
+        return ToolContext(working_dir=self.working_dir)
 
     async def _integrate_mcp_tools(self) -> None:
         """Discover and integrate MCP tools from the client."""
@@ -208,9 +290,59 @@ class Agent:
         result = await self._loop(**kwargs)
         return result
 
+    async def run_multimodal(
+        self,
+        text: str | None = None,
+        image_data: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Run the agent with multimodal input (text and/or images).
+
+        For agents with tools, this adds the image to the session and runs the normal loop.
+
+        Args:
+            text: Optional text prompt
+            image_data: Optional base64-encoded image data
+
+        Returns:
+            The agent's response text
+        """
+        self._logger.run_start(text or "Image analysis")
+
+        # Add multimodal input to session
+        if image_data:
+            self.session.add_user_multimodal(text=text, image_data=image_data)
+        elif text:
+            self.session.add("user", text)
+        else:
+            self.session.add("user", "Analyze this image.")
+
+        result = await self._loop(**kwargs)
+        return result
+
     @staticmethod
     def _is_empty_final_response(message: Message) -> bool:
-        return not message.has_tool_calls and not message.text.strip()
+        """Deprecated alias for :func:`openagent.runtime.loop.is_empty_final_response`."""
+        return is_empty_final_response(message)
+
+    def _add_tool_result_followup_messages(
+        self, results: list[ToolResultBlock]
+    ) -> bool:
+        """Shared with the streaming runner — see :func:`add_screenshot_followup`."""
+        return add_screenshot_followup(
+            self.session, results, mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE
+        )
+
+    def _provider_kwargs_for_turn(
+        self, base_kwargs: dict[str, Any], screenshot_followup_added: bool
+    ) -> dict[str, Any]:
+        provider_kwargs = dict(base_kwargs)
+        if screenshot_followup_added:
+            provider_kwargs["max_tokens"] = min(
+                provider_kwargs.get("max_tokens", 8192),
+                self.SCREENSHOT_FOLLOWUP_MAX_TOKENS,
+            )
+        return provider_kwargs
 
     async def _loop(self, **kwargs: Any) -> str:
         tool_defs = (
@@ -218,63 +350,103 @@ class Agent:
         )
         response: Message | None = None
         completed_turns = 0
-        empty_response_retries = 0
-        max_empty_response_retries = kwargs.pop("max_empty_response_retries", 3)
         awaiting_final_response = False
+        #: One turn past the limit, for the final text after the last tool
+        #: batch — and only once. Granting it every time the flag is set made a
+        #: model that keeps calling tools loop forever: each iteration ends by
+        #: re-arming the flag, so the exit condition was never reached.
+        grace_used = False
 
-        # Get compaction settings from kwargs or use defaults
-        max_context_tokens = kwargs.pop("max_context_tokens", 128000)
-        compact_threshold = kwargs.pop("compact_threshold", 0.8)
-
-        # Check if compaction is disabled (via agent instance attribute or kwarg)
-        disable_compaction = kwargs.pop(
-            "disable_compaction", getattr(self, "disable_compaction", False)
+        # Loop settings are split out of kwargs so they never reach the provider.
+        settings, provider_kwargs = LoopSettings.from_kwargs(
+            {**getattr(self, "loop_defaults", {}), **kwargs}
         )
+        settings.apply_instance_override(self)
+        guard = EmptyResponseGuard(settings.max_empty_response_retries)
 
-        while completed_turns < self.max_turns or awaiting_final_response:
+        screenshot_followup_added = False
+
+        while completed_turns < self.max_turns or (
+            awaiting_final_response and not grace_used
+        ):
             turn_number = min(completed_turns + 1, self.max_turns)
             self._logger.turn_start(turn_number, self.max_turns)
 
             # Check if context compaction is needed before sending request (unless disabled)
-            if not disable_compaction and self.session.check_compaction_needed(
-                max_tokens=max_context_tokens, threshold=compact_threshold
-            ):
+            summary = await maybe_compact_context(self.session, self.provider, settings)
+            if summary:
                 self._logger.info("Context approaching limit, compacting...")
-                summary = await self.session.compact_context(
-                    provider=self.provider, keep_recent=5, summary_type="detailed"
-                )
                 self._logger.info(f"Compacted context: {summary[:100]}...")
+
+            # Display thinking indicator
+            print("\x1b[2K\x1b[G\x1b[2m⠋ Thinking...\x1b[0m", end="", flush=True)
+
+            turn_kwargs = self._provider_kwargs_for_turn(
+                provider_kwargs, screenshot_followup_added
+            )
 
             response = await self.provider.chat(
                 messages=self.session.messages,
                 tools=tool_defs,
                 system_prompt=self.session.system_prompt,
-                **kwargs,
+                **turn_kwargs,
             )
 
-            if self._is_empty_final_response(response):
+            # Clear thinking indicator
+            print("\x1b[2K\x1b[G", end="", flush=True)
+
+            # Show compact context usage indicator
+            try:
+                current_tokens = self.session.token_count
+                max_tokens = settings.max_context_tokens
+                threshold = settings.compact_threshold
+                percentage = (
+                    (current_tokens / max_tokens) * 100 if max_tokens > 0 else 0
+                )
+
+                if percentage >= 90:
+                    bar_color = red
+                elif percentage >= 80:
+                    bar_color = yellow
+                elif percentage >= threshold * 100:
+                    bar_color = cyan
+                else:
+                    bar_color = green
+
+                bar_width = 40
+                filled_chars = int(bar_width * percentage / 100)
+                bar = "█" * min(filled_chars, bar_width) + "░" * max(
+                    bar_width - filled_chars, 0
+                )
+
+                usage_text = f"{current_tokens:,}"
+                if percentage > 70:
+                    percent_text = cyan(f"{percentage:.0f}% ")
+                    print(
+                        f"  {dim('Context: ')}{bar_color(usage_text)} / {bar_color(str(max_tokens)[:5] + 'k')}  {percent_text}"
+                    )
+                else:
+                    print(
+                        f"  {dim('Context: ')}{bar_color(usage_text)} / {bar_color(str(max_tokens)[:5] + 'k')}"
+                    )
+            except Exception:
+                pass
+
+            if is_empty_final_response(response):
                 self._logger._logger.warning(
                     "Provider returned an empty assistant response; requesting a retry."
                 )
-                empty_response_retries += 1
-                if empty_response_retries > max_empty_response_retries:
-                    return (
-                        "The model returned empty responses repeatedly before finishing "
-                        "the task. Try again, switch models, or lower tool complexity."
-                    )
-
-                if (
-                    not self.session.messages
-                    or self.session.messages[-1].text
-                    != self.EMPTY_RESPONSE_RETRY_MESSAGE
-                ):
-                    self.session.add("system", self.EMPTY_RESPONSE_RETRY_MESSAGE)
+                guard.record_empty()
+                if guard.exhausted:
+                    return EMPTY_RESPONSE_EXHAUSTED_MESSAGE
+                guard.ensure_retry_prompt(self.session)
                 continue
 
-            empty_response_retries = 0
+            guard.record_success()
             self.session.add_message(response)
-            if not awaiting_final_response:
-                completed_turns += 1
+            if awaiting_final_response and completed_turns >= self.max_turns:
+                grace_used = True
+            completed_turns += 1
             awaiting_final_response = False
 
             has_tools = response.has_tool_calls
@@ -288,7 +460,10 @@ class Agent:
             for tc in response.tool_calls:
                 display_tool_call_claude_style(tc.name, tc.arguments)
 
-            tool_tasks = [self.tool_registry.execute(tc) for tc in response.tool_calls]
+            tool_tasks = [
+                self.tool_registry.execute(tc, context=self.tool_context)
+                for tc in response.tool_calls
+            ]
             results = await asyncio.gather(*tool_tasks)
 
             # Log results in Claude Code style with diff highlighting for code changes
@@ -323,14 +498,17 @@ class Agent:
                         # For write operations, show success message with file info
                         if tc.name == "write":
                             display_write_result(rel_path, content)
-                        # For edit operations, try to extract and show the changed lines
+                        # For edit operations, extract line counts and show diff with line numbers
                         elif tc.name == "edit":
-                            display_edit_result(rel_path, content)
+                            display_edit_result_with_lines(rel_path, content)
 
                     else:
                         display_tool_result_claude_style(result.is_error, content)
 
             self.session.add_tool_results(list(results))
+            screenshot_followup_added = self._add_tool_result_followup_messages(
+                list(results)
+            )
             awaiting_final_response = True
 
         self._logger.max_turns_reached()
@@ -341,7 +519,7 @@ class Agent:
                 "The model kept requesting more tool work after the turn limit was reached. "
                 "Try again, increase `--max-turns`, or switch to a more reliable model."
             )
-        if self._is_empty_final_response(response):
+        if is_empty_final_response(response):
             return (
                 "The model stopped with an empty response before finishing the task. "
                 "Try again or switch to a more reliable model."

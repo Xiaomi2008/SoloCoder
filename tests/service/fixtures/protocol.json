@@ -1,0 +1,258 @@
+{
+  "protocol_version": 1,
+  "max_frame_bytes": 8388608,
+  "methods": [
+    "auth.login",
+    "auth.logout",
+    "auth.status",
+    "config.get",
+    "config.set",
+    "hello",
+    "model.list",
+    "model.probe",
+    "model.select",
+    "permission.respond",
+    "ping",
+    "run.cancel",
+    "run.start",
+    "session.delete",
+    "session.list",
+    "session.load",
+    "session.save",
+    "tool.list"
+  ],
+  "terminal_event_types": [
+    "run_cancelled",
+    "run_completed",
+    "run_failed"
+  ],
+  "error_codes": {
+    "parse_error": -32700,
+    "invalid_request": -32600,
+    "method_not_found": -32601,
+    "invalid_params": -32602,
+    "internal_error": -32603,
+    "not_implemented": -32604,
+    "provider_error": -33000,
+    "model_unavailable": -33001,
+    "not_authenticated": -33002,
+    "permission_denied": -33003,
+    "cancelled": -33004,
+    "working_dir_denied": -33005,
+    "session_not_found": -33006,
+    "run_not_found": -33007,
+    "protocol_mismatch": -33008,
+    "dependency_missing": -33009,
+    "session_busy": -33010
+  },
+  "events": [
+    {
+      "type": "run_started",
+      "params": {
+        "run_id": "run_sample",
+        "type": "run_started"
+      }
+    },
+    {
+      "type": "message_started",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "type": "message_started"
+      }
+    },
+    {
+      "type": "reasoning_delta",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "delta": "Thinking: the user wants 中文 — 1,900 tokens of this arrive before the first answer character. ",
+        "type": "reasoning_delta"
+      }
+    },
+    {
+      "type": "message_delta",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "delta": "Writing — 中文 ✓\n",
+        "type": "message_delta"
+      }
+    },
+    {
+      "type": "message_completed",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "output_text": "Hello",
+        "type": "message_completed"
+      }
+    },
+    {
+      "type": "message_failed",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "error": "upstream 503",
+        "type": "message_failed"
+      }
+    },
+    {
+      "type": "tool_call_started",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "tool_call_id": "call_sample",
+        "tool_name": "bash",
+        "arguments": {
+          "command": "ls -la",
+          "nested": {
+            "a": 1,
+            "b": [
+              1,
+              2
+            ]
+          }
+        },
+        "type": "tool_call_started"
+      }
+    },
+    {
+      "type": "tool_call_completed",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "tool_call_id": "call_sample",
+        "tool_name": "bash",
+        "result": "total 0",
+        "type": "tool_call_completed"
+      }
+    },
+    {
+      "type": "tool_call_failed",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "tool_call_id": "call_sample",
+        "error": "exit code 2",
+        "tool_name": "bash",
+        "type": "tool_call_failed"
+      }
+    },
+    {
+      "type": "tool_call_failed",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "tool_call_id": "call_sample",
+        "error": "no tool name known",
+        "tool_name": "mystery",
+        "type": "tool_call_failed"
+      }
+    },
+    {
+      "type": "permission_requested",
+      "params": {
+        "run_id": "run_sample",
+        "request_id": "req_sample",
+        "tool_name": "bash",
+        "arguments": {
+          "command": "rm -rf build"
+        },
+        "reason": "exec: runs arbitrary commands",
+        "type": "permission_requested"
+      }
+    },
+    {
+      "type": "permission_resolved",
+      "params": {
+        "run_id": "run_sample",
+        "request_id": "req_sample",
+        "granted": true,
+        "scope": "session",
+        "reason": "approved by the user for this session",
+        "type": "permission_resolved"
+      }
+    },
+    {
+      "type": "permission_resolved",
+      "params": {
+        "run_id": "run_sample",
+        "request_id": "req_sample",
+        "granted": false,
+        "scope": "never",
+        "reason": "no answer within 60s; refused by default",
+        "type": "permission_resolved"
+      }
+    },
+    {
+      "type": "context_compaction_started",
+      "params": {
+        "run_id": "run_sample",
+        "reason": "context approaching limit",
+        "type": "context_compaction_started"
+      }
+    },
+    {
+      "type": "context_compaction_completed",
+      "params": {
+        "run_id": "run_sample",
+        "reason": "context approaching limit",
+        "type": "context_compaction_completed"
+      }
+    },
+    {
+      "type": "context_compaction_failed",
+      "params": {
+        "run_id": "run_sample",
+        "reason": "context approaching limit",
+        "error": "summary model failed",
+        "type": "context_compaction_failed"
+      }
+    },
+    {
+      "type": "run_completed",
+      "params": {
+        "run_id": "run_sample",
+        "final_message_id": "msg_sample",
+        "result": {
+          "run_id": "run_sample",
+          "final_message_id": "msg_sample",
+          "output_text": "Done.",
+          "stop_reason": "end_turn"
+        },
+        "type": "run_completed"
+      }
+    },
+    {
+      "type": "run_completed",
+      "params": {
+        "run_id": "run_sample",
+        "final_message_id": "msg_sample",
+        "result": {
+          "run_id": "run_sample",
+          "final_message_id": "msg_sample",
+          "output_text": "Turn limit reached.",
+          "stop_reason": "max_turns"
+        },
+        "type": "run_completed"
+      }
+    },
+    {
+      "type": "run_failed",
+      "params": {
+        "run_id": "run_sample",
+        "error": "provider exploded",
+        "type": "run_failed"
+      }
+    },
+    {
+      "type": "run_cancelled",
+      "params": {
+        "run_id": "run_sample",
+        "reason": "user pressed stop",
+        "type": "run_cancelled"
+      }
+    }
+  ]
+}

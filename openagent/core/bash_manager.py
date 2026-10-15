@@ -59,6 +59,7 @@ class BashManager:
     def __init__(self):
         self.sessions: dict[str, BashSession] = {}
         self._lock = asyncio.Lock()
+        self._io_lock = threading.Lock()
         self._cleanup_task: asyncio.Task | None = None
 
     def _start_output_reader(self, session: BashSession) -> None:
@@ -67,10 +68,17 @@ class BashManager:
             return
 
         def reader_loop():
-            for line in iter(session.process.stdout.readline, ''):
-                if line:
-                    session.output_buffer.append(line.rstrip('\n'))
+            try:
+                for line in iter(session.process.stdout.readline, ''):
+                    if line:
+                        with session._output_lock:
+                            session.output_buffer.append(line.rstrip('\n'))
+            except Exception:
+                pass  # Process exited or pipe broken
 
+        # Ensure the lock exists on the session
+        if not hasattr(session, '_output_lock'):
+            session._output_lock = threading.Lock()
         t = threading.Thread(target=reader_loop, daemon=True)
         t.start()
 
@@ -113,6 +121,7 @@ class BashManager:
                 working_dir=str(cwd),
                 is_running=True,
             )
+            session._output_lock = threading.Lock()
             self.sessions[session_id] = session
 
             # Start background thread to read output
@@ -158,21 +167,25 @@ class BashManager:
             await asyncio.sleep(0.1)
             return self.get_output(session_id, tail_lines=50)
 
-    async def _send_command_and_wait(self, session_id: str, command: str) -> str:
-        """Send command and wait for output (blocking style)."""
+    async def _send_command_and_wait(self, session_id: str, command: str, timeout: float = 30.0) -> str:
+        """Send command and poll for output without killing the session."""
         await self._send_command(session_id, command)
 
-        # Wait for output with timeout
         session = self.sessions.get(session_id)
         if not session or not session.process:
             return "Error: Session not found"
 
-        try:
-            output, _ = session.process.communicate(timeout=30.0)
-            return output if output else "(no output)"
-        except subprocess.TimeoutExpired:
-            session.process.kill()
-            return "Error: Command timed out after 30 seconds."
+        # Poll output buffer instead of communicate() which kills the process
+        elapsed = 0.0
+        poll_interval = 0.2
+        while elapsed < timeout:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            output = self.get_output(session_id)
+            if output != "(no output)" and output != "":
+                return output
+
+        return f"Error: Command timed out after {timeout:.0f} seconds."
 
     def get_output(
         self,
@@ -192,10 +205,14 @@ class BashManager:
         if not session:
             return f"Error: Session '{session_id}' not found."
 
-        if not session.output_buffer:
+        output_lock = getattr(session, '_output_lock', threading.Lock())
+        with output_lock:
+            buffer_copy = list(session.output_buffer)
+
+        if not buffer_copy:
             return "(no output)"
 
-        output = "\n".join(session.output_buffer)
+        output = "\n".join(buffer_copy)
         if tail_lines is not None and tail_lines > 0:
             lines = output.splitlines()[-tail_lines:]
             output = "\n".join(lines)
