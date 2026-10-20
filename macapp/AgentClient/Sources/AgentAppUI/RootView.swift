@@ -29,14 +29,14 @@ import SwiftUI
 
 public struct RootView: View {
     @EnvironmentObject var model: AppModel
-    @State private var draft: String
+    private let initialPrompt: String
     @State private var query = ""
     @State private var selection: String?
 
     /// `prompt` seeds the composer, so a preview can show the field as the user
     /// left it: multi-line, with a reason under it, Send greyed out.
     public init(prompt: String = "") {
-        _draft = State(initialValue: prompt)
+        initialPrompt = prompt
     }
 
     public var body: some View {
@@ -44,7 +44,7 @@ public struct RootView: View {
             Sidebar(query: $query, selection: $selection)
                 .navigationSplitViewColumnWidth(min: 190, ideal: Theme.sidebarWidth, max: 320)
         } detail: {
-            Detail(draft: $draft)
+            Detail(initialPrompt: initialPrompt)
         }
         .tint(Theme.accent)
         // `maxWidth` and `maxHeight` and not only the minimums: a frame with a
@@ -371,13 +371,13 @@ struct Footer: View {
 
 struct Detail: View {
     @EnvironmentObject var model: AppModel
-    @Binding var draft: String
+    let initialPrompt: String
 
     var body: some View {
         VStack(spacing: 0) {
             Header()
             TranscriptColumn()
-            ComposerCard(draft: $draft)
+            ComposerCard(prompt: initialPrompt)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.surface)
@@ -1078,13 +1078,22 @@ struct PermissionLine: View {
 /// a chevron.
 struct ComposerCard: View {
     @EnvironmentObject var model: AppModel
-    @Binding var draft: String
+    // Keep edits inside the composer. A binding to RootView invalidates the
+    // NavigationSplitView detail on every keystroke, disrupting the native
+    // field editor's first responder while the user is typing.
+    @State private var draft: String
+    @FocusState private var promptFocused: Bool
+
+    init(prompt: String = "") {
+        _draft = State(initialValue: prompt)
+    }
 
     private var enabled: Bool { model.sendBlock(draft) == nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("Ask for something…", text: $draft, axis: .vertical)
+                .focused($promptFocused)
                 .lineLimit(1...8)
                 .font(.body)
                 .onSubmit(submit)
