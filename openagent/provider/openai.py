@@ -79,12 +79,19 @@ class OpenAIConverterMixin(MessageConverterMixin):
     ) -> dict[str, Any]:
         converted: list[dict[str, Any]] = []
 
-        if system_prompt:
-            converted.append({"role": "system", "content": system_prompt})
+        # Qwen's chat template accepts exactly one system message at the front.
+        # Sessions can contain later system instructions (empty-response retries
+        # and compaction summaries); retain their authority without sending an
+        # invalid role sequence to OpenAI-compatible local servers.
+        system_parts = ([system_prompt] if system_prompt else []) + [
+            msg.text for msg in messages if msg.role == "system"
+        ]
+        if system_parts:
+            converted.append({"role": "system", "content": "\n\n".join(system_parts)})
 
         for msg in messages:
             if msg.role == "system":
-                converted.append({"role": "system", "content": msg.text})
+                continue
 
             elif msg.role == "user":
                 entry: dict[str, Any] = {"role": "user"}

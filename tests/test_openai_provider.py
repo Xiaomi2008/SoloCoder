@@ -47,6 +47,26 @@ class TestOpenAIConverter:
         assert msgs[0]["role"] == "system"
         assert msgs[1]["role"] == "user"
 
+    @pytest.mark.parametrize("system_prompt", ["", "be helpful"])
+    def test_system_retry_after_user_is_accepted_by_qwen_template(self, system_prompt):
+        from openagent.provider.openai import OpenAIConverterMixin
+
+        history = [
+            Message(role="system", content="rules"),
+            Message(role="user", content="hello"),
+            Message(role="system", content="Please provide a response."),
+            Message(role="user", content="try again"),
+        ]
+        msgs = OpenAIConverterMixin().convert_messages(history, system_prompt)["messages"]
+
+        # Qwen rejects a system message at any position after the first.
+        assert [msg["role"] for msg in msgs] == ["system", "user", "user"]
+        parts = ([system_prompt] if system_prompt else []) + ["rules", "Please provide a response."]
+        assert msgs[0]["content"] == "\n\n".join(parts)
+        assert [msg["content"] for msg in msgs[1:]] == ["hello", "try again"]
+        # Conversion must also work when the same saved session is resumed.
+        assert [msg.role for msg in history] == ["system", "user", "system", "user"]
+
     def test_convert_messages_assistant_tool_call(self):
         from openagent.provider.openai import OpenAIConverterMixin
 
