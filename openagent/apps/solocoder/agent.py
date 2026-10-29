@@ -35,11 +35,15 @@ from openagent.tools import (
 )
 
 
-def build_solocoder_tools(computer_use: bool = True, notebooks: bool = True) -> list[Callable[..., Any]]:
+def build_solocoder_tools(
+    computer_use: bool = True, notebooks: bool = True, browser_use: bool = False
+) -> list[Callable[..., Any]]:
     """Build the default SoloCoder tool set.
 
     Args:
         computer_use: Include computer use tools (screenshot, click, etc.) for GUI automation.
+        browser_use: Include the browser tools (browser_navigate, browser_click, etc.), which drive
+            the agent's own Chromium window.
         notebooks: Include notebook_edit. Every tool schema is prompt the model reads before the first
             token, so small local models leave out tools they rarely need.
     """
@@ -84,6 +88,11 @@ def build_solocoder_tools(computer_use: bool = True, notebooks: bool = True) -> 
             get_screen_resolution,
             wait,
         ])
+
+    if browser_use:
+        from openagent.tools.browser import browser_tools
+
+        tools.extend(browser_tools)
 
     return tools
 

@@ -117,6 +117,12 @@ SCREENSHOT_FOLLOWUP_TEXT = (
 )
 
 
+BROWSER_SCREENSHOT_FOLLOWUP_TEXT = (
+    "Latest screenshot of the agent's browser page. "
+    "Act on elements by their [n] ref from browser_snapshot, not by coordinates."
+)
+
+
 def add_screenshot_followup(
     session: Session,
     results: list[Any],
@@ -132,9 +138,19 @@ def add_screenshot_followup(
     """
     added = False
     for result in results:
-        if getattr(result, "is_error", False) or getattr(result, "tool_name", None) != "screenshot":
+        if getattr(result, "is_error", False) or not result.content or result.content.startswith("Error"):
             continue
-        if not result.content or result.content.startswith("Error"):
+        if getattr(result, "tool_name", None) == "browser_screenshot":
+            from openagent.tools.browser import last_screenshot_base64 as browser_capture
+
+            page_image = browser_capture()
+            if page_image:
+                session.add_user_multimodal(
+                    text=BROWSER_SCREENSHOT_FOLLOWUP_TEXT, image_data=page_image, image_mime_type=mime_type
+                )
+                added = True
+            continue
+        if getattr(result, "tool_name", None) != "screenshot":
             continue
 
         info = ""

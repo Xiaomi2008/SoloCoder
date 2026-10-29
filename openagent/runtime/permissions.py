@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-Risk = Literal["read", "write", "exec", "network", "gui", "interactive", "unknown"]
+Risk = Literal["read", "write", "exec", "network", "gui", "browser", "interactive", "unknown"]
 
 PermissionMode = Literal["allow_all", "allow_readonly", "ask"]
 
@@ -57,6 +57,17 @@ TOOL_RISK: dict[str, Risk] = {
     "move_mouse": "gui",
     "scroll": "gui",
     "wait": "gui",
+    # The agent's own browser. Reading and navigating are network; acting on a
+    # page (clicks, typing, form submits) can send, buy, or delete.
+    "browser_navigate": "network",
+    "browser_back": "network",
+    "browser_snapshot": "read",
+    "browser_screenshot": "read",
+    "browser_close": "read",
+    "browser_click": "browser",
+    "browser_type": "browser",
+    "browser_select_option": "browser",
+    "browser_press_key": "browser",
     # The model talking to the user.
     "ask_user_question": "interactive",
 }
@@ -67,6 +78,7 @@ RISK_REASON: dict[str, str] = {
     "exec": "exec: runs arbitrary commands",
     "network": "network: sends data off the machine",
     "gui": "gui: drives the real desktop, outside the session directory",
+    "browser": "browser: acts on a web page (click, type, submit) in the agent's browser",
     "interactive": "interactive: interrupts the user",
     "unknown": "unknown tool: classified as exec",
 }
@@ -74,7 +86,7 @@ RISK_REASON: dict[str, str] = {
 #: Risks that need approval in ``ask`` mode. Reads and network are allowed:
 #: a coding agent that asks per web search is noise, and the user already
 #: chose a model that talks to a server.
-ASK_BY_DEFAULT: frozenset[str] = frozenset({"write", "exec", "gui", "unknown"})
+ASK_BY_DEFAULT: frozenset[str] = frozenset({"write", "exec", "gui", "browser", "unknown"})
 
 
 def tool_risk(name: str) -> Risk:

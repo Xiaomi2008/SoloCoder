@@ -102,6 +102,7 @@ class ServiceSettings:
     permission_timeout: float = DEFAULT_PERMISSION_TIMEOUT
     max_turns: int = DEFAULT_MAX_TURNS
     computer_use: bool = False
+    browser_use: bool = False
     system_prompt: str | None = None
     #: Override the tool set. Tests run the service against a two-tool world.
     tools: Sequence[Callable[..., Any]] | None = None
@@ -366,6 +367,11 @@ class AgentService:
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
             await server.wait_closed()
+        if self.settings.browser_use:
+            # The model's Chromium window belongs to this process; leave none behind.
+            from openagent.tools.browser import close_browser
+
+            await close_browser()
         path = Path(self.settings.socket_path)
         if path.exists():
             path.unlink(missing_ok=True)
@@ -872,7 +878,11 @@ class AgentService:
 
         # local models pay for every tool schema in prefill time on each new conversation
         local = bool(getattr(ref, "is_local", False))
-        return build_solocoder_tools(computer_use=self.settings.computer_use, notebooks=not local)
+        return build_solocoder_tools(
+            computer_use=self.settings.computer_use,
+            notebooks=not local,
+            browser_use=self.settings.browser_use,
+        )
 
     async def _tool_list(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
         from openagent.core.tool import ToolRegistry

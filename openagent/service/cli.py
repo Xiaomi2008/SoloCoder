@@ -67,6 +67,11 @@ def add_subcommands(subparsers: Any) -> None:
         action="store_true",
         help="expose the macOS GUI tools (screenshot, click, ...) to the model",
     )
+    sp.add_argument(
+        "--browser-use",
+        action="store_true",
+        help="expose the browser tools (browser_navigate, browser_click, ...): the model's own Chromium window",
+    )
     sp.add_argument("--quiet", action="store_true", help="do not print the startup banner")
     sp.set_defaults(handler=handle_serve)
 
@@ -99,6 +104,7 @@ async def handle_serve(args: argparse.Namespace) -> int:
         permission_timeout=args.permission_timeout,
         max_turns=args.max_turns,
         computer_use=args.computer_use,
+        browser_use=args.browser_use,
     )
     service = await serve(settings)
     # A sidecar whose app was killed must not keep serving. The parent holds a
