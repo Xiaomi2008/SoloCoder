@@ -198,3 +198,51 @@ async def test_stream_reports_errors_as_events(provider):
     assert len(errors) == 1
     assert "401" in errors[0].error
     assert not any(type(e).__name__ == "ProviderMessageCompleted" for e in collected)
+
+
+async def test_stream_only_chat_collects_the_stream():
+    from openagent.provider.responses import OpenAIResponsesProvider
+
+    provider = OpenAIResponsesProvider(api_key="jwt", base_url="http://localhost:1", stream_only=True)
+    sent = {}
+
+    async def events():
+        yield SimpleNamespace(type="response.created", response=SimpleNamespace(id="resp_1"))
+        yield SimpleNamespace(type="response.output_text.delta", delta="ok")
+        yield SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(type="function_call", call_id="c1", name="bash", arguments='{"command":"ls"}'),
+        )
+
+    async def create(**kwargs):
+        sent.update(kwargs)
+        return events()
+
+    provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    message = await provider.chat([Message(role="user", content="hi")])
+    assert sent["stream"] is True
+    assert message.text == "ok"
+    assert message.tool_calls[0].name == "bash"
+    assert message.tool_calls[0].arguments == {"command": "ls"}
+
+
+async def test_stream_only_chat_raises_the_backend_error():
+    from openagent.provider.responses import OpenAIResponsesProvider
+
+    provider = OpenAIResponsesProvider(api_key="jwt", base_url="http://localhost:1", stream_only=True)
+
+    async def create(**kwargs):
+        raise ValueError("model_not_found")
+
+    provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    with pytest.raises(RuntimeError, match="model_not_found"):
+        await provider.chat([Message(role="user", content="hi")])
+
+
+async def test_chat_completions_kwargs_are_translated(provider):
+    await provider.chat([Message(role="user", content="hi")], reasoning_effort="high", max_tokens=256)
+    sent = provider._client.responses.kwargs
+    assert sent["reasoning"] == {"effort": "high"}
+    assert sent["max_output_tokens"] == 256
+    assert "reasoning_effort" not in sent and "max_tokens" not in sent
+

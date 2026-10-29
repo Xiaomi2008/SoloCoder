@@ -57,6 +57,20 @@ def test_unreported_context_falls_back_to_the_endpoint_window():
     assert models[1].caps.context_window == 65536
 
 
+def test_codex_listing_keeps_listed_slugs_with_their_windows():
+    payload = {"models": [
+        {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list",
+         "context_window": 500000, "input_modalities": ["text", "image"],
+         "supported_reasoning_levels": [{"effort": "low"}]},
+        {"slug": "codex-auto-review", "visibility": "hide", "context_window": 272000},
+    ]}
+    models = _parse_listing(WireAPI.OPENAI_RESPONSES, payload)
+    assert [m.model for m in models] == ["gpt-6.1-sol"]
+    assert models[0].label == "GPT-6.1-Sol"
+    assert models[0].caps.context_window == 500000
+    assert models[0].caps.vision and models[0].caps.reasoning and models[0].caps.tools
+
+
 def test_unrecognised_payload_yields_nothing():
     assert _parse_listing(WireAPI.OPENAI_CHAT, {"unexpected": True}) == []
     assert _parse_listing(WireAPI.OLLAMA_CHAT, None) == []
@@ -120,7 +134,7 @@ async def test_discover_is_silent_when_nothing_is_running(catalog, monkeypatch):
 def test_builtins_populate_the_catalog_offline(catalog):
     keys = {ref.key for ref in catalog.all_models()}
     assert "anthropic/claude-sonnet-5-5" in keys
-    assert "openai_oauth/gpt-5-codex" in keys
+    assert "openai_oauth/gpt-6.1-sol" in keys
     assert "mlx/mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit" in keys
 
 

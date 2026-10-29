@@ -23,7 +23,7 @@ import httpx
 
 from openagent.core.logging import logger
 from openagent.core.types import Message, ToolDef
-from openagent.provider.model_ref import Capabilities, CostHint, CostKind, ModelRef, WireAPI
+from openagent.provider.model_ref import AuthMode, Capabilities, CostHint, CostKind, ModelRef, WireAPI
 from openagent.provider.registry import ProviderRegistry
 
 PROBE_TOOL = ToolDef(
@@ -122,7 +122,7 @@ class ModelCatalog:
         specs = (
             [self.registry.endpoint(provider)]
             if provider
-            else list(self.registry.local_endpoints())
+            else [*self.registry.local_endpoints(), *self._signed_in_subscriptions()]
         )
         self.discovery_errors = {}
 
@@ -131,16 +131,21 @@ class ModelCatalog:
             if not base or not spec.discover_path:
                 return spec.provider, []
             url = f"{base.rstrip('/')}{spec.discover_path}"
-            headers = self._discovery_headers(spec.provider)
+            # A cloud backend is not a server on this machine; 2s is too tight.
+            wait = timeout if spec.local else max(timeout, 10.0)
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                if spec.auth_mode is AuthMode.OAUTH_SUBSCRIPTION:
+                    headers = await self._subscription_headers(spec.provider)
+                else:
+                    headers = self._discovery_headers(spec.provider)
+                async with httpx.AsyncClient(timeout=wait) as client:
                     response = await client.get(url, headers=headers)
                     response.raise_for_status()
                     payload = response.json()
             except Exception as exc:
                 # Silent failure here costs an hour: "no models" is a very
                 # different problem when the server wants a key.
-                self.discovery_errors[spec.provider] = _discovery_error(spec, url, exc, timeout)
+                self.discovery_errors[spec.provider] = _discovery_error(spec, url, exc, wait)
                 logger.debug(f"Discovery failed for {spec.provider} at {url}: {exc}")
                 return spec.provider, []
 
@@ -151,7 +156,9 @@ class ModelCatalog:
                     caps=item.caps,
                     label=item.label,
                 )
-                for item in _parse_listing(spec.wire_api, payload, spec.default_caps.context_window)
+                for item in _parse_listing(
+                    spec.wire_api, payload, spec.default_caps.context_window, spec.default_caps
+                )
             ]
             return spec.provider, refs
 
@@ -159,6 +166,26 @@ class ModelCatalog:
         for provider_key, refs in results:
             self._discovered[provider_key] = refs
         return {k: v for k, v in results if v}
+
+    def _signed_in_subscriptions(self) -> list[Any]:
+        """Subscription endpoints with a stored sign-in. Without one there is
+        nothing to list, and asking would only add an auth error per launch."""
+        out = []
+        for spec in self.registry.endpoints.values():
+            if spec.auth_mode is not AuthMode.OAUTH_SUBSCRIPTION or not spec.discover_path:
+                continue
+            try:
+                creds = self.registry.broker.load_credentials(spec.provider)
+            except Exception:
+                continue
+            if creds is not None and creds.tokens is not None:
+                out.append(spec)
+        return out
+
+    async def _subscription_headers(self, provider: str) -> dict[str, str]:
+        """Bearer plus the vendor headers, refreshing an expired token first."""
+        creds = await self.registry.broker.refresh_if_needed(self.registry.ref(provider))
+        return {**creds.headers, "Authorization": f"Bearer {creds.bearer_token}"}
 
     def _discovery_headers(self, provider: str) -> dict[str, str]:
         """A key-protected server is undiscoverable without its stored key."""
@@ -238,7 +265,10 @@ def _discovery_error(spec: Any, url: str, exc: Exception, timeout: float) -> str
 
 
 def _parse_listing(
-    wire_api: WireAPI, payload: Any, default_context: int = 32768
+    wire_api: WireAPI,
+    payload: Any,
+    default_context: int = 32768,
+    default_caps: Capabilities | None = None,
 ) -> list[DiscoveredModel]:
     """Normalize the three listing dialects we speak.
 
@@ -266,6 +296,30 @@ def _parse_listing(
                         streaming=True,
                         context_window=int(context) if context else default_context,
                         max_output_tokens=8192,
+                    ),
+                )
+            )
+        return out
+
+    if wire_api is WireAPI.OPENAI_RESPONSES and isinstance(payload, dict) and isinstance(payload.get("models"), list):
+        # The ChatGPT subscription backend: Codex's own model list. "hide" rows
+        # are internal (review models, reserves); the picker shows what Codex does.
+        for entry in payload["models"]:
+            slug = entry.get("slug") if isinstance(entry, dict) else None
+            if not slug or entry.get("visibility", "list") != "list":
+                continue
+            context = entry.get("context_window") or 0
+            out.append(
+                DiscoveredModel(
+                    model=slug,
+                    label=entry.get("display_name") or slug,
+                    caps=Capabilities(
+                        tools=True,
+                        vision="image" in (entry.get("input_modalities") or []),
+                        reasoning=bool(entry.get("supported_reasoning_levels")),
+                        streaming=True,
+                        context_window=int(context) if context else default_context,
+                        max_output_tokens=default_caps.max_output_tokens if default_caps else 8192,
                     ),
                 )
             )
@@ -335,15 +389,14 @@ _BUILTINS: tuple[tuple[str, str, Capabilities, CostHint], ...] = (
         CostHint(CostKind.PER_TOKEN, 2.5, 10.0),
     ),
     (
-        "openai_oauth", "gpt-5-codex",
-        _caps(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
+        "openai_oauth", "gpt-6.1-sol",
+        _caps(tools=True, vision=True, reasoning=True, streaming=True, context_window=500000, max_output_tokens=32000),
         CostHint(CostKind.SUBSCRIPTION),
     ),
-    # Probed on a ChatGPT Plus account: this backend answers *every* model id —
-    # this one, gpt-6-x, gpt-5.1-codex-max — with the same "not supported when
-    # using Codex with a ChatGPT account", and its model listing is a 403 HTML
-    # page. The wording is generic, so it says nothing about any id; adding a
-    # newer one here would be a guess with no way to check it.
+    # The subscription backend answers an id it does not serve with "not
+    # supported when using Codex with a ChatGPT account". Discovery
+    # (`/models?client_version=...`) lists the ids it does serve; this row is
+    # only the offline default.
     (
         "gemini", "gemini-2.0-flash",
         _caps(tools=True, vision=True, streaming=True, context_window=1000000, max_output_tokens=8192),

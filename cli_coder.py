@@ -883,8 +883,18 @@ async def main():
     if args.base_url:
         provider_kwargs["base_url"] = args.base_url
 
-    # Create provider with optional API key override
-    provider = ProviderClass(**provider_kwargs)
+    # A catalog key (`openai_oauth/gpt-6.1-sol`) names an endpoint and its auth;
+    # the registry resolves stored credentials (subscription sign-ins included).
+    from openagent.provider.registry import ProviderRegistry
+
+    registry = ProviderRegistry()
+    endpoint, _, registry_model = args.model.partition("/")
+    if registry_model and endpoint in registry.endpoints and not args.api_key:
+        provider = await registry.build_async(registry.ref(endpoint, registry_model, base_url=args.base_url))
+        print(f"Using {endpoint} (model: {registry_model})")
+    else:
+        # Create provider with optional API key override
+        provider = ProviderClass(**provider_kwargs)
 
     # Create the coder agent with compaction settings
     coder = CoderAgent(

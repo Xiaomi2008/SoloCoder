@@ -106,6 +106,8 @@ def test_build_subscription_openai_uses_responses_adapter(registry):
     assert isinstance(provider, OpenAIResponsesProvider)
     assert provider.base_url == "https://chatgpt.com/backend-api/codex"
     assert provider._client._custom_headers["OpenAI-Organization"] == "acct_9"
+    # The subscription backend rejects non-streaming requests.
+    assert provider._stream_only is True
 
 
 def test_local_anthropic_server_gets_a_placeholder_key(registry):

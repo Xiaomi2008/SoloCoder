@@ -152,17 +152,21 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
 
     def __init__(
         self,
-        model: str = "gpt-5-codex",
+        model: str = "gpt-6.1-sol",
         api_key: str | None = None,
         base_url: str | None = None,
         max_retries: int = 3,
         default_headers: dict[str, str] | None = None,
         store: bool = False,
+        stream_only: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(model=model, api_key=api_key)
         self._max_retries = max_retries
         self._store = store
+        # The ChatGPT subscription backend answers a non-streaming request with
+        # 400 "Stream must be set to true"; chat() then collects the stream.
+        self._stream_only = stream_only
         self.base_url = base_url
         try:
             from openai import AsyncOpenAI
@@ -183,6 +187,13 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         self, messages: list[Message], tools: list[ToolDef] | None, system_prompt: str, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         converted = self.convert_messages(messages, system_prompt)
+        # The runner speaks chat-completions kwargs; the Responses API nests
+        # effort under `reasoning` and calls the output cap `max_output_tokens`.
+        effort = kwargs.pop("reasoning_effort", None)
+        if effort:
+            kwargs.setdefault("reasoning", {"effort": effort})
+        if "max_tokens" in kwargs:
+            kwargs.setdefault("max_output_tokens", kwargs.pop("max_tokens"))
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "input": converted["input"],
@@ -203,6 +214,9 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         system_prompt: str = "",
         **kwargs: Any,
     ) -> Message:
+        if self._stream_only:
+            return await self._chat_via_stream(messages, tools, system_prompt, kwargs)
+
         retryable = get_provider_retryable_exceptions("openai")
 
         @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
@@ -213,6 +227,25 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
             return self.convert_response(response)
 
         return await _call()
+
+    async def _chat_via_stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef] | None,
+        system_prompt: str,
+        kwargs: dict[str, Any],
+    ) -> Message:
+        text: list[str] = []
+        calls: list[ContentBlock] = []
+        async for event in self.stream(messages, tools, system_prompt, **kwargs):
+            if isinstance(event, ProviderTextDelta):
+                text.append(event.delta)
+            elif isinstance(event, ProviderToolCall):
+                calls.append(ToolUseBlock(id=event.id, name=event.name, arguments=event.arguments))
+            elif isinstance(event, ProviderError):
+                raise RuntimeError(event.error)
+        blocks: list[ContentBlock] = [TextBlock(text="".join(text))] if text else []
+        return Message(role="assistant", content=[*blocks, *calls] or [TextBlock(text="")])
 
     async def stream(
         self,

@@ -40,6 +40,9 @@ OPTIONAL_EXTRAS = {
     WireAPI.GEMINI: "openagent[google]",
 }
 
+# The Codex CLI version the subscription backend's model listing is asked for.
+CODEX_CLIENT_VERSION = "0.164.0"
+
 # Local servers default to optimistic capability claims; the probe downgrades
 # them to facts. context_window is the common local default.
 _LOCAL_CAPS = Capabilities(tools=True, streaming=True, context_window=32768, max_output_tokens=8192)
@@ -176,7 +179,10 @@ CLOUD_ENDPOINTS: tuple[EndpointSpec, ...] = (
         # Subscription JWTs are rejected by api.openai.com; only this backend
         # accepts them, and it speaks the Responses API.
         base_url="https://chatgpt.com/backend-api/codex",
-        default_model="gpt-5-codex",
+        # The listing 400s without a client_version; with one it returns the
+        # slugs this account may use (they rotate, so discovery beats a table).
+        discover_path=f"/models?client_version={CODEX_CLIENT_VERSION}",
+        default_model="gpt-6.1-sol",
         default_caps=Capabilities(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
         docs_url="https://chatgpt.com",
     ),
@@ -415,6 +421,8 @@ class ProviderRegistry:
                 api_key=token,
                 base_url=ref.base_url,
                 default_headers=headers or None,
+                # The subscription backend rejects non-streaming requests.
+                stream_only=ref.auth_mode is AuthMode.OAUTH_SUBSCRIPTION,
             )
 
         if ref.wire_api is WireAPI.ANTHROPIC_MESSAGES:
