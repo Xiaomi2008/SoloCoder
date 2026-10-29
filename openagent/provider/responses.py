@@ -35,6 +35,7 @@ from openagent.providers.events import (
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,
+    ProviderReasoningDelta,
     ProviderStreamEvent,
     ProviderTextDelta,
     ProviderToolCall,
@@ -159,6 +160,7 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         default_headers: dict[str, str] | None = None,
         store: bool = False,
         stream_only: bool = False,
+        reasoning_summary: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(model=model, api_key=api_key)
@@ -167,6 +169,10 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         # The ChatGPT subscription backend answers a non-streaming request with
         # 400 "Stream must be set to true"; chat() then collects the stream.
         self._stream_only = stream_only
+        # A reasoning model streams nothing while it thinks unless a summary is
+        # requested; with one, the summary is the app's thinking line. Only for
+        # reasoning models: others reject the `reasoning` parameter outright.
+        self._reasoning_summary = reasoning_summary
         self.base_url = base_url
         try:
             from openai import AsyncOpenAI
@@ -190,8 +196,13 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         # The runner speaks chat-completions kwargs; the Responses API nests
         # effort under `reasoning` and calls the output cap `max_output_tokens`.
         effort = kwargs.pop("reasoning_effort", None)
-        if effort:
-            kwargs.setdefault("reasoning", {"effort": effort})
+        if effort or self._reasoning_summary:
+            reasoning = dict(kwargs.get("reasoning") or {})
+            if effort:
+                reasoning.setdefault("effort", effort)
+            if self._reasoning_summary:
+                reasoning.setdefault("summary", self._reasoning_summary)
+            kwargs["reasoning"] = reasoning
         if "max_tokens" in kwargs:
             kwargs.setdefault("max_output_tokens", kwargs.pop("max_tokens"))
         api_kwargs: dict[str, Any] = {
@@ -280,7 +291,20 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
                     if delta:
                         yield ProviderTextDelta(message_id=message_id, delta=delta)
 
-                elif event_type in ("response.output_item.added", "response.output_item.done"):
+                elif event_type in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+                    delta = getattr(event, "delta", "")
+                    if delta:
+                        yield ProviderReasoningDelta(message_id=message_id, delta=delta)
+
+                elif event_type == "response.reasoning_summary_part.added":
+                    # Each part is a paragraph; without the break they run together.
+                    if getattr(event, "summary_index", 0):
+                        yield ProviderReasoningDelta(message_id=message_id, delta="\n\n")
+
+                elif event_type == "response.output_item.done":
+                    # `.done` only: the item is complete there. `.added` carries
+                    # empty arguments on the ChatGPT backend, but a server that
+                    # sends them whole on both would have the tool run twice.
                     item = getattr(event, "item", None)
                     if getattr(item, "type", None) != "function_call":
                         continue

@@ -423,6 +423,7 @@ class ProviderRegistry:
                 default_headers=headers or None,
                 # The subscription backend rejects non-streaming requests.
                 stream_only=ref.auth_mode is AuthMode.OAUTH_SUBSCRIPTION,
+                reasoning_summary="auto" if ref.caps.reasoning else None,
             )
 
         if ref.wire_api is WireAPI.ANTHROPIC_MESSAGES:

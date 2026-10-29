@@ -108,6 +108,8 @@ def test_build_subscription_openai_uses_responses_adapter(registry):
     assert provider._client._custom_headers["OpenAI-Organization"] == "acct_9"
     # The subscription backend rejects non-streaming requests.
     assert provider._stream_only is True
+    # A reasoning model asks for summaries, which the app shows as thinking.
+    assert provider._reasoning_summary == "auto"
 
 
 def test_local_anthropic_server_gets_a_placeholder_key(registry):
