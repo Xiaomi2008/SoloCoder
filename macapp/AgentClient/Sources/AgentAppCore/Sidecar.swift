@@ -53,7 +53,11 @@ public final class Sidecar {
     }
 
     public let socketPath: String
-    private let process = Process()
+    /// Replaced on every `start`: a `Process` launches once, and `run()` on one
+    /// that already ran raises "task already launched" — which, thrown inside
+    /// the restart task a settings toggle starts, left the concurrency runtime
+    /// corrupt and crashed the next view update.
+    private var process = Process()
     private let logPath: String
     /// Held for the process's life: closing it early would tell the service its
     /// parent is gone while the app is running fine.
@@ -127,6 +131,7 @@ public final class Sidecar {
     public func start() async throws {
         if running { return }
         guard let launch = Self.resolveLaunch() else { throw Failure.noService }
+        process = Process()
         let directory = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
         sweepStaleDirectories(under: "/tmp/oa-\(getuid())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
