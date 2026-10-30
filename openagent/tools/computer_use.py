@@ -9,10 +9,15 @@ capabilities - they can natively analyze images passed as base64 data URIs.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import ctypes
+import functools
 import io
-from pathlib import Path
-from typing import Literal
+import os
+import sys
+import time
+from typing import Any, Callable, Literal
 
 from ..core.tool import tool
 
@@ -22,6 +27,143 @@ _last_screenshot_size: tuple[int, int] | None = None
 _original_screenshot_size: tuple[int, int] | None = None
 _last_screenshot_origin: tuple[int, int] | None = None
 _CORNER_SAFETY_MARGIN = 1
+_screen_capture_requested = False
+
+
+def _off_loop(fn: Callable[..., str]) -> Callable[..., Any]:
+    """Run a blocking GUI tool in a worker thread.
+
+    The tool runner calls a sync tool on the service's event loop, so a
+    ``time.sleep`` or a ``screencapture`` subprocess here froze every session,
+    the Stop button and the browser frames with it. ``functools.wraps`` keeps
+    the signature and docstring the ``@tool`` schema is built from.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> str:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    return wrapper
+
+
+def _accessibility_trusted() -> bool | None:
+    """Whether macOS lets this process post input events; None off macOS.
+
+    Without the grant, ``CGEventPost`` drops every event without an error,
+    and the tool reported a click that never happened. The grant belongs to
+    the responsible app: the SoloCoder app for its service, the terminal for
+    the CLI.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        services = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        )
+        services.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(services.AXIsProcessTrusted())
+    except (OSError, AttributeError):
+        return None
+
+
+def _screen_capture_allowed() -> bool | None:
+    """Whether macOS lets this process record the screen; None if unknown.
+
+    Without the grant a capture still succeeds but shows only the wallpaper,
+    and the model acted on a desktop with no windows on it.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import Quartz
+    except ImportError:
+        return None
+    preflight = getattr(Quartz, "CGPreflightScreenCaptureAccess", None)
+    if preflight is None:
+        return None
+    if preflight():
+        return True
+    global _screen_capture_requested
+    if not _screen_capture_requested:
+        # Once per process: adds the app to the Screen Recording list, so the
+        # person has a switch to turn on rather than an app to find.
+        _screen_capture_requested = True
+        request = getattr(Quartz, "CGRequestScreenCaptureAccess", None)
+        if request is not None:
+            request()
+    return False
+
+
+_NO_ACCESSIBILITY = (
+    "Error: macOS has not granted Accessibility to the app running SoloCoder, so input "
+    "events are dropped. Ask the user to enable it in System Settings > Privacy & "
+    "Security > Accessibility, then retry."
+)
+_NO_SCREEN_RECORDING = (
+    "Error: macOS has not granted Screen Recording to the app running SoloCoder, so a "
+    "screenshot would show only the wallpaper. Ask the user to enable it in System "
+    "Settings > Privacy & Security > Screen Recording (the app may need a restart), then retry."
+)
+
+
+def _host_pid() -> int | None:
+    """The SoloCoder app's pid, which its service gets in ``OPENAGENT_HOST_PID``."""
+    try:
+        return int(os.environ["OPENAGENT_HOST_PID"])
+    except (KeyError, ValueError):
+        return None
+
+
+def _host_window_on_screen(pid: int) -> bool:
+    # The window server, not NSRunningApplication: the service runs no AppKit
+    # run loop, and NSRunningApplication's properties only refresh on one.
+    import Quartz
+
+    windows = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+        Quartz.kCGNullWindowID,
+    ) or []
+    return any(
+        w.get("kCGWindowOwnerPID") == pid and w.get("kCGWindowLayer") == 0 for w in windows
+    )
+
+
+def _step_aside() -> None:
+    """Hide the SoloCoder app before the agent looks at or acts on the screen.
+
+    The person pressed Send in SoloCoder, so it is the frontmost app: typed
+    text and shortcuts went into its own composer, and its window covered what
+    the agent was trying to see. Hiding it hands focus back to the app the
+    person was using. The app shows itself again for a permission prompt and
+    when the run ends.
+    """
+    pid = _host_pid()
+    if pid is None or sys.platform != "darwin":
+        return
+    try:
+        from AppKit import NSRunningApplication
+
+        if not _host_window_on_screen(pid):
+            return
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        if app is None:
+            return
+        app.hide()
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and _host_window_on_screen(pid):
+            time.sleep(0.05)
+        # The window is gone; give the app behind it a moment to take focus.
+        time.sleep(0.15)
+    except Exception:
+        return
+
+
+def _ready_for_input() -> str | None:
+    """An error to return instead of acting, or None to go ahead."""
+    if _accessibility_trusted() is False:
+        return _NO_ACCESSIBILITY
+    _step_aside()
+    return None
 
 
 def _normalize_image_coordinate(value: int | str, name: str) -> int:
@@ -44,6 +186,7 @@ def _is_fail_safe_exception(pyautogui: object, exc: Exception) -> bool:
 
 
 @tool
+@_off_loop
 def screenshot(
     region: tuple[int, int, int, int] | None = None,
     return_base64: bool = False,
@@ -76,6 +219,10 @@ def screenshot(
     try:
         import pyautogui
         from PIL import Image
+
+        if _screen_capture_allowed() is False:
+            return _NO_SCREEN_RECORDING
+        _step_aside()
 
         if region:
             x, y, capture_width, capture_height = region
@@ -194,10 +341,11 @@ def _get_current_scale_factors() -> tuple[float, float] | None:
 
 
 @tool
+@_off_loop
 def click(x: int, y: int, button: Literal["left", "right", "middle"] = "left") -> str:
     """Click at specified coordinates from screenshot image.
 
-    IMPORTANT: Always use screenshot image coordinates (512x288 range), NOT actual screen coordinates!
+    IMPORTANT: Always use coordinates in the last screenshot image, NOT actual screen coordinates!
 
     Workflow for the agent:
     1. Take screenshot: screenshot(return_base64=True)
@@ -209,8 +357,8 @@ def click(x: int, y: int, button: Literal["left", "right", "middle"] = "left") -
     the scaling factor calculated when the screenshot was taken.
 
     Args:
-        x: X coordinate in screenshot image (pixels from left, range: 0-511)
-        y: Y coordinate in screenshot image (pixels from top, range: 0-287)
+        x: X coordinate in screenshot image (pixels from left, 0 to image width - 1)
+        y: Y coordinate in screenshot image (pixels from top, 0 to image height - 1)
         button: Which mouse button to click. Default is 'left'.
 
     Returns:
@@ -236,6 +384,9 @@ def click(x: int, y: int, button: Literal["left", "right", "middle"] = "left") -
         # Scale coordinates from image space to actual screen space
         # (if a screenshot was taken, the globals are set)
         x, y = _scale_from_image_to_screen(x, y)
+        blocked = _ready_for_input()
+        if blocked:
+            return blocked
         pyautogui.click(x=x, y=y, button=button)
         return f"Clicked at ({x}, {y}) with {button} button"
 
@@ -253,14 +404,15 @@ def click(x: int, y: int, button: Literal["left", "right", "middle"] = "left") -
 
 
 @tool
+@_off_loop
 def double_click(x: int, y: int) -> str:
     """Double-click at specified screenshot image coordinates.
 
-    IMPORTANT: Use screenshot image coordinates (512x288 range), NOT actual screen coordinates!
+    IMPORTANT: Use coordinates in the last screenshot image, NOT actual screen coordinates!
 
     Args:
-        x: X coordinate in the screenshot image (pixels from left edge, range: 0-511)
-        y: Y coordinate in the screenshot image (pixels from top edge, range: 0-287)
+        x: X coordinate in the screenshot image (pixels from left edge, 0 to image width - 1)
+        y: Y coordinate in the screenshot image (pixels from top edge, 0 to image height - 1)
 
     Returns:
         Confirmation message with the double-clicked coordinates.
@@ -281,6 +433,9 @@ def double_click(x: int, y: int) -> str:
 
         # Scale coordinates from image space to actual screen space
         x, y = _scale_from_image_to_screen(x, y)
+        blocked = _ready_for_input()
+        if blocked:
+            return blocked
         pyautogui.doubleClick(x=x, y=y)
         return f"Double-clicked at ({x}, {y})"
 
@@ -297,13 +452,43 @@ def double_click(x: int, y: int) -> str:
         return f"Error double-clicking at ({x}, {y}): {e}"
 
 
+def _post_unicode(text: str, interval: float) -> None:
+    """Type ``text`` as Unicode keyboard events, one character per event.
+
+    ``pyautogui.typewrite`` only knows the keys on a US layout and skipped
+    everything else without an error: accented letters, CJK, emoji. A
+    keyboard event carrying a Unicode string types any character, whatever
+    the layout. One character per event because some apps (Electron ones
+    among them) read only the first character of a longer string.
+    """
+    import Quartz
+
+    for char in text:
+        if char == "\n":
+            # A newline as a string is a character, not the Return key: a
+            # form field would not submit and an editor would not break.
+            import pyautogui
+
+            pyautogui.press("enter")
+        else:
+            units = len(char.encode("utf-16-le")) // 2
+            for down in (True, False):
+                event = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
+                # A modifier the person is holding must not turn "c" into ⌘C.
+                Quartz.CGEventSetFlags(event, 0)
+                Quartz.CGEventKeyboardSetUnicodeString(event, units, char)
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+        if interval > 0:
+            time.sleep(interval)
+
+
 @tool
-def type_text(text: str, interval: float = 0.05) -> str:
+@_off_loop
+def type_text(text: str, interval: float = 0.01) -> str:
     """Type text at the current focused element.
 
-    Types characters with a small delay between each for realism. This simulates
-    human typing speed and works with text fields, search boxes, and other
-    input elements.
+    Types any characters, including accented letters, CJK and emoji. A newline
+    presses Return. Click the target field first so it has focus.
 
     Args:
         text: The text to type
@@ -322,7 +507,13 @@ def type_text(text: str, interval: float = 0.05) -> str:
     try:
         import pyautogui
 
-        pyautogui.typewrite(text, interval=interval)
+        blocked = _ready_for_input()
+        if blocked:
+            return blocked
+        if sys.platform == "darwin":
+            _post_unicode(text, interval)
+        else:
+            pyautogui.write(text, interval=interval)
         preview = text[:50] + "..." if len(text) > 50 else text
         return f"Typed: {preview}"
 
@@ -332,7 +523,46 @@ def type_text(text: str, interval: float = 0.05) -> str:
         return f"Error typing '{text[:30]}...': {e}"
 
 
+# What models write -> pyautogui's macOS key names. pyautogui ignores a name it
+# does not know without an error, so "cmd+c" was a no-op reported as pressed.
+_KEY_ALIASES = {
+    "cmd": "command", "⌘": "command", "meta": "command", "super": "command", "win": "command",
+    "opt": "option", "⌥": "option", "control": "ctrl", "⌃": "ctrl", "⇧": "shift",
+    "return": "enter", "⏎": "enter", "escape": "esc", "spacebar": "space",
+    "arrowup": "up", "arrowdown": "down", "arrowleft": "left", "arrowright": "right",
+    "page_up": "pageup", "page_down": "pagedown", "forwarddelete": "del",
+    "plus": "+", "minus": "-",
+}
+
+
+def _parse_keys(keys: object) -> list[str]:
+    """``"cmd+shift+t"`` (or ``["cmd", "t"]``) as pyautogui key names.
+
+    Raises ValueError naming any key pyautogui does not know, so the model
+    hears about a typo instead of reading "pressed" for nothing.
+    """
+    import pyautogui
+
+    if isinstance(keys, str):
+        text = keys.strip().lower()
+        # "cmd++" is cmd and the plus key; split on "+" except a trailing one.
+        parts = [p for p in text.split("+") if p] + (["+"] if text.endswith("++") or text == "+" else [])
+    elif isinstance(keys, (list, tuple)):
+        parts = [str(k).strip().lower() for k in keys]
+    else:
+        raise ValueError(f"keys must be a string like 'cmd+c', got {keys!r}")
+    names = [_KEY_ALIASES.get(p.replace(" ", ""), p.replace(" ", "")) for p in parts]
+    unknown = [p for p, n in zip(parts, names) if not pyautogui.isValidKey(n)]
+    if not names or unknown:
+        raise ValueError(
+            f"unknown key(s) {unknown or [keys]!r}; use names like cmd, shift, option, "
+            "ctrl, enter, esc, tab, space, up, f5, or a single character"
+        )
+    return names
+
+
 @tool
+@_off_loop
 def key_combination(keys: str) -> str:
     """Press a keyboard combination.
 
@@ -343,7 +573,8 @@ def key_combination(keys: str) -> str:
     - Screenshots: 'cmd+shift+3' (full screen), 'cmd+shift+4' (selection)
     - System: 'cmd+space' (Spotlight), 'cmd+q' (quit app), 'cmd+h' (hide app)
     - Window: 'cmd+m' (minimize), 'cmd+w' (close tab/window)
-    - Browser: 'cmd+r' (reload), 'cmd+shift+r' (hard reload), 'cmd+/' (find)
+    - Browser: 'cmd+r' (reload), 'cmd+shift+r' (hard reload), 'cmd+f' (find)
+    - Single keys: 'enter', 'esc', 'tab', 'space', 'up', 'f5'
 
     Args:
         keys: Keyboard combination as a string. Use '+' to separate keys.
@@ -365,10 +596,15 @@ def key_combination(keys: str) -> str:
     try:
         import pyautogui
 
-        # Convert macOS modifiers to pyautogui format
-        keys_normalized = keys.lower().replace("super", "win").replace("cmd", "cmd")
-        pyautogui.hotkey(keys_normalized)
-        return f"Pressed key combination: {keys}"
+        try:
+            names = _parse_keys(keys)
+        except ValueError as e:
+            return f"Error pressing keys: {e}"
+        blocked = _ready_for_input()
+        if blocked:
+            return blocked
+        pyautogui.hotkey(*names)
+        return f"Pressed key combination: {'+'.join(names)}"
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
@@ -382,14 +618,15 @@ def key_combination(keys: str) -> str:
 
 
 @tool
+@_off_loop
 def move_mouse(x: int, y: int) -> str:
     """Move mouse cursor to specified screenshot image coordinates.
 
-    IMPORTANT: Use screenshot image coordinates (512x288 range), NOT actual screen coordinates!
+    IMPORTANT: Use coordinates in the last screenshot image, NOT actual screen coordinates!
 
     Args:
-        x: X coordinate in the screenshot image (pixels from left edge, range: 0-511)
-        y: Y coordinate in the screenshot image (pixels from top edge, range: 0-287)
+        x: X coordinate in the screenshot image (pixels from left edge, 0 to image width - 1)
+        y: Y coordinate in the screenshot image (pixels from top edge, 0 to image height - 1)
 
     Returns:
         Confirmation message with the new cursor position.
@@ -414,6 +651,9 @@ def move_mouse(x: int, y: int) -> str:
 
         # Scale coordinates from image space to actual screen space
         x, y = _scale_from_image_to_screen(x, y)
+        blocked = _ready_for_input()
+        if blocked:
+            return blocked
         pyautogui.moveTo(x, y)
         return f"Mouse moved to ({x}, {y})"
 
@@ -431,12 +671,15 @@ def move_mouse(x: int, y: int) -> str:
 
 
 @tool
+@_off_loop
 def scroll(x: int, y: int, clicks: int) -> str:
-    """Scroll at the specified screen location.
+    """Scroll at a point in the last screenshot image.
+
+    Uses screenshot image coordinates, like click: point at the area to scroll.
 
     Args:
-        x: X coordinate on the screen where scrolling occurs
-        y: Y coordinate on the screen where scrolling occurs
+        x: X coordinate in the screenshot image
+        y: Y coordinate in the screenshot image
         clicks: Number of scroll clicks. Positive value scrolls up,
                negative value scrolls down.
 
@@ -445,20 +688,30 @@ def scroll(x: int, y: int, clicks: int) -> str:
 
     Example:
         >>> # Scroll down in a document
-        >>> scroll(500, 400, -10)
+        >>> scroll(250, 200, -10)
         >>>
         >>> # Scroll up in a file browser
-        >>> scroll(200, 300, 5)
+        >>> scroll(100, 150, 5)
     """
     try:
         import pyautogui
 
+        x = _normalize_image_coordinate(x, "x")
+        y = _normalize_image_coordinate(y, "y")
+        # Screen coordinates, as click uses: the model passes what it saw, and
+        # unscaled it scrolled a point far up and to the left of that.
+        x, y = _scale_from_image_to_screen(x, y)
+        blocked = _ready_for_input()
+        if blocked:
+            return blocked
         pyautogui.scroll(clicks, x=x, y=y)
         direction = "up" if clicks > 0 else "down"
         return f"Scrolled {abs(clicks)} {direction} at ({x}, {y})"
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
+    except ValueError as e:
+        return f"Error scrolling: {e}"
     except Exception as e:
         return f"Error scrolling at ({x}, {y}): {e}"
 
@@ -522,7 +775,7 @@ def get_screenshot_info() -> str:
 
 
 @tool
-def wait(seconds: float = 1.0) -> str:
+async def wait(seconds: float = 1.0) -> str:
     """Wait for a specified number of seconds.
 
     Useful when waiting for UI elements to appear, animations to complete,
@@ -542,9 +795,7 @@ def wait(seconds: float = 1.0) -> str:
         >>> wait(0.5)
     """
     try:
-        import time
-
-        time.sleep(seconds)
+        await asyncio.sleep(seconds)
         return f"Waited for {seconds} seconds"
 
     except Exception as e:

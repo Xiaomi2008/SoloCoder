@@ -287,7 +287,15 @@ public final class AppModel: ObservableObject {
         flushDeltas()
         transcript.apply(event)
         transcriptPublishes += 1
+        let hadPrompt = promptToAnswer != nil
         promptToAnswer = transcript.pendingPermission
+        // The computer-use tools hide this app before they look or act, so its
+        // window neither covers the screen nor takes the agent's typing. A
+        // prompt hidden with it would wait forever, and a finished run's answer
+        // belongs on screen.
+        if (!hadPrompt && promptToAnswer != nil) || event.isTerminal {
+            Self.revealIfHidden()
+        }
         if event.isTerminal {
             busy = false
             // The sidebar lists what is on disk, and this run has just put a
@@ -422,6 +430,14 @@ public final class AppModel: ObservableObject {
                 banner = Self.describe(error)
             }
         }
+    }
+
+    /// Unhide the app if computer use hid it. `NSApp` is nil in the checks,
+    /// which run without an application.
+    static func revealIfHidden() {
+        guard let app = NSApp, app.isHidden else { return }
+        app.unhide(nil)
+        app.activate(ignoringOtherApps: true)
     }
 
     /// Answer a permission prompt. The scope decides how long the answer

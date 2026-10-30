@@ -255,6 +255,9 @@ func serviceEnvironment(for launch: Sidecar.Launch) -> [String: String] {
     if environment["TMPDIR"] == nil { environment["TMPDIR"] = NSTemporaryDirectory() }
     if environment["LANG"] == nil { environment["LANG"] = "en_US.UTF-8" }
     environment["PATH"] = loginShellPath()
+    // The computer-use tools hide this app before they act, so the agent's
+    // typing lands in the app the person was using and not in our composer.
+    environment["OPENAGENT_HOST_PID"] = String(ProcessInfo.processInfo.processIdentifier)
     if case .repository(let root) = launch {
         // Development: the interpreter is the checkout's venv, and a venv needs
         // its `VIRTUAL_ENV` to find its own site-packages when the interpreter

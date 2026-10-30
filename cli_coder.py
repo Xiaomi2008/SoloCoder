@@ -620,7 +620,7 @@ async def run_interactive_session(
                     if not arg:
                         # Take a screenshot and analyze
                         print(f"\n{green('⎿')} Taking screenshot...")
-                        img_base64 = screenshot(return_base64=True)
+                        img_base64 = await screenshot(return_base64=True)
 
                         if img_base64:
                             # Run multimodal analysis

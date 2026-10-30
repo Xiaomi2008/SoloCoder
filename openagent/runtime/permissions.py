@@ -56,7 +56,7 @@ TOOL_RISK: dict[str, Risk] = {
     "key_combination": "gui",
     "move_mouse": "gui",
     "scroll": "gui",
-    "wait": "gui",
+    "wait": "read",
     # The agent's own browser. Reading and navigating are network; acting on a
     # page (clicks, typing, form submits) can send, buy, or delete.
     "browser_navigate": "network",
