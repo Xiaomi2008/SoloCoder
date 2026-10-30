@@ -148,6 +148,20 @@ public struct ModelCapabilities: Decodable, Sendable, Equatable {
     /// servers routinely advertise tool support they do not deliver, so a picker
     /// shows a declared capability differently from a probed one.
     public let probed: Bool
+    /// The `reasoning_effort` values this model accepts, when its server lists
+    /// them. Absent or empty means unknown — offer `ReasoningEffort.generic`.
+    public let reasoningEfforts: [String]?
+}
+
+public struct BrowserShowResult: Decodable, Sendable, Equatable {
+    /// False when the agent has no page open.
+    public let open: Bool
+    /// True when there is no window to bring forward; open `url` elsewhere.
+    public let headless: Bool
+    public let url: String
+    /// The agent's browser process, 0 when unknown. Optional: older services
+    /// do not send it.
+    public let pid: Int?
 }
 
 public struct ModelCost: Decodable, Sendable, Equatable {
@@ -181,6 +195,25 @@ public struct ModelList: Decodable, Sendable, Equatable {
     /// user chose, which is `defaultModel`.
     public let selected: String?
     public let discoveryErrors: [String: String]
+}
+
+/// A user-added model server, as the service reports it after adding.
+public struct EndpointInfo: Decodable, Sendable, Equatable {
+    public let name: String
+    public let label: String
+    public let baseUrl: String
+    public let wireApi: String
+    public let local: Bool
+    public let requiresKey: Bool
+}
+
+/// What `model.add_endpoint` answers: the persisted endpoint and the models it
+/// discovered immediately. A server that is reachable but serves no models is
+/// `models: []` with a `discoveryError`, not a failure of the add.
+public struct EndpointAddResult: Decodable, Sendable, Equatable {
+    public let endpoint: EndpointInfo
+    public let models: [ModelRow]
+    public let discoveryError: String?
 }
 
 public struct ToolRow: Decodable, Sendable, Equatable {
@@ -235,6 +268,9 @@ public struct SessionRecord: Decodable, Sendable, Equatable {
     public let sessionId: String
     public let systemPrompt: String
     public let messages: [JSONValue]
+    /// The same estimate `context_usage` carries. Nil from a service that
+    /// predates it.
+    public let contextTokens: Int?
 }
 
 public struct AuthProviderRow: Decodable, Sendable, Equatable {
@@ -288,6 +324,8 @@ public enum ReasoningEffort: String, Sendable, CaseIterable {
     case low = "low"
     case medium = "medium"
     case high = "high"
+    case xhigh = "xhigh"
+    case max = "max"
 
     public var label: String {
         switch self {
@@ -296,8 +334,14 @@ public enum ReasoningEffort: String, Sendable, CaseIterable {
         case .low: "low"
         case .medium: "medium"
         case .high: "high"
+        case .xhigh: "extra high"
+        case .max: "max"
         }
     }
+
+    /// What to offer when a model does not list its own levels. `xhigh` and
+    /// `max` are left out: few servers take them, and only a listing says which.
+    public static let generic: [ReasoningEffort] = [.none, .minimal, .low, .medium, .high]
 }
 
 public enum PermissionMode: String, Sendable, CaseIterable {
@@ -473,6 +517,19 @@ public actor AgentServiceClient {
         _ = try await call("run.cancel", params: .object(["run_id": .string(runId)]))
     }
 
+    /// Change the live run's approval mode and file-tool scope. A run's gate
+    /// is fixed at `run.start`; this makes a mid-run Tools toggle mean what
+    /// the toolbar says.
+    public func setPermissionMode(runId: String, permissionMode: PermissionMode) async throws {
+        _ = try await call(
+            "run.permission_mode",
+            params: .object([
+                "run_id": .string(runId),
+                "permission_mode": .string(permissionMode.rawValue),
+            ])
+        )
+    }
+
     /// Answer a `permission_requested`. `scope` decides how long the answer
     /// lasts: `.once` this call, `.session` for the rest of the session,
     /// `.never` to stop asking about that tool by refusing it.
@@ -505,6 +562,52 @@ public actor AgentServiceClient {
     public func selectModel(_ key: String) async throws -> String? {
         let result = try await call("model.select", params: .object(["model": .string(key)]))
         return result.objectValue?["default_model"]?.stringValue
+    }
+
+    /// Add a model server, persist it, and discover the models it serves.
+    ///
+    /// The base URL is the server root (for OpenAI-compatible servers it usually
+    /// ends in `/v1`); the service appends its discovery path (`/models`,
+    /// `/api/tags`, `/v1/models`) according to `wireApi`.
+    public func addEndpoint(
+        name: String,
+        baseURL: String,
+        wireApi: String = "openai-chat",
+        label: String = "",
+        local: Bool = true,
+        requiresKey: Bool = false,
+        tools: Bool = true,
+        contextWindow: Int = 32768
+    ) async throws -> EndpointAddResult {
+        var params: [String: JSONValue] = [
+            "name": .string(name),
+            "base_url": .string(baseURL),
+            "wire_api": .string(wireApi),
+            "local": .bool(local),
+            "requires_key": .bool(requiresKey),
+            "tools": .bool(tools),
+            "context_window": .int(contextWindow),
+        ]
+        if !label.isEmpty { params["label"] = .string(label) }
+        return try decode(
+            EndpointAddResult.self,
+            from: try await call("model.add_endpoint", params: .object(params))
+        )
+    }
+
+    /// Remove a user-added endpoint. Built-ins are refused by the service.
+    @discardableResult
+    public func removeEndpoint(_ name: String) async throws -> Bool {
+        let result = try await call("model.remove_endpoint", params: .object(["name": .string(name)]))
+        guard case .object(let fields) = result, case .bool(let removed)? = fields["removed"] else {
+            throw ClientError.decoding("model.remove_endpoint answered no `removed` flag")
+        }
+        return removed
+    }
+
+    /// Bring the agent's browser window forward so the user can take over.
+    public func showBrowser() async throws -> BrowserShowResult {
+        try decode(BrowserShowResult.self, from: try await call("browser.show", params: nil))
     }
 
     public func tools() async throws -> [ToolRow] {

@@ -8,10 +8,12 @@ import Foundation
 /// This is the half that makes the two suites one suite: the Python tests prove
 /// the server keeps its promises, and these prove the Swift types can speak to
 /// it. A protocol change that updates only one side fails here.
+// The trait is the gate; the words below it are why it is gated. Swift
+// Testing's `Suite`/`Test` macros take a display name and traits, not a
+// trailing explanation, so the explanation is a comment and not an argument.
 @Suite(
     "live service contract",
-    .enabled(if: FileManager.default.fileExists(atPath: ContractFixtures.venvPython.path)),
-    "requires .venv/bin/python at the repository root"
+    .enabled(if: FileManager.default.fileExists(atPath: ContractFixtures.venvPython.path))
 )
 struct LiveServiceContractTests {
     @Test("handshake reports the contract")
@@ -36,7 +38,8 @@ struct LiveServiceContractTests {
     @Test("ping")
     func ping() async throws {
         try await withService { service in
-            #expect(try await service.client.ping())
+            let pong = try await service.client.ping()
+            #expect(pong)
         }
     }
 
@@ -66,7 +69,8 @@ struct LiveServiceContractTests {
     @Test("auth status decodes")
     func authStatus() async throws {
         try await withService { service in
-            #expect(!(try await service.client.authStatus()).providers.isEmpty)
+            let status = try await service.client.authStatus()
+            #expect(!status.providers.isEmpty)
         }
     }
 
@@ -74,8 +78,13 @@ struct LiveServiceContractTests {
     func sessionsAndConfig() async throws {
         try await withService { service in
             _ = try await service.client.sessions()
-            let config = try await service.client.config(keys: ["policy"])
-            #expect(config.objectValue?["policy"] != nil, "config.get(keys:) returns the keys asked for")
+            // `config.get(keys:)` filters *top-level* keys, and the policy is
+            // nested under `models` — the shape the service actually writes.
+            let config = try await service.client.config(keys: ["models"])
+            #expect(
+                config.objectValue?["models"]?.objectValue?["policy"] != nil,
+                "config.get(keys:) returns the section asked for"
+            )
         }
     }
 
@@ -165,8 +174,7 @@ struct LiveServiceContractTests {
     /// that cannot run in CI.
     @Test(
         "a real run streams and terminates",
-        .enabled(if: LiveModel.key != nil),
-        "set AGENT_LIVE_MODEL=provider/model to stream a real run"
+        .enabled(if: LiveModel.key != nil)
     )
     func realRun() async throws {
         let model = try #require(LiveModel.key)
@@ -221,6 +229,11 @@ final class ServiceFixture {
     let socketPath: String
     let client: AgentServiceClient
     private var process: Process?
+    /// The service watches its stdin for parent death, so the test has to hand
+    /// it a pipe that stays open. Inheriting the test's own stdin, which is
+    /// closed under `swift test`, tells the service its parent is gone at once
+    /// and it exits before the socket is bound.
+    private var stdinPipe: Pipe?
 
     init() async throws {
         let base = NSTemporaryDirectory()
@@ -232,13 +245,16 @@ final class ServiceFixture {
         let child = Process()
         child.executableURL = ContractFixtures.venvPython
         child.arguments = [ContractFixtures.cliEntry.path, "serve", "--socket", socketPath, "--quiet"]
-        child.currentURL = Repo.root
+        child.currentDirectoryURL = ContractFixtures.repositoryRoot
         var env = ProcessInfo.processInfo.environment
         env["HOME"] = home.path
         env["XDG_CONFIG_HOME"] = home.appendingPathComponent(".config").path
         child.environment = env
         child.standardError = FileHandle.standardError
         child.standardOutput = FileHandle.standardError
+        let pipe = Pipe()
+        stdinPipe = pipe
+        child.standardInput = pipe
         try child.run()
         process = child
 
@@ -269,6 +285,8 @@ final class ServiceFixture {
             process.terminate()
             process.waitUntilExit()
         }
+        stdinPipe?.fileHandleForWriting.closeFile()
+        stdinPipe = nil
         try? FileManager.default.removeItem(at: sandbox)
     }
 }
@@ -286,7 +304,7 @@ func withService(_ body: (ServiceFixture) async throws -> Void) async throws {
 
 /// A raw socket conversation, for the cases the typed client cannot express:
 /// the wrong protocol version, a call before `hello`, and an unknown method.
-actor RawProbe {
+struct RawProbe {
     private let socketPath: String
 
     init(socketPath: String) { self.socketPath = socketPath }

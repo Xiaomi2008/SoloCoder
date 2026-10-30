@@ -128,7 +128,14 @@ public final class Sidecar {
         } ?? ""
     }
 
-    public func start() async throws {
+    /// `computerUse` adds the service's GUI tool set; `browserUse` its browser tools.
+    ///
+    /// The tools are fixed at process start, so this is a launch flag and not a
+    /// runtime setting: changing it requires a new service, which the app does
+    /// by restarting its connection.
+    public func start(
+        computerUse: Bool = false, browserUse: Bool = false, browserProfile: Bool = false, browserChrome: Bool = false
+    ) async throws {
         if running { return }
         guard let launch = Self.resolveLaunch() else { throw Failure.noService }
         process = Process()
@@ -149,6 +156,15 @@ public final class Sidecar {
             arguments += ["-I", "-B", "-u"]
         }
         arguments += [launch.script.path, "serve", "--socket", socketPath, "--quiet"]
+        if computerUse {
+            arguments.append("--computer-use")
+        }
+        if browserUse {
+            arguments.append("--browser-use")
+            // The service's default profile directory, ~/.openagent/browser-profile.
+            if browserProfile { arguments.append("--browser-profile") }
+            if browserChrome { arguments += ["--browser-channel", "chrome"] }
+        }
         process.arguments = arguments
         // The bundle is read-only under translocation, so the service's cwd is
         // the home directory — where its sessions and config already live. In

@@ -102,6 +102,9 @@ public struct CompactionRow: Identifiable, Equatable, Sendable {
     public let id: String
     public var reason: String
     public var state: State
+    /// What a finished compaction did, when the service says more than its
+    /// reason: "cleared 23 old tool outputs (−41,210 tokens)".
+    public var outcome: String? = nil
 }
 
 /// What a streaming answer is drawn as: the blocks in the bound, and the count of
@@ -190,6 +193,18 @@ public struct ShownBlocks: Equatable, Sendable {
     }
 }
 
+/// An image the user sent with a prompt, decoded once for the bubble.
+///
+/// Equal by `id`: the bytes never change after the line is made, and a
+/// byte-wise compare on every publish would be a megabyte memcmp per image per
+/// diff.
+public struct TranscriptImage: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let data: Data
+
+    public static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+}
+
 public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case user(String)
@@ -215,6 +230,8 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public var kind: Kind
     /// The message this line belongs to, for delta routing.
     public var messageId: String?
+    /// The images a prompt carried. Empty for every other kind.
+    public var images: [TranscriptImage] = []
     /// True while the text is still arriving.
     ///
     /// The view turns text selection off while streaming: a selectable `Text`
@@ -618,8 +635,15 @@ public struct Transcript: Equatable, Sendable {
     }
 
     /// The client's own prompt. Not in the stream; the caller inserts it.
-    public mutating func addUserMessage(_ text: String) {
-        emit(TranscriptLine(id: "user-\(lines.count)", kind: .user(text), messageId: nil))
+    /// A prompt, with the images it carried as the base64 the wire sends.
+    /// A string that does not decode is left out rather than drawn broken.
+    public mutating func addUserMessage(_ text: String, images: [String] = []) {
+        let id = "user-\(lines.count)"
+        var line = TranscriptLine(id: id, kind: .user(text), messageId: nil)
+        line.images = images.enumerated().compactMap { index, base64 in
+            Data(base64Encoded: base64).map { TranscriptImage(id: "\(id)-image-\(index)", data: $0) }
+        }
+        emit(line)
     }
 
     /// A past assistant message, for a session loaded from disk.
@@ -839,8 +863,8 @@ public struct Transcript: Equatable, Sendable {
                 )
             )
 
-        case .contextCompactionCompleted:
-            setCompaction(.done)
+        case .contextCompactionCompleted(let e):
+            setCompaction(.done, outcome: e.reason)
 
         case .contextCompactionFailed(let e):
             setCompaction(.failed(e.error))
@@ -866,6 +890,10 @@ public struct Transcript: Equatable, Sendable {
             pendingPermission = nil
             state = .cancelled(e.reason)
             closeStreamingLines()
+
+        case .browserFrame, .contextUsage:
+            // Not the conversation: AppModel takes both before they reach here.
+            break
 
         case .unknown(let type, _):
             emit(TranscriptLine(id: "unknown-\(lines.count)", kind: .note("event: \(type)"), messageId: nil))
@@ -1127,11 +1155,12 @@ public struct Transcript: Equatable, Sendable {
         return false
     }
 
-    private mutating func setCompaction(_ state: CompactionRow.State) {
+    private mutating func setCompaction(_ state: CompactionRow.State, outcome: String? = nil) {
         guard let index = lines.lastIndex(where: { if case .compaction = $0.kind { return true } else { return false } })
         else { return }
         if case .compaction(var row) = lines[index].kind {
             row.state = state
+            if let outcome, outcome != row.reason { row.outcome = outcome }
             lines[index].kind = .compaction(row)
         }
     }

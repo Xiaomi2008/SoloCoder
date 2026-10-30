@@ -32,6 +32,8 @@ public enum AgentEvent: Sendable, Equatable {
     case runCompleted(RunCompleted)
     case runFailed(RunFailed)
     case runCancelled(RunCancelled)
+    case contextUsage(ContextUsage)
+    case browserFrame(BrowserFrame)
     case unknown(type: String, params: JSONValue)
 
     public var type: String {
@@ -53,6 +55,8 @@ public enum AgentEvent: Sendable, Equatable {
         case .runCompleted: "run_completed"
         case .runFailed: "run_failed"
         case .runCancelled: "run_cancelled"
+        case .contextUsage: "context_usage"
+        case .browserFrame: "browser_frame"
         case .unknown(let type, _): type
         }
     }
@@ -78,6 +82,8 @@ public enum AgentEvent: Sendable, Equatable {
         case .runCompleted(let e): e.runId
         case .runFailed(let e): e.runId
         case .runCancelled(let e): e.runId
+        case .contextUsage(let e): e.runId
+        case .browserFrame(let e): e.runId
         case .unknown: nil
         }
     }
@@ -117,6 +123,8 @@ public enum AgentEvent: Sendable, Equatable {
         case "run_completed": .runCompleted(try decoder.decode(RunCompleted.self, from: data))
         case "run_failed": .runFailed(try decoder.decode(RunFailed.self, from: data))
         case "run_cancelled": .runCancelled(try decoder.decode(RunCancelled.self, from: data))
+        case "context_usage": .contextUsage(try decoder.decode(ContextUsage.self, from: data))
+        case "browser_frame": .browserFrame(try decoder.decode(BrowserFrame.self, from: data))
         default:
             .unknown(type: envelope.type, params: try decoder.decode(JSONValue.self, from: data))
         }
@@ -265,6 +273,28 @@ public struct RunFailed: Decodable, Sendable, Equatable {
 public struct RunCancelled: Decodable, Sendable, Equatable {
     public let runId: String
     public let reason: String
+}
+
+/// How full the model's context is: an estimate of the next request (history,
+/// system prompt, tool schemas), the model's window, and where compaction
+/// starts. The window fields are nil when the service does not know it.
+public struct ContextUsage: Decodable, Sendable, Equatable {
+    public let runId: String
+    public let usedTokens: Int
+    public let contextWindow: Int?
+    public let compactAt: Int?
+}
+
+/// What the agent's browser shows: a screencast frame, sent only while the
+/// page changes, newest only. Not part of the transcript.
+public struct BrowserFrame: Decodable, Sendable, Equatable {
+    public let runId: String
+    /// Base64 JPEG.
+    public let data: String
+    public let url: String
+    public let title: String
+    public let width: Int
+    public let height: Int
 }
 
 // MARK: - Closed sets with a fallback

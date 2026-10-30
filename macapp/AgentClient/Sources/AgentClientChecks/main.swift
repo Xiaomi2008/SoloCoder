@@ -169,12 +169,16 @@ func framingChecks(_ checks: Checks) throws {
     // end inside 中 (three bytes). Decoding per chunk would corrupt it.
     var bytewise = FrameDecoder()
     var collected: [Data] = []
-    for byte in Data("{\"delta\":\"中 ✓\"}\n".utf8) {
+    for byte in Data(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"type\":\"message_delta\",\"run_id\":\"r\",\"message_id\":\"m1\",\"delta\":\"中 ✓\"}}\n".utf8
+    ) {
         collected.append(contentsOf: try bytewise.append(Data([byte])))
     }
     checks.equal(collected.count, 1, "a frame split at every byte boundary reassembles")
     if case .event(.messageDelta(let delta)) = try Frame.decode(collected[0]) {
         checks.equal(delta.delta, "中 ✓", "multi-byte content survives byte splits")
+    } else {
+        checks.expect(false, "a byte-split frame decodes as a message_delta event")
     }
 
     var small = FrameDecoder(maxBytes: 16)
@@ -516,6 +520,8 @@ do {
     try sessionChecks(checks)
     stage = "composer"
     composerChecks(checks)
+    stage = "command palette"
+    commandChecks(checks)
     stage = "launch"
     launchChecks(checks)
     stage = "live"

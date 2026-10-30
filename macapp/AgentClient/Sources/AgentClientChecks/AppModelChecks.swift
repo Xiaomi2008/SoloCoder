@@ -1,5 +1,6 @@
 import AgentAppCore
 import AgentClient
+import AppKit
 import Foundation
 
 // The app's own state machine, driven against a service it spawned.
@@ -242,6 +243,10 @@ func composerChecks(_ checks: Checks) {
     let blank = ready()
     checks.equal(blank.sendBlock("   \n\t "), .emptyDraft, "whitespace is not a prompt")
     checks.equal(blank.sendBlock(""), .emptyDraft, "so is nothing")
+    checks.equal(
+        blank.sendBlock("", hasImages: true), nil,
+        "an image with no words is sendable: the image is the prompt"
+    )
     checks.equal(blank.sendBlock("fix the parser"), nil, "connected, scoped, non-empty: Send is enabled")
 
     let running = ready()
@@ -314,12 +319,13 @@ func composerChecks(_ checks: Checks) {
 func launchChecks(_ checks: Checks) {
     print("launch settings")
 
-    func row(_ provider: String, _ model: String) -> ModelRow {
+    func row(_ provider: String, _ model: String, efforts: [String]? = nil) -> ModelRow {
+        let listed = efforts.map { ",\"reasoning_efforts\":[" + $0.map { "\"\($0)\"" }.joined(separator: ",") + "]" } ?? ""
         let json = """
             {"model":"\(model)","provider":"\(provider)","wire_api":"chat","auth_mode":"api_key", \
             "label":"","family":"other","is_local":true, \
             "caps":{"tools":false,"vision":false,"reasoning":false,"streaming":true,"json_mode":false, \
-            "context_window":8192,"max_output_tokens":null,"probed":false}, \
+            "context_window":8192,"max_output_tokens":null,"probed":false\(listed)}, \
             "cost":{"kind":"free","input_per_mtok":null,"output_per_mtok":null}}
             """
         let decoder = JSONDecoder()
@@ -346,6 +352,10 @@ func launchChecks(_ checks: Checks) {
         AppModel.restorableMode("allow_readonly"), .allowReadonly,
         "the mode the user picked in the toolbar comes back"
     )
+    checks.equal(
+        AppModel.restorableMode("allow_all"), .allowAll,
+        "the auto-approve mode the user picked in the toolbar comes back"
+    )
     checks.equal(AppModel.restorableMode("yolo"), .ask, "a mode the enum does not know is the default")
     checks.equal(AppModel.restorableEffort(nil), nil, "no stored effort: the model decides")
     // Spelled `ReasoningEffort.none`, never `.none`: in a context whose type is
@@ -361,17 +371,113 @@ func launchChecks(_ checks: Checks) {
     firstLaunch.selectedModel = "lan/swift-1.5"
     firstLaunch.permissionMode = .allowReadonly
     firstLaunch.reasoningEffort = ReasoningEffort.none
+    firstLaunch.computerUse = true
     let next = AppModel()
     checks.equal(next.selectedModel, "lan/swift-1.5", "the next launch asks for the same model")
     checks.equal(next.permissionMode, .allowReadonly, "…under the same permission mode")
     checks.equal(next.reasoningEffort, ReasoningEffort.none, "…with the same reasoning effort")
+    checks.equal(next.computerUse, true, "…and the same computer-use choice")
     firstLaunch.selectedModel = ""
     firstLaunch.permissionMode = .ask
     firstLaunch.reasoningEffort = nil
+    firstLaunch.computerUse = false
     let cleared = AppModel()
     checks.equal(cleared.selectedModel, "", "clearing the model to the router's choice is remembered too")
     checks.equal(cleared.permissionMode, .ask, "…the mode back to ask")
     checks.equal(cleared.reasoningEffort, nil, "…and the effort back to \"model decides\"")
+    checks.equal(cleared.computerUse, false, "…and computer use back to off")
+
+    // Thinking levels follow the model. The ChatGPT backend lists them per
+    // model and answers anything else with a 400 mid-run.
+    let thinking = AppModel()
+    thinking.modelRows = [row("openai_oauth", "gpt-6.1-sol", efforts: ["low", "medium", "high", "xhigh", "max"]), row("lan", "swift-1.5")]
+    thinking.selectedModel = "lan/swift-1.5"
+    checks.equal(thinking.availableEfforts, ReasoningEffort.generic, "a model with no listed levels offers the generic ones")
+    thinking.reasoningEffort = ReasoningEffort.none
+    thinking.selectedModel = "openai_oauth/gpt-6.1-sol"
+    checks.equal(thinking.availableEfforts, [.low, .medium, .high, .xhigh, .max], "a listed model offers its own levels, xhigh and max included")
+    checks.equal(thinking.reasoningEffort, nil, "a level the new model refuses falls back to the model default")
+    thinking.reasoningEffort = .xhigh
+    thinking.selectedModel = ""
+    checks.equal(thinking.reasoningEffort, nil, "…and so does one the router's generic list lacks")
+}
+
+/// The context meter: usage events fill it without touching the conversation,
+/// and a new conversation empties it.
+@MainActor
+private func contextMeterChecks(_ checks: Checks) async throws {
+    let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+    let model = AppModel()
+    model.ingest(stream)
+    continuation.yield(try ev(#"{"type":"run_started","run_id":"r1"}"#))
+    await settle(model)
+    let publishes = model.transcriptPublishes
+    checks.equal(model.contextUsed, nil, "no conversation, nothing to measure")
+
+    continuation.yield(try ev(#"{"type":"context_usage","run_id":"r1","used_tokens":12170,"context_window":262144,"compact_at":203161}"#))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    checks.equal(model.contextUsed, 12170, "context_usage fills the meter")
+    checks.equal(model.compactAt, 203161, "…with the compaction point")
+    checks.equal(model.contextWindow, 262144, "the run's window stands in when no model is selected")
+    checks.equal(model.transcriptPublishes, publishes, "usage does not republish the transcript")
+
+    continuation.yield(try ev(#"{"type":"context_usage","run_id":"r1","used_tokens":900,"context_window":null,"compact_at":null}"#))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    checks.equal(model.contextUsed, 900, "an unknown window still reports the tokens")
+    checks.equal(model.contextWindow, nil, "…and no window")
+
+    model.newRun()
+    checks.equal(model.contextUsed, nil, "a new conversation empties the meter")
+    model.quiesce()
+}
+
+/// The live view: frames reach the panel, and only the panel.
+@MainActor
+private func browserPanelChecks(_ checks: Checks) async throws {
+    let picture = NSImage(size: NSSize(width: 4, height: 3))
+    picture.lockFocus()
+    NSColor.systemPurple.setFill()
+    NSRect(x: 0, y: 0, width: 4, height: 3).fill()
+    picture.unlockFocus()
+    let jpeg = NSBitmapImageRep(data: picture.tiffRepresentation!)!.representation(using: .jpeg, properties: [:])!
+    func frame(_ run: String, _ url: String) throws -> AgentEvent {
+        try ev(#"{"type":"browser_frame","run_id":"\#(run)","data":"\#(jpeg.base64EncodedString())","url":"\#(url)","title":"Shop","width":4,"height":3}"#)
+    }
+
+    let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+    let model = AppModel()
+    model.ingest(stream)
+    continuation.yield(try ev(#"{"type":"run_started","run_id":"r1"}"#))
+    continuation.yield(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":"looking"}"#))
+    await settle(model)
+    let publishes = model.transcriptPublishes
+    let lines = model.transcript.lines.count
+
+    continuation.yield(try frame("r1", "https://shop.example/"))
+    continuation.yield(try ev(#"{"type":"message_delta","run_id":"r1","message_id":"m1","delta":" around"}"#))
+    for _ in 0..<20 { continuation.yield(try frame("r1", "https://shop.example/cart")) }
+    try? await Task.sleep(nanoseconds: 30_000_000)
+
+    checks.expect(model.browserPanel.isVisible, "a run's first frame opens the live view")
+    checks.equal(model.browserPanel.url, "https://shop.example/cart", "the panel shows the newest frame")
+    checks.equal(model.browserPanel.framesShown, 21, "every frame reaches the panel")
+    checks.expect(model.browserPanel.image != nil, "the JPEG decodes")
+    checks.equal(model.transcriptPublishes, publishes, "frames do not republish the transcript")
+    checks.equal(model.transcript.lines.count, lines, "frames add nothing to the conversation")
+    model.quiesce()
+    let text = model.transcript.lines.compactMap {
+        if case .assistant(let text) = $0.kind { return text } else { return nil }
+    }.joined()
+    checks.equal(text, "looking around", "a frame between deltas does not split or drop them")
+
+    model.browserPanel.dismiss(runId: "r1")
+    continuation.yield(try frame("r1", "https://shop.example/checkout"))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    checks.expect(!model.browserPanel.isVisible, "closed stays closed for the rest of the run")
+    continuation.yield(try frame("r2", "https://news.example/"))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    checks.expect(model.browserPanel.isVisible, "…and the next run's first frame opens it again")
+    continuation.finish()
 }
 
 @MainActor
@@ -387,6 +493,12 @@ func appChecks(_ checks: Checks) async {
         try await reasoningCapChecks(checks)
     } catch {
         checks.expect(false, "reasoning cost checks ran: \(error)")
+    }
+    do {
+        try await browserPanelChecks(checks)
+        try await contextMeterChecks(checks)
+    } catch {
+        checks.expect(false, "browser panel checks ran: \(error)")
     }
     // The root the sidecar spawns from, in the shape the launcher needs.
     //
@@ -435,6 +547,50 @@ func appChecks(_ checks: Checks) async {
 
     let work = sandbox.appendingPathComponent("work")
     try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+
+    // The launch flag the app's Settings toggle turns on: a service started with
+    // `--computer-use` must advertise the GUI tools, and one without it must not.
+    // This is the flag, not a screenshot call: pyautogui is only imported when a
+    // tool runs, so the check works without the optional dependency installed.
+    do {
+        let probe = Sidecar()
+        try await probe.start(computerUse: true)
+        let client = AgentServiceClient(
+            endpoint: ServiceEndpoint(socketPath: probe.socketPath, clientName: "computer-use-check")
+        )
+        _ = try await client.connect()
+        let names = try await client.tools().map(\.name)
+        checks.expect(names.contains("screenshot"), "--computer-use exposes screenshot")
+        checks.expect(names.contains("click"), "--computer-use exposes click")
+        await client.close()
+        probe.stop()
+
+        // The same Sidecar, restarted — what a Settings toggle does. A `Process`
+        // launches once; reusing it raised "task already launched" and crashed the app.
+        try await probe.start(computerUse: false)
+        let plainClient = AgentServiceClient(
+            endpoint: ServiceEndpoint(socketPath: probe.socketPath, clientName: "computer-use-off-check")
+        )
+        _ = try await plainClient.connect()
+        let plainNames = try await plainClient.tools().map(\.name)
+        checks.expect(!plainNames.contains("screenshot"), "without the flag the GUI tools are absent")
+        checks.expect(!plainNames.contains("browser_navigate"), "without --browser-use the browser tools are absent")
+        await plainClient.close()
+        probe.stop()
+
+        try await probe.start(browserUse: true)
+        let browserClient = AgentServiceClient(
+            endpoint: ServiceEndpoint(socketPath: probe.socketPath, clientName: "browser-use-check")
+        )
+        _ = try await browserClient.connect()
+        let browserNames = try await browserClient.tools().map(\.name)
+        checks.expect(browserNames.contains("browser_navigate"), "--browser-use exposes browser_navigate")
+        checks.expect(browserNames.contains("browser_click"), "--browser-use exposes browser_click")
+        await browserClient.close()
+        probe.stop()
+    } catch {
+        checks.expect(false, "computer-use launch flag check ran: \(error)")
+    }
 
     let model = AppModel()
     model.workingDir = work.path

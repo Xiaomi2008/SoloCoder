@@ -120,6 +120,27 @@ func transcriptChecks(_ checks: Checks) throws {
     checks.equal(run.finalText, "1 file", "finalText is the last assistant text")
     checks.equal(run.runId, "r1", "the run id is tracked")
 
+    // MARK: images on a prompt
+
+    var pasted = Transcript()
+    let png = Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
+    pasted.addUserMessage("what is this?", images: [png, "not base64!", png])
+    checks.equal(pasted.lines.first?.images.count, 2, "a prompt keeps its images, and drops one that does not decode")
+    checks.equal(pasted.lines.first?.images.first?.data, Data([0x89, 0x50, 0x4E, 0x47]), "the image is the decoded bytes")
+    let storedJSON = Data(#"""
+        [{"type":"text","text":"what is this?"},
+         {"type":"image_url","image_url":{"url":"data:image/png;base64,\#(png)"}}]
+        """#.utf8)
+    let stored = try JSONDecoder().decode(JSONValue.self, from: storedJSON)
+    checks.equal(AppModel.images(of: stored), [png], "a loaded session's prompt brings its images back")
+    // `session.load` is decoded snake→camel, and that renames `image_url` too.
+    let snake = JSONDecoder()
+    snake.keyDecodingStrategy = .convertFromSnakeCase
+    checks.equal(
+        AppModel.images(of: try snake.decode(JSONValue.self, from: storedJSON)), [png],
+        "…and still does after the wire decoder renames image_url"
+    )
+
     // MARK: deltas
 
     let partial = try fold([
@@ -282,6 +303,14 @@ func transcriptChecks(_ checks: Checks) throws {
     let compactionRows = compacted.lines.compactMap { if case .compaction(let row) = $0.kind { return row } else { return nil } }
     checks.equal(compactionRows.count, 1, "compaction is one row")
     checks.equal(compactionRows.first?.state, .done, "which shows its outcome")
+    checks.equal(compactionRows.first?.outcome, nil, "a completion that repeats the reason adds nothing")
+
+    let cleared = try fold([
+        ev(#"{"type":"context_compaction_started","run_id":"r1","reason":"context approaching limit"}"#),
+        ev(#"{"type":"context_compaction_completed","run_id":"r1","reason":"cleared 23 old tool outputs (−41,210 tokens)"}"#),
+    ])
+    let clearedRows = cleared.lines.compactMap { if case .compaction(let row) = $0.kind { return row } else { return nil } }
+    checks.equal(clearedRows.first?.outcome, "cleared 23 old tool outputs (−41,210 tokens)", "a clearing says what it freed")
 
     let compactionFailed = try fold([
         ev(#"{"type":"context_compaction_started","run_id":"r1","reason":"context exceeded the window"}"#),

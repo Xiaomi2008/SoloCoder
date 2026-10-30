@@ -26,9 +26,12 @@ AgentClient/
     Markdown.swift                the answer's block structure (headings, fences,
                                   lists, tables) — parsed here, checked headless
     AppModel.swift                runs, permissions, models, sessions
+    Commands.swift                the command palette's search and ranking
     Sidecar.swift                 spawns the service in development
   Sources/AgentAppUI/             the views, as a library
-    RootView.swift                chat, tool rows, permission sheet, pickers
+    RootView.swift                chat, tool rows, permission sheet, pickers,
+                                  the ⌘K command palette
+    SettingsView.swift            the Settings scene: defaults, models, servers
     MarkdownView.swift            the blocks, drawn
   Sources/AgentApp/               the @main: a window on the views
   Sources/UIPreview/              `swift run ui-preview` — the views on screen,
@@ -128,6 +131,10 @@ the run writes a session into `~/.openagent/sessions`.
   directory, close a run whose model is unreachable, reset on a new run, and
   (with `AGENT_LIVE_MODEL`) finish a real run and take the session id from
   `run.start`.
+- **Command palette.** `CommandSearch` is the ranking rule: an empty query keeps
+  the list's order, every typed term must match, an exact title beats a title
+  prefix, a title prefix beats a detail substring, and ties keep the list's
+  order. The view draws the rows; the rule is checked headless.
 
 ## Running the app
 
@@ -141,6 +148,53 @@ sheet driven by `permission_requested`, a model picker from `model.list`, and a
 session browser from `session.list` / `session.load`. Choose a working directory
 from the status bar (it shows the path, and clicking it changes it) — a run
 needs one, and the app refuses to send without it.
+
+⌘K opens the command palette: the same actions as the sidebar, composer and
+header, in one searchable list. ↑/↓ move the selection, ↵ runs it, Esc closes.
+The ranking is `AgentAppCore`'s (`CommandSearch`), so `agent-checks` can assert
+that `settings` selects “Open Settings” and `thinking off` selects the one row
+that names both. ⌘, opens Settings, where the remembered defaults, the model
+table, and the add-a-model-server form live.
+
+**Approvals.** The composer's Tools menu has three modes: **Ask** (the default,
+prompt before every risky tool), **Read-only** (run reads, refuse writes), and
+**Auto** (approve every risky tool without a prompt). Auto sends
+`permission_mode: allow_all` at `run.start`. The built-in file tools apply a
+path check: a path that resolves outside the working directory is refused. That
+check is defense-in-depth, not an OS sandbox. Shell commands are **not**
+sandboxed yet — `cwd` is only where they start, and an absolute path or `cd /`
+can still escape. If the mode is switched to Auto while a run is already in
+flight, the client answers that run's `permission_requested` events itself and
+calls `run.permission_mode` so the gate and file-tool scope change together. The
+permission sheet also has **Auto-approve all**, which switches the mode and
+answers the prompt on screen. The mode is remembered between launches.
+
+`sandbox-exec` was removed from the design because Apple deprecated it. Auto
+mode should be treated as unsafe until the VM/container boundary is implemented.
+
+**Images.** ⌘V with an image on the clipboard attaches it to the composer, and
+the composer sends it as a base64 PNG in `run.start`'s `images`. The system Paste
+item is greyed for an image-only pasteboard in a `TextField`, so the app
+intercepts ⌘V, and also offers **Edit → Paste Image** (⌘⇧V) and the photo button
+in the composer. A clipboard with text is left to the field's own paste. An
+image with no words sends the prompt “What is in this image?”; the selected model
+must be vision-capable.
+
+**Computer use** is off by default. Settings → Computer use turns on the macOS
+GUI tools (`screenshot`, `click`, `double_click`, `type_text`, `key_combination`,
+`move_mouse`, `scroll`, `wait`); the toggle persists and restarts the service,
+because the tool set is fixed when `serve` starts. It needs the optional
+dependencies and macOS permissions:
+
+```sh
+uv pip install -e ".[computer-use]"
+```
+
+and Screen Recording + Accessibility permission for the process driving the GUI.
+The model must be vision-capable: the loop is screenshot → model reads image →
+click coordinates. The app passes `--computer-use` to its sidecar only when the
+setting is on; `agent-checks` asserts the flag exposes the tools and that without
+it they are absent.
 
 ## The ten seconds of nothing
 

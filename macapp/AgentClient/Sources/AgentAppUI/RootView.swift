@@ -2,6 +2,7 @@ import AgentAppCore
 import AgentClient
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // The views, in a library.
 //
@@ -70,7 +71,339 @@ public struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: model.banner)
+        .overlay {
+            if model.paletteOpen {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.10)
+                        .ignoresSafeArea()
+                        .onTapGesture { model.paletteOpen = false }
+                    CommandPalette()
+                }
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: model.paletteOpen)
     }
+}
+
+/// ⌘K: the app's actions in one searchable place.
+///
+/// The palette is deliberately thin: it lists the same things the sidebar,
+/// composer and header already do, so a user can reach them without hunting
+/// through the window. It is not a second settings surface; it is a keyboard
+/// route to the first one.
+struct CommandPalette: View {
+    @EnvironmentObject var model: AppModel
+    /// SwiftUI's own Settings action, not an AppKit selector guess. It opens
+    /// the scene the app declares, and it is the same route the ⌘, menu uses.
+    @Environment(\.openSettings) private var openSettings
+    @State private var query = ""
+    /// The row ↵ will run. It is an index into the *filtered* list, not into
+    /// the command list, because the ranking changes on every keystroke and a
+    /// selection that kept its old position would jump to a different command
+    /// as the user types.
+    @State private var selected = 0
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.faint)
+                    TextField("Type a command…", text: $query)
+                        .textFieldStyle(.plain)
+                        .font(.body)
+                        .focused($focused)
+                        .onSubmit { runSelected() }
+                    Button {
+                        model.paletteOpen = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close")
+                }
+                .padding(12)
+                Divider().overlay(Theme.hairline)
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        if filtered.isEmpty {
+                            Text("No matching commands")
+                                .font(.caption)
+                                .foregroundStyle(Theme.faint)
+                                .padding(.vertical, 12)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        ForEach(Array(filtered.enumerated()), id: \.offset) { index, item in
+                            Button {
+                                run(item)
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    Image(systemName: item.symbol)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(index == active ? Theme.accent : Theme.faint)
+                                        .frame(width: 18)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(item.title)
+                                            .font(.callout)
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text(item.detail)
+                                            .font(.caption2)
+                                            .foregroundStyle(Theme.muted)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer(minLength: 8)
+                                    if index == active {
+                                        Text("↵")
+                                            .font(.caption2)
+                                            .foregroundStyle(Theme.accent)
+                                    }
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    index == active
+                                        ? Theme.accent.opacity(0.12)
+                                        : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .id(index)
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(maxHeight: 330)
+                // A selection the scroll has moved past is a row the user is
+                // not looking at, so the list follows the arrow keys.
+                .onChange(of: selected) { _, row in
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(row, anchor: .center)
+                    }
+                }
+
+                HStack {
+                    Text("↑↓ move · ↵ runs · Esc closes")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.faint)
+                    Spacer()
+                    Text("\(filtered.count) commands")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.faint)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+            }
+        }
+        .frame(width: 560)
+        .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .hairline(Theme.radius, color: Theme.edge)
+        .shadow(color: .black.opacity(0.16), radius: 24, y: 10)
+        .padding(.top, 72)
+        .onAppear { focused = true }
+        .onChange(of: query) { _, _ in selected = 0 }
+        // Arrow keys belong to the list, not the field: the field is focused so
+        // typing works, and `onKeyPress` intercepts the two keys the palette
+        // owns before the field can move a caret through the query.
+        .onKeyPress(.upArrow) {
+            move(-1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            move(1)
+            return .handled
+        }
+        .onExitCommand { model.paletteOpen = false }
+    }
+
+    /// The highlighted row, clamped: a list that shrank under a selection from
+    /// a longer query must not point past its end.
+    private var active: Int {
+        guard !filtered.isEmpty else { return 0 }
+        return min(max(selected, 0), filtered.count - 1)
+    }
+
+    private func move(_ delta: Int) {
+        guard !filtered.isEmpty else { return }
+        selected = min(max(active + delta, 0), filtered.count - 1)
+    }
+
+    private func runSelected() {
+        guard filtered.indices.contains(active) else { return }
+        run(filtered[active])
+    }
+
+    private func run(_ item: PaletteCommand) {
+        model.paletteOpen = false
+        item.action()
+    }
+
+    /// The commands the palette offers, ranked by the core's `CommandSearch`.
+    ///
+    /// The filter used to be "any command whose title or detail contains the
+    /// query", in the command list's own order. So `model` put a table row
+    /// above "Refresh models", and `settings` was reachable only by its full
+    /// name. Ranking is a rule, and the rule is in `AgentAppCore`, where the
+    /// check suite can say what it selects.
+    private var filtered: [PaletteCommand] {
+        let ranked = CommandSearch.rank(commands.map(\.label), query: query)
+        return ranked.map { commands[$0] }
+    }
+
+    private var commands: [PaletteCommand] {
+        var items: [PaletteCommand] = []
+
+        items.append(PaletteCommand(
+            title: "New session",
+            detail: "Start with an empty timeline",
+            symbol: "square.and.pencil"
+        ) { model.newRun() })
+
+        items.append(PaletteCommand(
+            title: "Open Settings",
+            detail: "Defaults, keys, and model servers",
+            symbol: "gearshape"
+        ) { openSettings() })
+
+        items.append(PaletteCommand(
+            title: "Choose working directory",
+            detail: model.workingDir.isEmpty ? "required — the scope the agent works in" : model.workingDir,
+            symbol: "folder"
+        ) { chooseWorkingDir(model) })
+
+        if !model.workingDir.isEmpty {
+            items.append(PaletteCommand(
+                title: "Reveal working directory",
+                detail: "Open the scope in Finder",
+                symbol: "finder"
+            ) { revealWorkingDir(model) })
+        }
+
+        items.append(PaletteCommand(
+            title: "Refresh models",
+            detail: "\(model.modelRows.count) models in the table",
+            symbol: "arrow.clockwise"
+        ) { Task { await model.refreshModels() } })
+
+        if model.transcript.state.isRunning {
+            items.append(PaletteCommand(
+                title: "Cancel run",
+                detail: model.transcript.state.label,
+                symbol: "stop.fill"
+            ) { model.cancel() })
+        }
+
+        if let answer = model.transcript.finalText, !answer.isEmpty {
+            items.append(PaletteCommand(
+                title: "Copy last answer",
+                detail: "\(answer.count) characters",
+                symbol: "doc.on.doc"
+            ) {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(answer, forType: .string)
+            })
+        }
+
+        if let sessionId = model.sessionId {
+            items.append(PaletteCommand(
+                title: "Copy session id",
+                detail: sessionId,
+                symbol: "number"
+            ) {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(sessionId, forType: .string)
+            })
+        }
+
+        if model.banner != nil {
+            items.append(PaletteCommand(
+                title: "Dismiss message",
+                detail: model.banner ?? "",
+                symbol: "xmark.circle"
+            ) { model.banner = nil })
+        }
+
+        for row in model.modelRows {
+            items.append(PaletteCommand(
+                title: "Use \(row.display)",
+                detail: "\(row.provider) · \(row.wireApi)",
+                symbol: "cube.box"
+            ) { model.chooseModel(row.key) })
+        }
+
+        items.append(PaletteCommand(
+            title: "Thinking: model default",
+            detail: "Let the model decide — the slow path",
+            symbol: "brain"
+        ) { model.reasoningEffort = nil })
+
+        for effort in model.availableEfforts {
+            items.append(PaletteCommand(
+                title: "Thinking: \(effort.label)",
+                detail: effort == ReasoningEffort.none ? "off — answers fastest" : "reasoning effort \(effort.rawValue)",
+                symbol: "brain"
+            ) { model.reasoningEffort = effort })
+        }
+
+        for mode in PermissionMode.allCases {
+            let label = switch mode {
+            case .ask: "Ask"
+            case .allowReadonly: "Read-only"
+            case .allowAll: "Auto"
+            }
+            let detail = switch mode {
+            case .ask: "prompt before every risky tool"
+            case .allowReadonly: "run reads, refuse writes"
+            case .allowAll: "auto-approve every risky tool — not OS-sandboxed yet"
+            }
+            items.append(PaletteCommand(
+                title: "Tools: \(label)",
+                detail: detail,
+                symbol: "hand.raised"
+            ) { model.permissionMode = mode })
+        }
+
+        for row in model.sessions {
+            items.append(PaletteCommand(
+                title: "Resume \(SessionTitle.label(row))",
+                detail: "\(row.messageCount) messages",
+                symbol: "clock.arrow.circlepath"
+            ) { model.open(row.sessionId) })
+        }
+
+        return items
+    }
+}
+
+private struct PaletteCommand {
+    let title: String
+    let detail: String
+    let symbol: String
+    let action: () -> Void
+
+    var label: CommandLabel { CommandLabel(title: title, detail: detail) }
+}
+
+/// Show the scope the tools work in. The Settings window has the same action;
+/// it is a free function here because both call sites need it.
+@MainActor
+func revealWorkingDir(_ model: AppModel) {
+    guard !model.workingDir.isEmpty else { return }
+    let url = URL(fileURLWithPath: model.workingDir)
+    guard FileManager.default.fileExists(atPath: model.workingDir) else {
+        model.banner = "that working directory no longer exists"
+        return
+    }
+    NSWorkspace.shared.activateFileViewerSelecting([url])
 }
 
 /// A refusal, in the app's own language: a hairline-bordered card at the top of
@@ -167,10 +500,16 @@ struct Sidebar: View {
             .padding(.horizontal, 10)
             .padding(.top, 8)
 
-            List(selection: $selection) {
+            List {
                 ForEach(filtered, id: \.sessionId) { row in
                     SessionRowView(row: row)
-                        .tag(row.sessionId)
+                        .contentShape(Rectangle())
+                        .listRowBackground(
+                            RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous)
+                                .fill(selection == row.sessionId ? Theme.accent.opacity(0.12) : Color.clear)
+                        )
+                        .listRowSeparator(.hidden)
+                        .onTapGesture { selection = row.sessionId }
                         .contextMenu {
                             Button("Delete Session", role: .destructive) { deleteTarget = row }
                                 // The row you are watching writes itself: the run
@@ -199,12 +538,9 @@ struct Sidebar: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            // The selection pill is the platform's, in the accent the user chose
-            // in System Settings, and it is not reachable from here: `tint` and
-            // `accentColor` on the List both leave it the system's blue on a
-            // machine set to blue. Left as the platform draws it — the same
-            // idiom Finder and Mail use, and the loudest element in a sidebar
-            // that is otherwise all text.
+            // The platform's selection pill is system blue and cannot be tinted
+            // from here, so the row background is drawn in the app's own violet.
+            // The List still owns the scroll, row sizing and context menu.
             .onChange(of: selection) { _, chosen in
                 guard let chosen, chosen != model.sessionId else { return }
                 model.open(chosen)
@@ -340,6 +676,7 @@ struct Footer: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.muted)
                 .help("Reload the models the service offers")
+                .accessibilityLabel("Reload models")
             }
             Button {
                 chooseWorkingDir(model)
@@ -374,12 +711,15 @@ struct Detail: View {
     let initialPrompt: String
 
     var body: some View {
-        VStack(spacing: 0) {
-            Header()
-            TranscriptColumn()
-            ComposerCard(prompt: initialPrompt)
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                Header()
+                TranscriptColumn()
+                ComposerCard(prompt: initialPrompt)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            BrowserPanelSlot(panel: model.browserPanel)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.surface)
     }
 }
@@ -412,11 +752,19 @@ struct Header: View {
                     // was scrolled past to ask a follow-up.
                     CopyButton(text: answer, label: "the last answer")
                 }
-                Text(model.selectedModel.isEmpty ? "router" : model.selectedModel)
-                    .font(.caption)
-                    .foregroundStyle(Theme.faint)
-                    .lineLimit(1)
-                    .help("The model for the next run. \(model.modelPolicy)")
+                HStack(spacing: 5) {
+                    Image(systemName: "cube.box")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.faint)
+                    Text(model.selectedModel.isEmpty ? "router" : model.selectedModel)
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Theme.fill, in: Capsule())
+                .help("The model for the next run. \(model.modelPolicy)")
             }
             .padding(.horizontal, 14)
             .frame(height: 44)
@@ -478,7 +826,12 @@ struct TranscriptColumn: View {
                     if model.transcript.turns.isEmpty {
                         ContentUnavailable(
                             title: "No run yet",
-                            detail: "Choose a working directory and a model, then ask for something."
+                            detail: model.workingDir.isEmpty
+                                ? "Choose a working directory to give the agent a scope."
+                                : "Ask for something below — the agent works inside the scope.",
+                            scope: model.workingDir.isEmpty ? nil : model.workingDir,
+                            actionTitle: model.workingDir.isEmpty ? "Choose working directory" : nil,
+                            action: model.workingDir.isEmpty ? { chooseWorkingDir(model) } : nil
                         )
                     }
                     ForEach(model.transcript.turns) { turn in
@@ -512,6 +865,7 @@ struct TranscriptColumn: View {
                     .background(Theme.surfaceRaised, in: Circle())
                     .hairline(14, color: Theme.edge)
                     .padding(14)
+                    .accessibilityLabel("Scroll to bottom")
                 }
             }
             .onChange(of: model.transcript.lines.last) { before, after in
@@ -543,7 +897,7 @@ struct TurnView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let user = turn.user, case .user(let text) = user.kind {
-                UserBubble(text: text)
+                UserBubble(text: text, images: user.images)
             }
             if !turn.activity.isEmpty {
                 ActivitySection(turn: turn)
@@ -605,16 +959,61 @@ struct ActivitySection: View {
 /// The prompt, as the user's own words: on the right, on a surface, in a bubble.
 struct UserBubble: View {
     let text: String
+    var images: [TranscriptImage] = []
 
     var body: some View {
-        Text(text)
-            .font(.body)
-            .textSelection(.enabled)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: 560, alignment: .trailing)
-            .background(Theme.fillRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-            .frame(maxWidth: .infinity, alignment: .trailing)
+        VStack(alignment: .trailing, spacing: 6) {
+            if !images.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(images) { image in
+                        SentImage(image: image)
+                    }
+                }
+                .frame(maxWidth: 560, alignment: .trailing)
+            }
+            Text(text)
+                .font(.body)
+                .textSelection(.enabled)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: 560, alignment: .trailing)
+                .background(Theme.fillRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+/// An image the prompt carried, as a thumbnail; a click shows it whole.
+///
+/// The bubble is what the user reads to know what the model was shown, so the
+/// thumbnail is the image itself and not a chip that says "1 image".
+struct SentImage: View {
+    let image: TranscriptImage
+    @State private var expanded = false
+
+    var body: some View {
+        if let nsImage = NSImage(data: image.data) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 220, maxHeight: 160)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+                .hairline(Theme.radiusSmall, color: Theme.edge)
+                .onTapGesture { expanded = true }
+                .help("Show the full image")
+                .accessibilityLabel("Attached image")
+                .accessibilityAddTraits(.isButton)
+                .popover(isPresented: $expanded) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(
+                            maxWidth: min(nsImage.size.width, 900),
+                            maxHeight: min(nsImage.size.height, 700)
+                        )
+                        .padding(8)
+                }
+        }
     }
 }
 
@@ -778,7 +1177,7 @@ struct LineView: View {
         case .user(let text):
             // A prompt is never activity, so this branch is unreachable; it is
             // here so the switch is total and stays total when a kind is added.
-            UserBubble(text: text)
+            UserBubble(text: text, images: line.images)
         case .assistant(let text):
             AssistantLine(text: text, streaming: line.streaming, shown: line.shownBlocks)
         case .reasoning(let text):
@@ -914,10 +1313,14 @@ struct CompactionLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.up.left.and.arrow.down.right")
-            Text("compacting context — \(row.reason)")
+            if case .done = row.state, let outcome = row.outcome {
+                Text("context compacted — \(outcome)")
+            } else {
+                Text("compacting context — \(row.reason)")
+            }
             switch row.state {
             case .running: ProgressView().controlSize(.small)
-            case .done: Text("done").foregroundStyle(Theme.muted)
+            case .done: if row.outcome == nil { Text("done").foregroundStyle(Theme.muted) }
             case .failed(let error): Text("failed: \(error)").foregroundStyle(Theme.danger)
             }
         }
@@ -1082,20 +1485,64 @@ struct ComposerCard: View {
     // NavigationSplitView detail on every keystroke, disrupting the native
     // field editor's first responder while the user is typing.
     @State private var draft: String
+    /// Images pasted or dropped into the composer, held until Send. The wire
+    /// carries base64 strings, so the row holds the encoded form and a thumbnail
+    /// for the chip.
+    @State private var attachments: [PastedImage] = []
     @FocusState private var promptFocused: Bool
 
     init(prompt: String = "") {
         _draft = State(initialValue: prompt)
     }
 
-    private var enabled: Bool { model.sendBlock(draft) == nil }
+    private var enabled: Bool {
+        model.sendBlock(draft, hasImages: !attachments.isEmpty) == nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !attachments.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(attachments) { item in
+                        ZStack(alignment: .topTrailing) {
+                            Image(nsImage: item.thumbnail)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 52, height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+                                .hairline(Theme.radiusSmall, color: Theme.edge)
+                            Button {
+                                attachments.removeAll { $0.id == item.id }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Color.white, Theme.danger)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(3)
+                            .help("Remove this image")
+                            .accessibilityLabel("Remove attached image")
+                        }
+                    }
+                    Text("\(attachments.count) image\(attachments.count == 1 ? "" : "s") attached")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+
             TextField("Ask for something…", text: $draft, axis: .vertical)
                 .focused($promptFocused)
+                .textFieldStyle(.plain)
                 .lineLimit(1...8)
                 .font(.body)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous)
+                        .strokeBorder(promptFocused ? Theme.accent : Theme.hairline, lineWidth: 1)
+                )
+                .background(ComposerAnchor())
                 .onSubmit(submit)
                 .disabled(model.busy)
 
@@ -1103,6 +1550,19 @@ struct ComposerCard: View {
                 ModelMenu()
                 ThinkingMenu()
                 ModeMenu()
+                ContextMeter()
+                Button {
+                    addClipboardImage()
+                } label: {
+                    Image(systemName: "photo.on.rectangle")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.muted)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .help("Paste an image from the clipboard")
+                .accessibilityLabel("Paste image from clipboard")
+                .disabled(model.busy)
                 if let reason = visibleReason {
                     Text(reason)
                         .font(.caption)
@@ -1113,6 +1573,11 @@ struct ComposerCard: View {
                 Spacer(minLength: 8)
                 trailing
             }
+        }
+        // The app's event monitor and the Edit menu post this; the composer owns
+        // the attachments and does the conversion.
+        .onReceive(NotificationCenter.default.publisher(for: .solocoderPasteImage)) { _ in
+            addClipboardImage()
         }
         .padding(12)
         .frame(maxWidth: Theme.columnWidth)
@@ -1136,6 +1601,7 @@ struct ComposerCard: View {
             }
             .buttonStyle(.plain)
             .help("Cancel this run")
+            .accessibilityLabel("Stop run")
         } else {
             Button {
                 send()
@@ -1148,7 +1614,11 @@ struct ComposerCard: View {
             }
             .buttonStyle(.plain)
             .disabled(!enabled)
-            .help(model.sendBlock(draft).map(\.reason) ?? "↵ sends, ⇧↵ writes a new line")
+            .help(
+                model.sendBlock(draft, hasImages: !attachments.isEmpty).map(\.reason)
+                    ?? "↵ sends, ⇧↵ writes a new line"
+            )
+            .accessibilityLabel("Send prompt")
         }
     }
 
@@ -1159,7 +1629,7 @@ struct ComposerCard: View {
     /// and an empty field next to a disabled Send explains itself — a caption for
     /// every state is a caption bar.
     private var visibleReason: String? {
-        guard let block = model.sendBlock(draft) else { return nil }
+        guard let block = model.sendBlock(draft, hasImages: !attachments.isEmpty) else { return nil }
         switch block {
         case .notConnected, .noWorkingDir: return block.reason
         case .busy, .emptyDraft: return nil
@@ -1190,11 +1660,13 @@ struct ComposerCard: View {
 
     private func send() {
         let text = draft
+        let images = attachments.map(\.pngBase64)
         // Ask the core first, and clear only when the prompt went. A refused send
         // used to eat the words on its way out: the card explained a prompt that
         // was already gone, and the timeline had no row for it either.
-        guard model.send(text) == nil else { return }
+        guard model.send(text, images: images) == nil else { return }
         draft = ""
+        attachments = []
         // …and again on the next main-actor turn.
         //
         // Measured on this box: a vertical `TextField` keeps its text when its
@@ -1205,6 +1677,102 @@ struct ComposerCard: View {
         // one SwiftUI honours, and the pair costs nothing.
         Task { @MainActor in draft = "" }
     }
+
+    /// The composer's attach button, and the fallback when a keyboard paste is
+    /// not routed through `onPasteCommand`: the pasteboard is the same source.
+    private func addClipboardImage() {
+        let data = ClipboardImage.data()
+        guard !data.isEmpty else {
+            model.banner = "the clipboard has no image"
+            return
+        }
+        let images = data.compactMap(pastedImage(from:))
+        guard !images.isEmpty else {
+            model.banner = "the clipboard image could not be read"
+            return
+        }
+        attachments.append(contentsOf: images)
+    }
+
+}
+
+/// An image the composer will send. `pngBase64` is what `run.start`'s `images`
+/// takes; `thumbnail` is only the chip.
+private struct PastedImage: Identifiable {
+    let id = UUID()
+    let pngBase64: String
+    let thumbnail: NSImage
+}
+
+/// The clipboard as a source of images: what the composer attaches, and what
+/// decides whether ⌘V is an image paste at all.
+public enum ClipboardImage {
+    /// Image files copied in Finder. Finder also puts the file's *icon* on the
+    /// pasteboard as TIFF, so the file has to be read before the image data or
+    /// the attachment is a picture of a document icon.
+    private static func fileURLs(_ board: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [UTType.image.identifier],
+        ]
+        return board.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
+
+    /// Whether ⌘V should attach an image instead of pasting text.
+    ///
+    /// A copy from a web page or a document carries text *and* an image, and
+    /// the text is what the user meant to paste; only an image with no text
+    /// beside it — a screenshot, a copied picture — or a copied image file is
+    /// taken as an image paste.
+    public static func shouldPasteAsImage(_ board: NSPasteboard = .general) -> Bool {
+        if !fileURLs(board).isEmpty { return true }
+        guard board.canReadObject(forClasses: [NSImage.self], options: nil) else { return false }
+        return board.string(forType: .string) == nil
+    }
+
+    /// The bytes of each image on the pasteboard: copied files first, then the
+    /// image data itself, in the order the pasteboard stores it.
+    static func data(_ board: NSPasteboard = .general) -> [Data] {
+        let files = fileURLs(board).compactMap { try? Data(contentsOf: $0) }
+        if !files.isEmpty { return files }
+        for identifier in [UTType.png.identifier, UTType.tiff.identifier, UTType.jpeg.identifier] {
+            if let data = board.data(forType: NSPasteboard.PasteboardType(identifier)) { return [data] }
+        }
+        return []
+    }
+}
+
+/// Normalize any clipboard image to a bounded PNG.
+///
+/// The protocol carries base64 strings with no MIME type, and the server's
+/// user-message path defaults to `image/png`; sending a JPEG as PNG bytes is a
+/// mismatch the model may not survive. The bound matters twice: a frame is
+/// capped at 8 MB, and an image is tokens the model has to read.
+private func pastedImage(from data: Data) -> PastedImage? {
+    guard let source = NSImage(data: data) else { return nil }
+    let width = source.size.width
+    let height = source.size.height
+    guard width > 0, height > 0 else { return nil }
+    let maxSide: CGFloat = 1_400
+    let scale = min(1, maxSide / max(width, height))
+    let target = NSSize(
+        width: max(1, (width * scale).rounded()),
+        height: max(1, (height * scale).rounded())
+    )
+    let resized = NSImage(size: target, flipped: false) { rect in
+        source.draw(
+            in: rect,
+            from: NSRect(origin: .zero, size: source.size),
+            operation: .copy,
+            fraction: 1
+        )
+        return true
+    }
+    guard let tiff = resized.tiffRepresentation,
+        let bitmap = NSBitmapImageRep(data: tiff),
+        let png = bitmap.representation(using: .png, properties: [:])
+    else { return nil }
+    return PastedImage(pngBase64: png.base64EncodedString(), thumbnail: resized)
 }
 
 /// A setting of this prompt, shown as its current value.
@@ -1284,6 +1852,66 @@ struct ModelMenu: View {
     }
 }
 
+/// "12.1k / 262k": how much of the model's window the conversation fills,
+/// with a ring that turns orange near the compaction point. Hidden until there
+/// is a conversation to measure.
+struct ContextMeter: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if let used = model.contextUsed {
+            let window = model.contextWindow
+            let fraction = window.map { min(1, Double(used) / Double(max($0, 1))) }
+            HStack(spacing: 5) {
+                if let fraction {
+                    ZStack {
+                        Circle().stroke(Theme.hairline, lineWidth: 2)
+                        Circle()
+                            .trim(from: 0, to: fraction)
+                            .stroke(tint(used), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 11, height: 11)
+                }
+                Text(window.map { "\(Self.short(used)) / \(Self.short($0))" } ?? Self.short(used))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .help(help(used: used, window: window))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Context \(help(used: used, window: window))")
+        }
+    }
+
+    private func tint(_ used: Int) -> Color {
+        guard let compactAt = model.compactAt else { return Theme.accent }
+        if used >= compactAt { return Theme.danger }
+        return Double(used) >= Double(compactAt) * 0.85 ? Theme.warning : Theme.accent
+    }
+
+    private func help(used: Int, window: Int?) -> String {
+        var text = "About \(used.formatted()) tokens in use"
+        if let window { text += " of a \(window.formatted())-token window" }
+        text += " (history, system prompt and tools; an estimate)."
+        if let compactAt = model.compactAt {
+            text += " Older messages are summarised at \(compactAt.formatted())."
+        }
+        return text
+    }
+
+    /// 950, 12.1k, 262k, 1.0M.
+    static func short(_ tokens: Int) -> String {
+        switch tokens {
+        case ..<1000: return "\(tokens)"
+        case ..<10_000: return String(format: "%.1fk", Double(tokens) / 1000)
+        case ..<1_000_000: return "\(tokens / 1000)k"
+        default: return String(format: "%.1fM", Double(tokens) / 1_000_000)
+        }
+    }
+}
+
 struct ThinkingMenu: View {
     @EnvironmentObject var model: AppModel
 
@@ -1294,14 +1922,14 @@ struct ThinkingMenu: View {
             value: model.reasoningEffort?.label ?? "model default",
             help:
                 "How much the model may think before answering. Off answers fastest; the model's own default is the slowest thing in this app.",
-            options: ["model default"] + ReasoningEffort.allCases.map(\.label),
+            options: ["model default"] + model.availableEfforts.map(\.label),
             chosen: model.reasoningEffort?.label ?? "model default"
         ) { choice in
             // "model default" sends no `reasoning_effort` at all, which leaves
             // the server's default alone. That default is the slow path: on one
             // reasoning model it spent 686,439 characters on private reasoning
             // and produced no answer, where "off" answered in 1.1 seconds.
-            model.reasoningEffort = ReasoningEffort.allCases.first { $0.label == choice }
+            model.reasoningEffort = model.availableEfforts.first { $0.label == choice }
         }
     }
 }
@@ -1310,7 +1938,7 @@ struct ModeMenu: View {
     @EnvironmentObject var model: AppModel
 
     private let names: [(PermissionMode, String)] = [
-        (.ask, "Ask"), (.allowReadonly, "Read-only"), (.allowAll, "Allow all"),
+        (.ask, "Ask"), (.allowReadonly, "Read-only"), (.allowAll, "Auto"),
     ]
 
     var body: some View {
@@ -1318,7 +1946,7 @@ struct ModeMenu: View {
             title: "Tools",
             systemImage: "hand.raised",
             value: names.first { $0.0 == model.permissionMode }?.1 ?? "Ask",
-            help: "Ask prompts before a risky tool. Read-only refuses writes without asking. Allow all is for demos.",
+            help: "Ask prompts before a risky tool. Read-only refuses writes without asking. Auto approves every risky tool without a prompt. It is not OS-sandboxed yet, so use it only for tasks you trust.",
             options: names.map(\.1),
             chosen: names.first { $0.0 == model.permissionMode }?.1 ?? "Ask"
         ) { choice in
@@ -1335,11 +1963,19 @@ struct PermissionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Allow \(request.toolName)?")
-                .font(.title3)
-            Text(request.reason)
-                .font(.callout)
-                .foregroundStyle(Theme.muted)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Theme.warning)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Allow \(request.toolName)?")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text(request.reason)
+                        .font(.callout)
+                        .foregroundStyle(Theme.muted)
+                }
+            }
             ScrollView {
                 ArgumentSections(
                     sections: ToolDisplay.sections(tool: request.toolName, arguments: request.arguments),
@@ -1352,16 +1988,34 @@ struct PermissionSheet: View {
             .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
             .hairline(Theme.radiusSmall, color: Theme.hairline)
 
-            HStack {
+            HStack(spacing: 8) {
                 Button("Deny") { model.answer(granted: false, scope: .once) }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
                 Button("Deny always") { model.answer(granted: false, scope: .never) }
+                    .buttonStyle(.bordered)
                 Spacer()
                 Button("Allow once") { model.answer(granted: true, scope: .once) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                 Button("Allow for session") {
                     model.answer(granted: true, scope: .session)
                 }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.accent)
                 .keyboardShortcut(.return, modifiers: .command)
+                Button("Auto-approve all") {
+                    // The mode switch answers this prompt and makes every
+                    // later risky tool in the run run without asking.
+                    model.permissionMode = .allowAll
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.muted)
+                .help("Stop asking for approval in this run. This is not an OS sandbox.")
             }
+            Text("The run is paused until you answer.")
+                .font(.caption2)
+                .foregroundStyle(Theme.faint)
         }
         .padding(16)
         .frame(width: 460)
@@ -1373,11 +2027,44 @@ struct PermissionSheet: View {
 struct ContentUnavailable: View {
     let title: String
     let detail: String
+    /// The scope, on its own line: a path is not prose. Wrapped inside the
+    /// sentence it breaks at a slash the reader cannot see, and the path is the
+    /// one thing in this empty state that has to be copied.
+    var scope: String? = nil
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
 
     var body: some View {
-        VStack(spacing: 6) {
-            Text(title).font(.headline)
-            Text(detail).font(.callout).foregroundStyle(Theme.muted)
+        VStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(Theme.accent)
+                .padding(.bottom, 2)
+            Text(title).font(.title3).fontWeight(.semibold)
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(Theme.muted)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            if let scope {
+                Text(scope)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Theme.faint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(scope)
+            }
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .padding(.top, 2)
+            }
+            Text("↵ sends · ⇧↵ writes a new line")
+                .font(.caption2)
+                .foregroundStyle(Theme.faint)
+                .padding(.top, 2)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
@@ -1460,5 +2147,6 @@ struct CopyButton: View {
         .buttonStyle(.borderless)
         .controlSize(.mini)
         .help("Copy \(label)")
+        .accessibilityLabel("Copy \(label)")
     }
 }
