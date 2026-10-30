@@ -40,8 +40,26 @@ OPTIONAL_EXTRAS = {
     WireAPI.GEMINI: "openagent[google]",
 }
 
-# The Codex CLI version the subscription backend's model listing is asked for.
-CODEX_CLIENT_VERSION = "0.164.0"
+def codex_client_version(default: str = "0.164.0") -> str:
+    """The Codex version the subscription backend's model listing is asked for.
+
+    The installed Codex records the one it used in ``models_cache.json``; using
+    it keeps the listing working as Codex updates. (``version.json`` is the
+    update checker's last-seen release, not what is installed.)
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        version = json.loads((home / "models_cache.json").read_text()).get("client_version")
+    except (OSError, ValueError, AttributeError):
+        return default
+    return version if isinstance(version, str) and re.fullmatch(r"\d+\.\d+\.\d+", version) else default
+
+
+CODEX_CLIENT_VERSION = codex_client_version()
 
 # Local servers default to optimistic capability claims; the probe downgrades
 # them to facts. context_window is the common local default.
@@ -339,6 +357,20 @@ class ProviderRegistry:
 
     def local_endpoints(self) -> list[EndpointSpec]:
         return [e for e in self._endpoints.values() if e.local]
+
+    def add_endpoint(self, spec: EndpointSpec) -> None:
+        """Add a validated endpoint to this live registry.
+
+        The config is the durable record; this is the process's table. A client
+        that adds a server needs both, or the next `model.list` would still be
+        reading the table built at startup.
+        """
+        self._endpoints[spec.provider] = spec
+
+    def remove_endpoint(self, provider: str) -> bool:
+        """Drop an endpoint from the live table. Built-ins are the caller's
+        responsibility to reject; this method only knows the table."""
+        return self._endpoints.pop(provider, None) is not None
 
     def base_url_for(self, spec: EndpointSpec) -> str | None:
         """Honour a host override env var (``OLLAMA_HOST`` etc.)."""

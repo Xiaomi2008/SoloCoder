@@ -173,6 +173,38 @@ def test_oauth_credentials_get_the_vendor_beta_header(broker):
     assert creds.headers["anthropic-account-id"] == "acct_7"
 
 
+def test_chatgpt_credentials_send_the_account_header_codex_sends(broker):
+    from openagent.provider.model_ref import ModelRef
+
+    broker.save_credentials(
+        "openai_oauth",
+        Credentials(mode=AuthMode.OAUTH_SUBSCRIPTION, tokens=TokenSet(access_token="a", account_id="acct_9")),
+    )
+    ref = ModelRef(model="gpt-6.1-sol", provider="openai_oauth", wire_api="openai-responses",
+                   auth_mode=AuthMode.OAUTH_SUBSCRIPTION)
+    assert broker.resolve(ref).headers["chatgpt-account-id"] == "acct_9"
+
+
+async def test_a_refresh_does_not_freeze_derived_headers_into_the_store(store):
+    """A stale account header saved by an older build is dropped on refresh."""
+    from openagent.provider.model_ref import ModelRef
+
+    async def refresher(spec, token):
+        return TokenSet(access_token="new", refresh_token="r2", expires_at=time.time() + 3600, account_id="acct_9")
+
+    broker = AuthBroker(store=store, env={}, refresher=refresher)
+    broker.save_credentials("openai_oauth", Credentials(
+        mode=AuthMode.OAUTH_SUBSCRIPTION,
+        tokens=TokenSet(access_token="old", refresh_token="r", expires_at=time.time() - 1, account_id="acct_9"),
+        headers={"OpenAI-Organization": "acct_9", "Originator": "codex_cli", "X-Mine": "kept"},
+    ))
+    ref = ModelRef(model="gpt-6.1-sol", provider="openai_oauth", wire_api="openai-responses",
+                   auth_mode=AuthMode.OAUTH_SUBSCRIPTION)
+    await broker.refresh_if_needed(ref)
+    assert broker.load_credentials("openai_oauth").headers == {"X-Mine": "kept"}
+    assert "OpenAI-Organization" not in broker.resolve(ref).headers
+
+
 # ------------------------------------------------------------------ refresh
 
 async def test_expired_token_is_refreshed_and_persisted(broker, store):

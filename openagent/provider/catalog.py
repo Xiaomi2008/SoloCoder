@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -142,6 +142,11 @@ class ModelCatalog:
                     response = await client.get(url, headers=headers)
                     response.raise_for_status()
                     payload = response.json()
+                    served = (
+                        await _served_context(client, base, headers)
+                        if spec.local and spec.wire_api is WireAPI.OPENAI_CHAT
+                        else None
+                    )
             except Exception as exc:
                 # Silent failure here costs an hour: "no models" is a very
                 # different problem when the server wants a key.
@@ -153,7 +158,7 @@ class ModelCatalog:
                 self.registry.ref(
                     spec.provider,
                     item.model,
-                    caps=item.caps,
+                    caps=replace(item.caps, context_window=served) if served else item.caps,
                     label=item.label,
                 )
                 for item in _parse_listing(
@@ -247,6 +252,18 @@ class ModelCatalog:
             self._discovered[ref.provider].append(result.ref)
         return result
 
+    def forget(self, provider: str) -> None:
+        """Drop one provider's discovered models and probes.
+
+        Adding or removing an endpoint changes what that provider can serve, so
+        keeping the old rows would show models the server no longer has.
+        """
+        self._discovered.pop(provider, None)
+        self.discovery_errors.pop(provider, None)
+        prefix = f"{provider}/"
+        for key in [k for k in self._probed if k.startswith(prefix)]:
+            self._probed.pop(key, None)
+
     def clear(self) -> None:
         self._discovered.clear()
         self._probed.clear()
@@ -262,6 +279,42 @@ def _discovery_error(spec: Any, url: str, exc: Exception, timeout: float) -> str
     if isinstance(exc, httpx.TimeoutException):
         return f"{url} did not answer within {timeout:g}s"
     return f"{urlsplit(url).netloc} is not answering — is the server running?"
+
+
+def _codex_efforts(entry: dict[str, Any]) -> tuple[str, ...]:
+    """The efforts a Codex listing row offers that a run can ask for.
+
+    The list is a subset of what the backend accepts — it never lists `none`,
+    which some models take and others reject — so it is used as-is: every
+    level offered works. `ultra` is left out; it is Codex's own task
+    delegation, not a thinking budget.
+    """
+    from openagent.runtime.runner import REASONING_EFFORTS
+
+    levels = entry.get("supported_reasoning_levels") or []
+    named = [level.get("effort") if isinstance(level, dict) else level for level in levels]
+    return tuple(e for e in named if e in REASONING_EFFORTS)
+
+
+async def _served_context(client: httpx.AsyncClient, base: str, headers: dict[str, str]) -> int | None:
+    """The context a llama.cpp server was started with, from its ``/props``.
+
+    ``/v1/models`` names the model and nothing about the window, so every
+    local model got the 32k default: a server started with ``-c 262144`` was
+    compacted at 20k tokens, every few turns. llama.cpp's ``/props`` reports
+    the served window (per slot). Other servers have no ``/props``; None
+    then, and the default stands.
+    """
+    root = base.rstrip("/").removesuffix("/v1")
+    try:
+        response = await client.get(f"{root}/props", headers=headers, timeout=3.0)
+        if response.status_code != 200:
+            return None
+        settings = response.json().get("default_generation_settings") or {}
+        n_ctx = int(settings.get("n_ctx") or 0)
+    except Exception:
+        return None
+    return n_ctx if n_ctx > 0 else None
 
 
 def _parse_listing(
@@ -320,6 +373,7 @@ def _parse_listing(
                         streaming=True,
                         context_window=int(context) if context else default_context,
                         max_output_tokens=default_caps.max_output_tokens if default_caps else 8192,
+                        reasoning_efforts=_codex_efforts(entry),
                     ),
                 )
             )
@@ -335,12 +389,18 @@ def _parse_listing(
                 continue
             meta = entry.get("meta") or entry.get("details") or {}
             context = meta.get("context_length") or meta.get("max_context") or 0
+            # An OpenAI-compatible listing names a model, not its capabilities.
+            # Tools and vision are therefore the endpoint's declared caps: a
+            # server can serve a vision model without saying so in /v1/models,
+            # and marking it blind makes the router and the app's model table
+            # disagree with the model that actually answers.
             out.append(
                 DiscoveredModel(
                     model=model_id,
                     label=str(model_id).split("/")[-1],
                     caps=Capabilities(
-                        tools=True,
+                        tools=default_caps.tools if default_caps else True,
+                        vision=default_caps.vision if default_caps else False,
                         streaming=True,
                         context_window=int(context) if context else default_context,
                         max_output_tokens=8192,

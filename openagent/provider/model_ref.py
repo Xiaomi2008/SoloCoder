@@ -57,6 +57,9 @@ class Capabilities:
     context_window: int = 8192
     max_output_tokens: int = 4096
     probed: bool = False
+    #: The `reasoning_effort` values this model accepts, when the server says.
+    #: Empty means unknown: a client offers its generic list.
+    reasoning_efforts: tuple[str, ...] = ()
 
     def supports(self, other: Capabilities) -> bool:
         """True when this model meets every capability asked for."""
@@ -141,6 +144,7 @@ class ModelRef:
                 "context_window": self.caps.context_window,
                 "max_output_tokens": self.caps.max_output_tokens,
                 "probed": self.caps.probed,
+                "reasoning_efforts": list(self.caps.reasoning_efforts),
             },
             "cost": {
                 "kind": str(self.cost.kind),
@@ -171,6 +175,7 @@ class ModelRef:
                 context_window=int(caps.get("context_window", 8192)),
                 max_output_tokens=int(caps.get("max_output_tokens", 4096)),
                 probed=bool(caps.get("probed", False)),
+                reasoning_efforts=tuple(caps.get("reasoning_efforts") or ()),
             ),
             cost=CostHint(
                 kind=CostKind(cost.get("kind", CostKind.LOCAL)),

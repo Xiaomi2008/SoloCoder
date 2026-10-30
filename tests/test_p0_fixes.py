@@ -123,48 +123,43 @@ class TestAnthropicProviderStream:
         assert "_chat_with_retry" in source
 
     def test_stream_yields_text_chunks(self):
-        """Verify stream() yields text chunks from the response stream."""
-        from openagent.provider.anthropic import AnthropicProvider
+        """Verify stream() turns the API's text deltas into text events."""
+        from types import SimpleNamespace as NS
+
         from openagent.core.types import Message
+        from openagent.provider.anthropic import AnthropicProvider
+        from openagent.providers import ProviderTextDelta
 
         provider = AnthropicProvider.__new__(AnthropicProvider)
         provider.model = "claude-sonnet-4-20250514"
 
-        chunks = ["Hello", ", ", "world!"]
-        chunk_iter = iter(chunks)
+        events = [NS(type="message_start", message=NS(id="msg_1"))] + [
+            NS(type="content_block_delta", index=0, delta=NS(type="text_delta", text=t))
+            for t in ["Hello", ", ", "world!"]
+        ] + [NS(type="message_stop")]
 
-        class _AsyncIter:
-            async def __aiter__(self):
-                for c in chunk_iter:
-                    yield c
-
-        mock_response = MagicMock()
-        mock_response.text_stream = _AsyncIter()
-
-        class _Ctx:
+        class _Stream:
             async def __aenter__(self):
-                return mock_response
+                return self
             async def __aexit__(self, *args):
                 pass
-
-        mock_stream_obj = MagicMock()
-        mock_stream_obj.return_value = _Ctx()
+            async def __aiter__(self):
+                for e in events:
+                    yield e
 
         mock_client = MagicMock()
-        mock_client.messages.stream = mock_stream_obj
+        mock_client.messages.stream = MagicMock(return_value=_Stream())
         provider._client = mock_client
 
         async def run():
-            collected = []
-            async for chunk in provider.stream(
-                messages=[Message(role="user", content="hi")],
-                system_prompt="",
-            ):
-                collected.append(chunk)
-            return collected
+            return [
+                chunk async for chunk in provider.stream(
+                    messages=[Message(role="user", content="hi")], system_prompt=""
+                )
+            ]
 
         result = asyncio.run(run())
-        assert result == ["Hello", ", ", "world!"]
+        assert [c.delta for c in result if isinstance(c, ProviderTextDelta)] == ["Hello", ", ", "world!"]
 
     def test_stream_includes_system_prompt(self):
         """Verify stream() passes system prompt to API."""
@@ -175,21 +170,15 @@ class TestAnthropicProviderStream:
         provider.model = "claude-sonnet-4-20250514"
 
         captured_kwargs = {}
-        ok_iter = iter(["ok"])
-
-        class _AsyncIterOk:
-            async def __aiter__(self):
-                for c in ok_iter:
-                    yield c
-
-        mock_response = MagicMock()
-        mock_response.text_stream = _AsyncIterOk()
 
         class _Ctx:
             async def __aenter__(self):
-                return mock_response
+                return self
             async def __aexit__(self, *args):
                 pass
+            async def __aiter__(self):
+                for e in ():
+                    yield e
 
         def mock_stream_obj(**kwargs):
             captured_kwargs.update(kwargs)
@@ -207,7 +196,7 @@ class TestAnthropicProviderStream:
                 pass
 
         asyncio.run(run())
-        assert captured_kwargs.get("system") == "be nice"
+        assert captured_kwargs.get("system")[0]["text"] == "be nice"
 
 
 # ============================================================================

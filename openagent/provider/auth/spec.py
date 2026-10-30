@@ -113,7 +113,9 @@ OPENAI_OAUTH_SPEC = OAuthProviderSpec(
     },
     api_headers={"Originator": "codex_cli"},
     account_claim=("https://api.openai.com/auth", "chatgpt_account_id"),
-    account_header="OpenAI-Organization",
+    # What the Codex CLI sends; the backend has accepted OpenAI-Organization
+    # too, but matching the vendor's client is what survives a stricter check.
+    account_header="chatgpt-account-id",
 )
 
 
