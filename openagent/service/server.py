@@ -41,14 +41,17 @@ from openagent.core.tool import ToolContext
 from openagent.provider.auth.tokens import AuthRequired
 from openagent.provider.auth.broker import AuthBroker
 from openagent.provider.catalog import ModelCatalog
-from openagent.provider.model_ref import Capabilities, ModelRef
+from openagent.provider.model_ref import AuthMode, Capabilities, ModelRef
 from openagent.provider.registry import (
     BUILTIN_PROVIDERS,
     ProviderDependencyError,
     ProviderRegistry,
+    add_endpoint_config,
+    remove_endpoint_config,
+    spec_from_config,
 )
 from openagent.provider.router import ModelRouter, NoCapableModel, RoutingRules
-from openagent.runtime.events import RunFailed
+from openagent.runtime.events import BrowserFrame, RunFailed
 from openagent.runtime.loop import next_id
 from openagent.runtime.permissions import (
     ASK_BY_DEFAULT,
@@ -103,6 +106,11 @@ class ServiceSettings:
     max_turns: int = DEFAULT_MAX_TURNS
     computer_use: bool = False
     browser_use: bool = False
+    #: Where the agent's browser keeps its profile, so sign-ins persist. None
+    #: is a fresh, signed-out profile every launch.
+    browser_profile: str | None = None
+    #: "chrome" drives the installed Google Chrome; None, Playwright's Chromium.
+    browser_channel: str | None = None
     system_prompt: str | None = None
     #: Override the tool set. Tests run the service against a two-tool world.
     tools: Sequence[Callable[..., Any]] | None = None
@@ -121,10 +129,46 @@ class _Run:
     session: Session
     session_id: str
     task: asyncio.Task | None = None
+    frames: _FrameRelay | None = None
 
     @property
     def active(self) -> bool:
         return self.task is not None and not self.task.done()
+
+
+class _FrameRelay:
+    """Browser frames to one run's client: newest only, never a backlog.
+
+    Frames arrive from the screencast faster than a slow socket may drain
+    them, and a stale frame is worthless. One send is in flight at a time; a
+    frame that arrives meanwhile replaces the one waiting behind it.
+    """
+
+    def __init__(self, conn: Connection, run_id: str) -> None:
+        self._conn = conn
+        self._run_id = run_id
+        self._waiting: dict[str, Any] | None = None
+        self._sending: asyncio.Task | None = None
+        self.closed = False
+
+    def push(self, frame: dict[str, Any]) -> None:
+        if self.closed:
+            return
+        self._waiting = frame
+        if self._sending is None or self._sending.done():
+            self._sending = asyncio.ensure_future(self._drain())
+
+    async def _drain(self) -> None:
+        while self._waiting is not None and not self.closed:
+            frame, self._waiting = self._waiting, None
+            try:
+                await self._conn.send_event(BrowserFrame(run_id=self._run_id, **frame))
+            except Exception:  # a gone client must not break the run
+                self.closed = True
+
+    def close(self) -> None:
+        self.closed = True
+        self._waiting = None
 
 
 class Connection:
@@ -322,6 +366,10 @@ class AgentService:
     # ------------------------------------------------------------------ serve
 
     async def start(self) -> asyncio.Server:
+        if self.settings.browser_use:
+            from openagent.tools.browser import configure_browser
+
+            configure_browser(self.settings.browser_profile, channel=self.settings.browser_channel)
         path = Path(self.settings.socket_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
@@ -486,10 +534,13 @@ class AgentService:
             Method.PING: self._ping,
             Method.RUN_START: self._run_start,
             Method.RUN_CANCEL: self._run_cancel,
+            Method.RUN_PERMISSION_MODE: self._run_permission_mode,
             Method.PERMISSION_RESPOND: self._permission_respond,
             Method.MODEL_LIST: self._model_list,
             Method.MODEL_PROBE: self._model_probe,
             Method.MODEL_SELECT: self._model_select,
+            Method.MODEL_ADD_ENDPOINT: self._model_add_endpoint,
+            Method.MODEL_REMOVE_ENDPOINT: self._model_remove_endpoint,
             Method.AUTH_STATUS: self._auth_status,
             Method.AUTH_LOGOUT: self._auth_logout,
             Method.AUTH_LOGIN: self._auth_login,
@@ -500,6 +551,7 @@ class AgentService:
             Method.SESSION_DELETE: self._session_delete,
             Method.CONFIG_GET: self._config_get,
             Method.CONFIG_SET: self._config_set,
+            Method.BROWSER_SHOW: self._browser_show,
         }
 
     # ---------------------------------------------------------- handshake/liveness
@@ -565,7 +617,6 @@ class AgentService:
                 f"permission_mode must be one of {', '.join(PERMISSION_MODES)}",
                 {"permission_mode": mode},
             )
-
         reasoning_effort = params.get("reasoning_effort")
         if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
             raise RpcError(
@@ -585,6 +636,14 @@ class AgentService:
             raise RpcError(ErrorCode.INVALID_PARAMS, "max_turns must be a positive integer")
 
         ref = await self._resolve_model(params.get("model"))
+        supported = ref.caps.reasoning_efforts
+        if reasoning_effort is not None and supported and reasoning_effort not in supported:
+            # The backend would refuse it mid-run with a 400; say so up front.
+            raise RpcError(
+                ErrorCode.INVALID_PARAMS,
+                f"{ref.key} supports reasoning_effort {', '.join(supported)}",
+                {"reasoning_effort": reasoning_effort, "supported": list(supported)},
+            )
         resume = params.get("session_id")
         session_id = sessions.check_session_id(resume) if resume else sessions.new_session_id()
         if session_id in self._live:
@@ -612,10 +671,16 @@ class AgentService:
                 provider,
                 session=session,
                 tools=self._tools(ref),
-                tool_context=ToolContext(working_dir=str(working_dir)),
+                tool_context=ToolContext(
+                    working_dir=str(working_dir),
+                    enforce_scope=(mode == "allow_all"),
+                    outputs_dir=str(sessions.outputs_dir(session_id)),
+                ),
                 max_turns=max_turns,
                 permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
                 reasoning_effort=reasoning_effort,
+                context_window=ref.caps.context_window or None,
+                max_output_tokens=ref.caps.max_output_tokens or None,
             )
             run = _Run(
                 run_id=run_id,
@@ -631,6 +696,16 @@ class AgentService:
             raise
         self._live[session_id] = run
         conn.run = run
+        if self.settings.browser_use:
+            from openagent.tools import browser
+
+            # Set before create_task, which copies the context: the limits and
+            # the frame sink are this run's, whatever runs next on the service.
+            browser.snapshot_limits.set(
+                browser.COMPACT_LIMITS if ref.is_local else browser.SnapshotLimits()
+            )
+            run.frames = _FrameRelay(conn, run.run_id)
+            browser.frame_sink.set(run.frames.push)
         run.task = asyncio.create_task(self._pump(conn, run, prompt, images))
         return {
             "run_id": run_id,
@@ -668,9 +743,54 @@ class AgentService:
             if self._live.get(run.session_id) is run:
                 self._live.pop(run.session_id, None)
             await _close_provider(run.provider)
+            if run.frames is not None:
+                run.frames.close()
             conn.deny_pending("run ended")
             if conn.run is run:
                 conn.run = None
+
+    async def _browser_show(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
+        """Bring the agent's browser window forward, for the user to take over.
+
+        ``open`` is false when no page is open; ``headless`` true when there is
+        no window to bring forward (the client can open ``url`` elsewhere).
+        """
+        if not self.settings.browser_use:
+            return {"open": False, "headless": False, "url": "", "pid": 0}
+        from openagent.tools.browser import show_browser
+
+        return await show_browser()
+
+    async def _run_permission_mode(
+        self, conn: Connection, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Change the live run's approval mode and file scope.
+
+        The gate and the tool context were fixed at `run.start`; a UI toggle
+        made mid-run would otherwise only auto-answer prompts while the built-in
+        file tools kept their old scope. This method changes both.
+        """
+        run = conn.run
+        run_id = params.get("run_id")
+        if run is None or run.run_id != run_id:
+            raise RpcError(
+                ErrorCode.RUN_NOT_FOUND,
+                "no run with that id on this connection",
+                {"run_id": run_id, "active": run.run_id if run and run.active else None},
+            )
+        mode = params.get("permission_mode")
+        if mode not in PERMISSION_MODES:
+            raise RpcError(
+                ErrorCode.INVALID_PARAMS,
+                f"permission_mode must be one of {', '.join(PERMISSION_MODES)}",
+                {"permission_mode": mode},
+            )
+        run.runner.permission_gate = gate_for_mode(mode, callback=conn.ask_permission)  # type: ignore[arg-type]
+        run.runner.tool_context.enforce_scope = mode == "allow_all"
+        return {
+            "run_id": run.run_id,
+            "permission_mode": mode,
+        }
 
     async def _run_cancel(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
         run = conn.run
@@ -833,6 +953,59 @@ class AgentService:
         ConfigManager.update_config(default_model=ref.key)
         return {"default_model": ref.key}
 
+    async def _model_add_endpoint(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
+        """Add a user model server, persist it, and discover what it serves.
+
+        One call does both: a client that only wrote config would still be looking
+        at the registry built at process start, and a client that only discovered
+        would forget the endpoint on the next launch. The config is the durable
+        record; the live registry and catalog are updated together.
+        """
+        entry: dict[str, Any] = {
+            "name": params.get("name"),
+            "base_url": params.get("base_url"),
+            "wire_api": params.get("wire_api") or "openai-chat",
+            "label": params.get("label") or None,
+            "local": bool(params.get("local", True)),
+            "requires_key": bool(params.get("requires_key", False)),
+            "tools": bool(params.get("tools", True)),
+            "context_window": int(params.get("context_window", 32768)),
+        }
+        try:
+            spec = spec_from_config(entry)
+            add_endpoint_config(entry)
+        except (ValueError, TypeError) as exc:
+            raise RpcError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+
+        self.registry.add_endpoint(spec)
+        self.catalog.forget(spec.provider)
+        discovered = await self.catalog.discover(spec.provider)
+        refs = discovered.get(spec.provider, [])
+        return {
+            "endpoint": {
+                "name": spec.provider,
+                "label": spec.label,
+                "base_url": spec.base_url,
+                "wire_api": str(spec.wire_api),
+                "local": spec.local,
+                "requires_key": spec.auth_mode == AuthMode.API_KEY,
+            },
+            "models": [ref.to_dict() for ref in refs],
+            "discovery_error": self.catalog.discovery_errors.get(spec.provider),
+        }
+
+    async def _model_remove_endpoint(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
+        name = str(params.get("name") or "").strip().lower()
+        if not name:
+            raise RpcError(ErrorCode.INVALID_PARAMS, "name is required")
+        try:
+            removed = remove_endpoint_config(name)
+        except ValueError as exc:
+            raise RpcError(ErrorCode.INVALID_PARAMS, str(exc)) from exc
+        self.registry.remove_endpoint(name)
+        self.catalog.forget(name)
+        return {"name": name, "removed": removed}
+
     # ------------------------------------------------------------------- auth
 
     async def _auth_status(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
@@ -915,7 +1088,19 @@ class AgentService:
             "session_id": session_id,
             "system_prompt": session.system_prompt,
             "messages": session.to_list(),
+            # The same estimate `context_usage` reports, so a reopened session
+            # shows how full it is before its next run.
+            "context_tokens": session.token_count + self._request_overhead(session),
         }
+
+    def _request_overhead(self, session: Session) -> int:
+        from openagent.core.tool import ToolRegistry
+        from openagent.runtime.runner import _fixed_overhead
+
+        registry = ToolRegistry()
+        for fn in self._tools():
+            registry.register(fn)
+        return _fixed_overhead(session.system_prompt, registry.definitions)
 
     async def _session_save(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
         run = conn.run

@@ -26,6 +26,8 @@ def recorded(monkeypatch):
     monkeypatch.setattr(cu, "_last_screenshot_size", (512, 332))
     monkeypatch.setattr(cu, "_original_screenshot_size", (1512, 982))
     monkeypatch.setattr(cu, "_last_screenshot_origin", (0, 0))
+    monkeypatch.setattr(cu, "_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(cu, "_capture_screen", lambda *a, **k: "Screenshot captured: 512x332")
     return calls
 
 
@@ -53,7 +55,7 @@ def test_an_unknown_key_is_an_error_not_a_silent_no_op():
 async def test_key_combination_presses_each_key(recorded):
     result = await cu.key_combination("cmd+c")
     assert recorded == [("hotkey", ("command", "c"), {})]
-    assert result == "Pressed key combination: command+c"
+    assert result == f"Pressed key combination: command+c. {cu.AFTER_ACTION_NOTE}"
 
 
 async def test_key_combination_reports_a_typo(recorded):
@@ -77,7 +79,7 @@ async def test_type_text_sends_non_ascii_as_unicode(recorded, monkeypatch):
     monkeypatch.setattr(cu.sys, "platform", "darwin")
     result = await cu.type_text("café 你好 😀")
     assert typed == [("café 你好 😀", 0.01)]
-    assert result == "Typed: café 你好 😀"
+    assert result.startswith("Typed: café 你好 😀.")
 
 
 def test_unicode_events_press_return_for_a_newline(monkeypatch):
@@ -139,3 +141,24 @@ def test_schemas_survive_the_thread_wrapper():
 def test_step_aside_is_a_no_op_outside_the_app(monkeypatch):
     monkeypatch.delenv("OPENAGENT_HOST_PID", raising=False)
     cu._step_aside()
+
+
+async def test_every_action_looks_at_the_screen_after_it(recorded, monkeypatch):
+    looks: list[int] = []
+    monkeypatch.setattr(cu, "_capture_screen", lambda *a, **k: looks.append(1) or "Screenshot captured")
+    for result in (
+        await cu.click(10, 10),
+        await cu.double_click(10, 10),
+        await cu.move_mouse(10, 10),
+        await cu.scroll(10, 10, -1),
+        await cu.key_combination("esc"),
+    ):
+        assert result.endswith(cu.AFTER_ACTION_NOTE), result
+    assert len(looks) == 5
+
+
+async def test_a_failed_look_does_not_claim_an_image(recorded, monkeypatch):
+    monkeypatch.setattr(cu, "_capture_screen", lambda *a, **k: "Error capturing screenshot: busy")
+    result = await cu.click(10, 10)
+    assert cu.AFTER_ACTION_NOTE not in result
+    assert "busy" in result

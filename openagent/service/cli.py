@@ -72,6 +72,20 @@ def add_subcommands(subparsers: Any) -> None:
         action="store_true",
         help="expose the browser tools (browser_navigate, browser_click, ...): the model's own Chromium window",
     )
+    sp.add_argument(
+        "--browser-profile",
+        nargs="?",
+        const="~/.openagent/browser-profile",
+        default=None,
+        metavar="DIR",
+        help="keep the browser's profile (sign-ins) in DIR between runs (default DIR: ~/.openagent/browser-profile)",
+    )
+    sp.add_argument(
+        "--browser-channel",
+        choices=("chromium", "chrome"),
+        default=None,
+        help="the browser to drive: Playwright's Chromium (default) or your installed Google Chrome",
+    )
     sp.add_argument("--quiet", action="store_true", help="do not print the startup banner")
     sp.set_defaults(handler=handle_serve)
 
@@ -105,6 +119,8 @@ async def handle_serve(args: argparse.Namespace) -> int:
         max_turns=args.max_turns,
         computer_use=args.computer_use,
         browser_use=args.browser_use,
+        browser_profile=args.browser_profile,
+        browser_channel=args.browser_channel,
     )
     service = await serve(settings)
     # A sidecar whose app was killed must not keep serving. The parent holds a

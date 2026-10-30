@@ -69,6 +69,16 @@ def test_codex_listing_keeps_listed_slugs_with_their_windows():
     assert models[0].label == "GPT-6.1-Sol"
     assert models[0].caps.context_window == 500000
     assert models[0].caps.vision and models[0].caps.reasoning and models[0].caps.tools
+    assert models[0].caps.reasoning_efforts == ("low",)
+
+
+def test_codex_levels_keep_what_a_run_can_ask_for():
+    """`ultra` is Codex's task delegation, not a thinking budget."""
+    payload = {"models": [{"slug": "gpt-6.1-sol", "visibility": "list", "supported_reasoning_levels": [
+        {"effort": e} for e in ("low", "medium", "high", "xhigh", "max", "ultra")
+    ]}]}
+    caps = _parse_listing(WireAPI.OPENAI_RESPONSES, payload)[0].caps
+    assert caps.reasoning_efforts == ("low", "medium", "high", "xhigh", "max")
 
 
 def test_unrecognised_payload_yields_nothing():
@@ -100,7 +110,7 @@ class FakeClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def get(self, url, headers=None):
+    async def get(self, url, headers=None, **kwargs):
         if url in self.routes:
             return FakeResponse(self.routes[url])
         raise ConnectionRefusedError("no server")
@@ -211,3 +221,22 @@ async def test_probe_respects_its_timeout(catalog):
     result = await catalog.probe(ref, timeout=0.1)
     assert result.ok is False
     assert "timed out" in result.error
+
+
+
+async def test_a_llama_cpp_server_reports_the_window_it_serves(catalog, monkeypatch):
+    """/v1/models says nothing about the window, so a server started with
+    -c 262144 was treated as 32k and compacted every few turns."""
+    import httpx
+
+    routes = {
+        "http://localhost:8080/v1/models": {"data": [{"id": "qwen3.8-flash"}]},
+        "http://localhost:8080/props": {"default_generation_settings": {"n_ctx": 262144}},
+        "http://localhost:1234/v1/models": {"data": [{"id": "no-props-here"}]},
+    }
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient(routes))
+
+    found = await catalog.discover()
+    assert found["llama_cpp"][0].caps.context_window == 262144
+    # A server with no /props keeps the endpoint's default.
+    assert found["lmstudio"][0].caps.context_window == 32768

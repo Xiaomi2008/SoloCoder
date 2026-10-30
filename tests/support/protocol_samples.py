@@ -11,6 +11,8 @@ from typing import Any
 
 from openagent.runtime.events import (
     AgentResult,
+    BrowserFrame,
+    ContextUsage,
     ContextCompactionCompleted,
     ContextCompactionFailed,
     ContextCompactionStarted,
@@ -132,6 +134,16 @@ def sample_events() -> list[RuntimeEvent]:
         ),
         RunFailed(run_id="run_sample", error="provider exploded"),
         RunCancelled(run_id="run_sample", reason="user pressed stop"),
+        ContextUsage(run_id="run_sample", used_tokens=12170, context_window=262144, compact_at=203161),
+        ContextUsage(run_id="run_sample", used_tokens=900, context_window=None, compact_at=None),
+        BrowserFrame(
+            run_id="run_sample",
+            data="/9j/4AAQSkZJRgABAQ==",
+            url="https://example.com/search?q=中文",
+            title="Example — 中文",
+            width=1280,
+            height=800,
+        ),
     ]
 
 

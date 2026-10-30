@@ -61,7 +61,7 @@ all = [
 ]
 
 [project.scripts]
-openagent = "cli_coder:main"
+openagent = "cli_coder:run"
 
 [build-system]
 requires = ["hatchling"]

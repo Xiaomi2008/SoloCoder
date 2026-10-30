@@ -16,6 +16,7 @@ import pytest
 
 from openagent.core.session import Session
 from openagent.core.tool import ToolContext, ToolRegistry, tool
+from openagent.core.types import Message
 from openagent.runtime.events import (
     ContextCompactionStarted,
     MessageCompleted,
@@ -102,17 +103,19 @@ async def test_text_run_emits_the_documented_sequence():
 
     assert [e.type for e in events] == [
         "run_started",
+        "context_usage",
         "message_started",
         "message_delta",
         "message_delta",
         "message_completed",
+        "context_usage",
         "run_completed",
     ]
     result = events[-1].result
     assert result.output_text == "Hello"
     assert result.stop_reason == "end_turn"
     assert result.run_id == events[0].run_id
-    assert result.final_message_id == events[1].message_id
+    assert result.final_message_id == events[2].message_id
 
 
 async def test_tool_call_runs_and_reports_its_result():
@@ -222,6 +225,7 @@ async def test_provider_error_event_fails_the_run():
 
     assert [e.type for e in events] == [
         "run_started",
+        "context_usage",
         "message_started",
         "message_failed",
         "run_failed",
@@ -523,11 +527,13 @@ async def test_reasoning_arrives_before_the_answer_and_never_becomes_history():
 
     assert [e.type for e in events] == [
         "run_started",
+        "context_usage",
         "message_started",
         "reasoning_delta",
         "reasoning_delta",
         "message_delta",
         "message_completed",
+        "context_usage",
         "run_completed",
     ]
     assert [e.delta for e in events if isinstance(e, ReasoningDelta)] == ["think-1 ", "think-2 "]
@@ -565,3 +571,69 @@ async def test_run_helper_returns_the_result_and_raises_on_failure():
     bad = AgentRunner(ScriptedStreamProvider([error_turn("nope")]))
     with pytest.raises(RuntimeError, match="nope"):
         await bad.run("go")
+
+
+async def test_the_runner_compacts_against_its_context_window():
+    long_history = "word " * 3000
+    for window, compacts in ((1000, True), (None, False)):
+        session = Session()
+        for _ in range(4):
+            session.add_message(Message(role="user", content=long_history))
+            session.add_message(Message(role="assistant", content="ok"))
+        provider = ScriptedStreamProvider([text_turn("done")])
+        runner = AgentRunner(provider, session=session, context_window=window)
+
+        events = await collect(runner)
+
+        started = any(isinstance(e, ContextCompactionStarted) for e in events)
+        assert started is compacts, window
+
+
+
+class _SummaryProvider(ScriptedStreamProvider):
+    """Streams the run's turns; answers the summary request from ``summaries``."""
+
+    def __init__(self, turns, summaries):
+        super().__init__(turns)
+        self.summaries = list(summaries)
+        self.summary_kwargs: list[dict[str, Any]] = []
+
+    async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+        self.summary_kwargs.append(kwargs)
+        return Message(role="assistant", content=self.summaries.pop(0))
+
+
+def _long_session() -> Session:
+    session = Session()
+    for _ in range(4):
+        session.add_message(Message(role="user", content="word " * 3000))
+        session.add_message(Message(role="assistant", content="ok"))
+    return session
+
+
+async def test_an_empty_summary_is_retried_without_thinking():
+    provider = _SummaryProvider([text_turn("done")], ["", "the summary"])
+    session = _long_session()
+    runner = AgentRunner(provider, session=session, context_window=1000)
+
+    events = await collect(runner)
+
+    assert provider.summary_kwargs[1].get("reasoning_effort") == "none"
+    assert any(e.type == "context_compaction_completed" for e in events)
+    assert "the summary" in session.messages[0].text
+
+
+async def test_a_summary_that_stays_empty_fails_and_keeps_the_history():
+    """An empty summary replaced the history with nothing, reported no end,
+    and left the app on "compacting context" for good."""
+    provider = _SummaryProvider([text_turn("done")], ["", ""])
+    session = _long_session()
+    runner = AgentRunner(provider, session=session, context_window=1000)
+
+    events = await collect(runner)
+
+    types = [e.type for e in events]
+    assert "context_compaction_started" in types
+    assert "context_compaction_failed" in types
+    assert not any("Conversation summary:\n\n" == m.text for m in session.messages)
+    assert events[-1].type == "run_completed"

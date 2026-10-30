@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 try:
@@ -10,9 +11,27 @@ except ImportError:
     tiktoken = None
 
 
+_CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af"
+_FALLBACK_TOKEN = re.compile(rf"[{_CJK}]|[^\W{_CJK}]+|[^\w\s]")
+
+
 class _DeterministicFallbackEncoder:
+    """A token count without tiktoken, which is an optional dependency.
+
+    Words alone undercount: a BPE tokenizer splits ``build_solocoder_tools``
+    or a hash into several tokens, and this counted each as one, so the
+    history overflowed while the estimate said it fit. About four characters
+    a token is the usual rule for English and code; the larger of the two
+    estimates is kept. CJK characters count one each, which is about what
+    tokenizers spend on them; as ``\\w`` they ran together into one "word".
+    """
+
     def encode(self, text: str) -> list[str]:
-        return re.findall(r"\w+|[^\w\s]", text)
+        words = _FALLBACK_TOKEN.findall(text)
+        by_length = -(-len(text) // 4)
+        if len(words) >= by_length:
+            return words
+        return [text[i : i + 4] for i in range(0, len(text), 4)]
 
 
 def _get_encoder(model: str):
@@ -26,14 +45,19 @@ def _get_encoder(model: str):
         # Qwen models use similar tokenizer to cl100k_base
         return tiktoken.get_encoding("cl100k_base")
     if "claude" in model.lower() or "anthropic" in model.lower():
-        # Claude uses r5base, but we approximate with cl100k_base for simplicity
-        return (
-            tiktoken.get_encoding("r50base")
-            if hasattr(tiktoken, "get_encoding")
-            else tiktoken.get_encoding("cl100k_base")
-        )
+        # Claude's tokenizer is not public; cl100k_base is close enough. The
+        # "r50base" this asked for does not exist, and the ValueError dropped
+        # every Claude count to the character fallback.
+        return tiktoken.get_encoding("cl100k_base")
     # Default to cl100k_base as a reasonable approximation
     return tiktoken.get_encoding("cl100k_base")
+
+
+# What one image costs a vision model, roughly. Providers charge by size (a
+# 512px screenshot is ~250 tokens on most; a pasted photo 1-2k); this errs
+# high. Counting images as nothing let a session of pasted images and
+# screenshots overflow the window before compaction thought it was needed.
+IMAGE_TOKEN_ESTIMATE = 1000
 
 
 def count_tokens_for_messages(messages: list[dict], model: str = "gpt-4o") -> int:
@@ -69,11 +93,17 @@ def count_tokens_for_messages(messages: list[dict], model: str = "gpt-4o") -> in
                         if block_type == "text":
                             text_content = block.get("text", "")
                             total_tokens += len(encoder.encode(text_content))
+                        elif block_type in ("image_url", "image"):
+                            total_tokens += IMAGE_TOKEN_ESTIMATE
                         elif block_type in ("tool_use", "tool_result"):
                             # Count tool-related tokens (name, arguments, etc.)
                             for key, value in block.items():
                                 if isinstance(value, str):
                                     total_tokens += len(encoder.encode(value))
+                                elif isinstance(value, (dict, list)):
+                                    # A tool call's arguments: write_file's are
+                                    # the whole file, and they counted as nothing.
+                                    total_tokens += len(encoder.encode(json.dumps(value)))
 
             # Add ~3-4 tokens per message for role and structure overhead
             total_tokens += 4

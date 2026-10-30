@@ -26,6 +26,9 @@ from ..core.tool import tool
 _last_screenshot_size: tuple[int, int] | None = None
 _original_screenshot_size: tuple[int, int] | None = None
 _last_screenshot_origin: tuple[int, int] | None = None
+# The last capture's JPEG, base64. The agent loop attaches it to the next turn
+# as an image, so the model sees the screen however it called `screenshot`.
+_last_screenshot_base64: str | None = None
 _CORNER_SAFETY_MARGIN = 1
 _screen_capture_requested = False
 
@@ -180,6 +183,38 @@ def _normalize_image_coordinate(value: int | str, name: str) -> int:
     )
 
 
+def _parse_region(region: object) -> tuple[int, int, int, int]:
+    """``(x, y, width, height)`` from the shapes a model sends.
+
+    The schema asks for an array of four integers, and models still send
+    ``"[900, 100, 1200, 700]"``, ``"900,100,1200,700"`` or
+    ``{"x": …, "y": …, "width": …, "height": …}``; unpacking any of those
+    strings as a tuple failed with "too many values to unpack".
+    """
+    import json
+    import re
+
+    value = region
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            value = [int(n) for n in re.findall(r"-?\d+", value)]
+    if isinstance(value, dict):
+        value = [value.get(k) for k in ("x", "y", "width", "height")]
+    if isinstance(value, (list, tuple)) and len(value) == 4:
+        try:
+            x, y, w, h = (int(v) for v in value)
+        except (TypeError, ValueError):
+            pass
+        else:
+            if w > 0 and h > 0:
+                return x, y, w, h
+    raise ValueError(
+        f"region must be four integers [x, y, width, height] in screen points, got {region!r}"
+    )
+
+
 def _is_fail_safe_exception(pyautogui: object, exc: Exception) -> bool:
     fail_safe_exception = getattr(pyautogui, "FailSafeException", None)
     return fail_safe_exception is not None and isinstance(exc, fail_safe_exception)
@@ -225,7 +260,7 @@ def screenshot(
         _step_aside()
 
         if region:
-            x, y, capture_width, capture_height = region
+            x, y, capture_width, capture_height = _parse_region(region)
             img = pyautogui.screenshot(region=(x, y, capture_width, capture_height))
             original_size = (capture_width, capture_height)
             origin = (x, y)
@@ -257,9 +292,11 @@ def screenshot(
 
         # Store scaling factors for coordinate mapping (always, regardless of return_base64)
         global _last_screenshot_size, _original_screenshot_size, _last_screenshot_origin
+        global _last_screenshot_base64
         _last_screenshot_size = (img.width, img.height)
         _original_screenshot_size = original_size
         _last_screenshot_origin = origin
+        _last_screenshot_base64 = base64_data
 
         if return_base64:
             return base64_data
@@ -270,6 +307,37 @@ def screenshot(
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
     except Exception as e:
         return f"Error capturing screenshot: {e}"
+
+
+# The capture itself, without the thread hop: the action tools already run in
+# a worker thread and call it from there.
+_capture_screen = screenshot.__wrapped__
+
+# Long enough for a menu to open or a page to start redrawing; the reference
+# harnesses wait 0.5-2 s. A model that needs longer calls wait().
+_SETTLE_SECONDS = 0.6
+AFTER_ACTION_NOTE = "A screenshot taken after it is attached."
+
+
+def _then_look(message: str) -> str:
+    """``message`` plus a fresh capture of what the action did.
+
+    Every action is followed by a look, as in Anthropic's and OpenAI's
+    computer-use harnesses: without it the model spent a turn calling
+    screenshot after each step, or acted on a screen that had changed. The
+    runtime attaches the capture when the result carries
+    ``AFTER_ACTION_NOTE``, so a capture that failed attaches nothing stale.
+    """
+    time.sleep(_SETTLE_SECONDS)
+    shot = _capture_screen()
+    if shot.startswith("Error"):
+        return f"{message}. No screenshot after it: {shot}"
+    return f"{message}. {AFTER_ACTION_NOTE}"
+
+
+def last_screenshot_base64() -> str | None:
+    """The most recent screenshot as base64 JPEG, or None before the first."""
+    return _last_screenshot_base64
 
 
 def _scale_from_image_to_screen(image_x: int, image_y: int) -> tuple[int, int]:
@@ -362,7 +430,9 @@ def click(x: int, y: int, button: Literal["left", "right", "middle"] = "left") -
         button: Which mouse button to click. Default is 'left'.
 
     Returns:
-        Confirmation message with the actual screen coordinates clicked.
+        Confirmation message with the actual screen coordinates clicked. A
+        screenshot taken after the click is attached, so there is no need to
+        call screenshot() again; every action tool does the same.
 
     Example:
         >>> # Agent sees Chrome icon at image position (350, 278) in dock
@@ -388,7 +458,7 @@ def click(x: int, y: int, button: Literal["left", "right", "middle"] = "left") -
         if blocked:
             return blocked
         pyautogui.click(x=x, y=y, button=button)
-        return f"Clicked at ({x}, {y}) with {button} button"
+        return _then_look(f"Clicked at ({x}, {y}) with {button} button")
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
@@ -437,7 +507,7 @@ def double_click(x: int, y: int) -> str:
         if blocked:
             return blocked
         pyautogui.doubleClick(x=x, y=y)
-        return f"Double-clicked at ({x}, {y})"
+        return _then_look(f"Double-clicked at ({x}, {y})")
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
@@ -515,7 +585,7 @@ def type_text(text: str, interval: float = 0.01) -> str:
         else:
             pyautogui.write(text, interval=interval)
         preview = text[:50] + "..." if len(text) > 50 else text
-        return f"Typed: {preview}"
+        return _then_look(f"Typed: {preview}")
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
@@ -604,7 +674,7 @@ def key_combination(keys: str) -> str:
         if blocked:
             return blocked
         pyautogui.hotkey(*names)
-        return f"Pressed key combination: {'+'.join(names)}"
+        return _then_look(f"Pressed key combination: {'+'.join(names)}")
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
@@ -655,7 +725,7 @@ def move_mouse(x: int, y: int) -> str:
         if blocked:
             return blocked
         pyautogui.moveTo(x, y)
-        return f"Mouse moved to ({x}, {y})"
+        return _then_look(f"Mouse moved to ({x}, {y})")
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"
@@ -706,7 +776,7 @@ def scroll(x: int, y: int, clicks: int) -> str:
             return blocked
         pyautogui.scroll(clicks, x=x, y=y)
         direction = "up" if clicks > 0 else "down"
-        return f"Scrolled {abs(clicks)} {direction} at ({x}, {y})"
+        return _then_look(f"Scrolled {abs(clicks)} {direction} at ({x}, {y})")
 
     except ImportError:
         return "Error: pyautogui not installed. Install with: pip install pyautogui"

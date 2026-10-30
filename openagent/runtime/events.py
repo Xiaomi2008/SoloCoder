@@ -172,6 +172,42 @@ class ContextCompactionFailed:
     type: Literal["context_compaction_failed"] = "context_compaction_failed"
 
 
+@dataclass
+class ContextUsage:
+    """How full the model's context is, sent before each model turn and once
+    more before the run completes.
+
+    ``used_tokens`` is an estimate of what the next request carries: the
+    history, the system prompt and the tool schemas. ``compact_at`` is where
+    the history gets summarised. Both window fields are None when the model's
+    window is unknown.
+    """
+
+    run_id: str
+    used_tokens: int
+    context_window: int | None
+    compact_at: int | None
+    type: Literal["context_usage"] = "context_usage"
+
+
+@dataclass
+class BrowserFrame:
+    """What the agent's browser shows, for a client's live view of it.
+
+    Sent only while the page changes (a Chromium screencast), at most a few
+    per second, and only the newest one: a client that falls behind skips
+    frames rather than replaying them. Not part of the session.
+    """
+
+    run_id: str
+    data: str  # base64 JPEG
+    url: str
+    title: str
+    width: int
+    height: int
+    type: Literal["browser_frame"] = "browser_frame"
+
+
 RuntimeEvent = (
     RunStarted
     | RunCompleted
@@ -190,14 +226,18 @@ RuntimeEvent = (
     | ContextCompactionFailed
     | PermissionRequested
     | PermissionResolved
+    | ContextUsage
+    | BrowserFrame
 )
 
 
 __all__ = [
     "AgentResult",
+    "BrowserFrame",
     "ContextCompactionCompleted",
     "ContextCompactionFailed",
     "ContextCompactionStarted",
+    "ContextUsage",
     "MessageCompleted",
     "MessageDelta",
     "MessageFailed",

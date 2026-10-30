@@ -104,9 +104,8 @@ class BashManager:
                 raise ValueError(f"Working directory '{working_dir}' does not exist")
 
             # Start bash process using platform-appropriate executable
-            bash_exec = _get_bash_executable()
             process = subprocess.Popen(
-                [bash_exec],
+                [_get_bash_executable()],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

@@ -262,15 +262,18 @@ async def test_run_streams_the_documented_sequence(
     started, *events = await harness.run(connected, workdir, permission_mode="ask")
     assert [e.type for e in events] == [
         "run_started",
+        "context_usage",
         "message_started",
         "message_completed",
         "permission_requested",
         "permission_resolved",
         "tool_call_started",
         "tool_call_completed",
+        "context_usage",
         "message_started",
         "message_delta",
         "message_completed",
+        "context_usage",
         "run_completed",
     ]
     assert events[-1].result.stop_reason == "end_turn"
@@ -350,6 +353,42 @@ async def test_an_unknown_reasoning_effort_is_refused(connected: ServiceClient, 
         await connected.start_run("go", workdir, reasoning_effort="sideways")
     assert exc.value.code == ErrorCode.INVALID_PARAMS
     assert "reasoning_effort" in exc.value.message
+
+
+async def test_a_level_the_model_does_not_list_is_refused_up_front(harness: Harness, workdir: Path):
+    """The ChatGPT backend lists each model's levels and 400s the rest mid-run."""
+    from openagent.provider.model_ref import Capabilities, ModelRef
+
+    class ListedCatalog:
+        def get(self, key):
+            caps = Capabilities(tools=True, reasoning=True, reasoning_efforts=("low", "high"))
+            return ModelRef(model="gpt", provider="openai_oauth", wire_api="openai-responses", caps=caps)
+
+        async def discover(self):
+            pass
+
+        def all_models(self):
+            return []
+
+    settings = ServiceSettings(
+        socket_path=harness.sock_dir / "listed.sock",
+        tools=[echo],
+        provider_factory=harness.script([text_turn("ok")]),
+        discover_on_start=False,
+    )
+    service = AgentService(settings, catalog=ListedCatalog())  # type: ignore[arg-type]
+    await service.start()
+    try:
+        client = await harness.connect(service)
+        with pytest.raises(RpcError) as exc:
+            await client.start_run("go", workdir, model="openai_oauth/gpt", reasoning_effort="none")
+        assert exc.value.code == ErrorCode.INVALID_PARAMS
+        assert exc.value.data["supported"] == ["low", "high"]
+
+        await client.start_run("go", workdir, model="openai_oauth/gpt", reasoning_effort="high")
+        assert (await collect_events(client))[-1].type == "run_completed"
+    finally:
+        await service.stop()
 
 
 async def test_working_dir_reaches_the_tools(harness: Harness, tmp_path: Path):
@@ -524,6 +563,27 @@ async def test_allow_readonly_never_prompts_and_refuses_writes(harness: Harness,
 
 
 # ------------------------------------------------------------- cancellation
+
+
+async def test_run_permission_mode_changes_the_live_run(harness: Harness, workdir: Path):
+    """A mid-run Tools toggle must change the gate and the file scope together.
+
+    `run.start` fixes both; without this method the app could switch to Auto
+    while the built-in file tools kept their old scope.
+    """
+    service = await harness.serve(provider_factory=lambda ref: HangingProvider())
+    client = await harness.connect(service)
+    started = await client.start_run("go", workdir, permission_mode="ask")
+
+    changed = await client.set_permission_mode(started["run_id"], "allow_all")
+    assert changed["run_id"] == started["run_id"]
+    assert changed["permission_mode"] == "allow_all"
+
+    changed_back = await client.set_permission_mode(started["run_id"], "ask")
+    assert changed_back["permission_mode"] == "ask"
+
+    await client.cancel(started["run_id"])
+    await collect_events(client)
 
 
 async def test_cancel_ends_the_run_on_run_cancelled(harness: Harness, workdir: Path):
@@ -727,6 +787,66 @@ async def test_model_list_reports_policy_and_selection(connected: ServiceClient)
     assert data["policy"] == "local_first"
     assert "selected" in data
     assert {m["provider"] for m in data["models"]} >= {"lmstudio", "anthropic"}
+
+
+async def test_add_endpoint_discovers_and_updates_the_model_list(harness: Harness):
+    """Adding a base URL must persist the endpoint and show what it serves.
+
+    The model list is not a static catalog: the service discovers the server,
+    and the client's next `model.list` sees the new rows. Removing the endpoint
+    must make those rows disappear, not linger from the discovery cache.
+    """
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        request = await reader.readline()
+        while True:
+            header = await reader.readline()
+            if header in (b"\r\n", b"\n", b""):
+                break
+        body = json.dumps(
+            {"data": [{"id": "tiny-model", "meta": {"context_length": 8192}}]}
+        ).encode()
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode()
+            + b"Connection: close\r\n\r\n"
+            + body
+        )
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+        _ = request  # the path is /v1/models; no routing needed for this test
+
+    server = await asyncio.start_server(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        service = await harness.serve()
+        client = await harness.connect(service)
+
+        result = await client.add_endpoint(
+            "tiny", f"http://127.0.0.1:{port}/v1", local=True
+        )
+        assert result["endpoint"]["name"] == "tiny"
+        assert result["endpoint"]["base_url"] == f"http://127.0.0.1:{port}/v1"
+        assert result["discovery_error"] is None
+        assert [m["model"] for m in result["models"]] == ["tiny-model"]
+
+        keys = {
+            f"{m['provider']}/{m['model']}"
+            for m in (await client.models())["models"]
+        }
+        assert "tiny/tiny-model" in keys
+
+        assert await client.remove_endpoint("tiny") is True
+        keys = {
+            f"{m['provider']}/{m['model']}"
+            for m in (await client.models())["models"]
+        }
+        assert "tiny/tiny-model" not in keys
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 async def test_a_stored_default_that_names_no_row_is_not_reported(
@@ -948,3 +1068,30 @@ async def test_auth_login_is_refused_with_a_usable_hint(connected: ServiceClient
         await connected.call(Method.AUTH_LOGIN, {"provider": "anthropic"})
     assert exc.value.code == ErrorCode.NOT_IMPLEMENTED
     assert "openagent auth login" in exc.value.message
+
+
+async def test_a_run_compacts_against_the_models_own_window(
+    connected: ServiceClient, harness: Harness, workdir: Path, monkeypatch
+):
+    """Every model used to get the 128k default: a 32k local model overflowed
+    before compaction ran, and a 500k one was summarised at a fifth of its
+    window."""
+    from openagent.service import server as server_module
+
+    built: list[Any] = []
+
+    class Recording(server_module.AgentRunner):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(server_module, "AgentRunner", Recording)
+    events = await harness.run(connected, workdir, permission_mode="allow_all")
+
+    service = harness._services[0]
+    ref = await service._resolve_model(events[0]["model"])
+    assert built[0].context_window == ref.caps.context_window
+    assert built[0].max_output_tokens == ref.caps.max_output_tokens
+    usage = [e for e in events if getattr(e, "type", None) == "context_usage"]
+    assert usage and usage[-1].context_window == ref.caps.context_window
+    assert 0 < usage[-1].used_tokens < usage[-1].compact_at < ref.caps.context_window

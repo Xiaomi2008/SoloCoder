@@ -5,15 +5,19 @@
     "auth.login",
     "auth.logout",
     "auth.status",
+    "browser.show",
     "config.get",
     "config.set",
     "hello",
+    "model.add_endpoint",
     "model.list",
     "model.probe",
+    "model.remove_endpoint",
     "model.select",
     "permission.respond",
     "ping",
     "run.cancel",
+    "run.permission_mode",
     "run.start",
     "session.delete",
     "session.list",
@@ -252,6 +256,38 @@
         "run_id": "run_sample",
         "reason": "user pressed stop",
         "type": "run_cancelled"
+      }
+    },
+    {
+      "type": "context_usage",
+      "params": {
+        "run_id": "run_sample",
+        "used_tokens": 12170,
+        "context_window": 262144,
+        "compact_at": 203161,
+        "type": "context_usage"
+      }
+    },
+    {
+      "type": "context_usage",
+      "params": {
+        "run_id": "run_sample",
+        "used_tokens": 900,
+        "context_window": null,
+        "compact_at": null,
+        "type": "context_usage"
+      }
+    },
+    {
+      "type": "browser_frame",
+      "params": {
+        "run_id": "run_sample",
+        "data": "/9j/4AAQSkZJRgABAQ==",
+        "url": "https://example.com/search?q=中文",
+        "title": "Example — 中文",
+        "width": 1280,
+        "height": 800,
+        "type": "browser_frame"
       }
     }
   ]

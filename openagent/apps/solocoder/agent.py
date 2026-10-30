@@ -67,6 +67,10 @@ def build_solocoder_tools(
         web_fetch,
     ]
 
+    from openagent.tools.recall import recall_output
+
+    tools.append(recall_output)
+
     if computer_use:
         from openagent.tools.computer_use import (
             click,
@@ -75,6 +79,7 @@ def build_solocoder_tools(
             key_combination,
             move_mouse,
             scroll,
+            type_text,
             wait,
         )
 
@@ -82,6 +87,7 @@ def build_solocoder_tools(
             screenshot,
             click,
             double_click,
+            type_text,
             key_combination,
             move_mouse,
             scroll,
@@ -93,6 +99,13 @@ def build_solocoder_tools(
         from openagent.tools.browser import browser_tools
 
         tools.extend(browser_tools)
+
+    # Offered only with a keyset: a tool that can only fail is prompt the
+    # model reads for nothing.
+    from openagent.tools.ebay import ebay_credentials, ebay_search
+
+    if ebay_credentials() is not None:
+        tools.append(ebay_search)
 
     return tools
 
