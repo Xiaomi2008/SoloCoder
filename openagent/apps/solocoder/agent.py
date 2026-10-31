@@ -40,7 +40,6 @@ def build_solocoder_tools(
     notebooks: bool = True,
     browser_use: bool = False,
     git: bool = True,
-    http: bool = True,
 ) -> list[Callable[..., Any]]:
     """Build the default SoloCoder tool set.
 
@@ -52,7 +51,6 @@ def build_solocoder_tools(
             token, so small local models leave out tools they rarely need.
         git: Include git_status, git_diff, git_log and git_commit. bash covers git too, but the
             read-only git tools run without an approval prompt.
-        http: Include http_request, for calling APIs (web_fetch reads pages).
     """
     tools: list[Callable[..., Any]] = [
         read,
@@ -82,11 +80,6 @@ def build_solocoder_tools(
         from openagent.tools.git import git_tools
 
         tools.extend(git_tools)
-
-    if http:
-        from openagent.tools.http import http_request
-
-        tools.append(http_request)
 
     if computer_use:
         from openagent.tools.computer_use import (
