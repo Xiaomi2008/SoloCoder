@@ -36,7 +36,11 @@ from openagent.tools import (
 
 
 def build_solocoder_tools(
-    computer_use: bool = True, notebooks: bool = True, browser_use: bool = False
+    computer_use: bool = True,
+    notebooks: bool = True,
+    browser_use: bool = False,
+    git: bool = True,
+    http: bool = True,
 ) -> list[Callable[..., Any]]:
     """Build the default SoloCoder tool set.
 
@@ -46,6 +50,9 @@ def build_solocoder_tools(
             the agent's own Chromium window.
         notebooks: Include notebook_edit. Every tool schema is prompt the model reads before the first
             token, so small local models leave out tools they rarely need.
+        git: Include git_status, git_diff, git_log and git_commit. bash covers git too, but the
+            read-only git tools run without an approval prompt.
+        http: Include http_request, for calling APIs (web_fetch reads pages).
     """
     tools: list[Callable[..., Any]] = [
         read,
@@ -70,6 +77,16 @@ def build_solocoder_tools(
     from openagent.tools.recall import recall_output
 
     tools.append(recall_output)
+
+    if git:
+        from openagent.tools.git import git_tools
+
+        tools.extend(git_tools)
+
+    if http:
+        from openagent.tools.http import http_request
+
+        tools.append(http_request)
 
     if computer_use:
         from openagent.tools.computer_use import (

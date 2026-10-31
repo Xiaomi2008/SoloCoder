@@ -71,7 +71,7 @@ def extract_session_id(result: str) -> str | None:
     print(f"   Result: {result.strip()}")
 
     print("\n5. Testing 'bash_background' tool (NEW)...")
-    session_id_msg = bash_background("ls -la")  # No await - tools are sync!
+    session_id_msg = asyncio.run(bash_background("ls -la"))
     print(f"   Message: {session_id_msg}")
 
     # Extract actual session ID from message
@@ -84,7 +84,7 @@ def extract_session_id(result: str) -> str | None:
         print(f"   Output:\n{output[:500]}")
 
         print("\n7. Testing 'kill_shell' tool...")
-        kill_result = kill_shell(session_id)  # No await!
+        kill_result = asyncio.run(kill_shell(session_id))
         print(f"   Result: {kill_result}")
 
     # ========================================================================

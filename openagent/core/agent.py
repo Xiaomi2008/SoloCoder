@@ -234,15 +234,22 @@ class Agent:
                     fn = tool(fn)
                 self.tool_registry.register(fn)
 
-        # Integrate MCP client if provided - discover and register MCP tools
+        # MCP tools are discovered on the first run, not here: asyncio.run()
+        # fails when the agent is built inside a running loop, and outside one
+        # it connects the client on a loop that closes as soon as it returns.
         self._mcp_client = mcp_client
-        if mcp_client is not None:
-            asyncio.run(self._integrate_mcp_tools())
+        self._mcp_pending = mcp_client is not None
 
     @property
     def tool_context(self) -> ToolContext:
         """What tools get for this session (the model never sees it)."""
         return ToolContext(working_dir=self.working_dir)
+
+    async def _ensure_mcp_tools(self) -> None:
+        """Connect the MCP client and register its tools, once."""
+        if self._mcp_pending:
+            self._mcp_pending = False
+            await self._integrate_mcp_tools()
 
     async def _integrate_mcp_tools(self) -> None:
         """Discover and integrate MCP tools from the client."""
@@ -269,6 +276,7 @@ class Agent:
 
     async def run(self, user_input: str, **kwargs: Any) -> str:
         self._logger.run_start(user_input)
+        await self._ensure_mcp_tools()
         if len(self.tool_registry) == 0:
             runtime_agent = RuntimeAgent(
                 provider=self.provider,
@@ -308,6 +316,7 @@ class Agent:
             The agent's response text
         """
         self._logger.run_start(text or "Image analysis")
+        await self._ensure_mcp_tools()
 
         # Add multimodal input to session
         if image_data:

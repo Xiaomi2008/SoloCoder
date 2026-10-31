@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -639,7 +638,7 @@ def sed(
 
 
 @tool
-def bash_background(
+async def bash_background(
     command: str,
     working_dir: str | None = None,
     tool_context: ToolContext | None = None,
@@ -662,12 +661,9 @@ def bash_background(
         session_dir, denied = _scope(ctx, working_dir)
         if denied:
             return denied
-        # Run the async function in a new event loop if needed
-        session_id = asyncio.run(
-            manager.start_session(
-                command=command,
-                working_dir=str(session_dir),
-            )
+        session_id = await manager.start_session(
+            command=command,
+            working_dir=str(session_dir),
         )
         return f"Started bash session '{session_id}' in '{session_dir or '.'}'. Use bash_output to retrieve output."
     except Exception as e:
@@ -701,7 +697,7 @@ def bash_output(
 
 
 @tool
-def kill_shell(
+async def kill_shell(
     session_id: str,
 ) -> str:
     """Terminate a running background bash shell.
@@ -716,9 +712,7 @@ def kill_shell(
 
     try:
         manager = get_bash_manager()
-        # Run async method synchronously using asyncio.run
-        result = asyncio.run(manager.kill_session(session_id.strip()))
-        return result
+        return await manager.kill_session(session_id.strip())
     except Exception as e:
         return f"Error killing shell: {e}"
 
