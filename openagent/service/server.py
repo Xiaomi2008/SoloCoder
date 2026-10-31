@@ -1055,6 +1055,8 @@ class AgentService:
             computer_use=self.settings.computer_use,
             notebooks=not local,
             browser_use=self.settings.browser_use,
+            git=not local,
+            http=not local,
         )
 
     async def _tool_list(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:

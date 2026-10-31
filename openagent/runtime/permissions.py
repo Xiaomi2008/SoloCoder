@@ -35,6 +35,9 @@ TOOL_RISK: dict[str, Risk] = {
     "screenshot": "read",
     "skill": "read",
     "slash_command": "read",
+    "git_status": "read",
+    "git_diff": "read",
+    "git_log": "read",
     # Mutating files inside the session scope.
     "write": "write",
     "edit": "write",
@@ -43,6 +46,7 @@ TOOL_RISK: dict[str, Risk] = {
     "sed": "write",
     "todo_write": "write",
     "todo_update": "write",
+    "git_commit": "write",
     # Arbitrary compute.
     "bash": "exec",
     "bash_background": "exec",
@@ -51,6 +55,7 @@ TOOL_RISK: dict[str, Risk] = {
     "web_search": "network",
     "web_fetch": "network",
     "ebay_search": "network",
+    "http_request": "network",
     # Controlling the real desktop, outside any sandbox.
     "click": "gui",
     "double_click": "gui",
@@ -99,14 +104,18 @@ def tool_risk(name: str) -> Risk:
 
 def call_risk(name: str, arguments: dict[str, Any] | None = None) -> Risk:
     """Risk of one call. Browser actions are judged by what they act on —
-    a link is a navigation, a payment form's submit is not; every other tool
-    by its name."""
+    a link is a navigation, a payment form's submit is not; an HTTP request by
+    its method; every other tool by its name."""
     if name.startswith("browser_"):
         from openagent.tools.browser import call_risk as browser_call_risk
 
         risk = browser_call_risk(name, arguments or {})
         if risk is not None:
             return risk  # type: ignore[return-value]
+    if name == "http_request":
+        # A GET reads; a POST or DELETE can change or send something remotely.
+        method = str((arguments or {}).get("method") or "GET").upper()
+        return "network" if method in ("GET", "HEAD") else "exec"
     return tool_risk(name)
 
 

@@ -5,7 +5,8 @@ This module exports all available built-in tools that can be used with the Agent
 Tools are organized into categories:
 - File Operations: read, write, edit, notebook_edit, glob, grep
 - Shell & Process Management: bash (bash_background, bash_output, kill_shell require agent integration)
-- Web & Search: web_search, web_fetch
+- Web & Search: web_search, web_fetch, http_request
+- Git: git_status, git_diff, git_log, git_commit
 - Text Processing: awk, sed
 - Computer Use: screenshot, click, type_text, key_combination (macOS GUI automation)
 - User Interaction: ask_user_question (requires agent integration)
@@ -43,6 +44,8 @@ from .builtin import (
     web_search,
     write,
 )
+from .git import git_commit, git_diff, git_log, git_status
+from .http import http_request
 from .computer_use import (
     click,
     double_click,
@@ -75,6 +78,12 @@ __all__ = [
     # Web & search (fully implemented)
     "web_search",
     "web_fetch",
+    "http_request",
+    # Git
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_commit",
     # Computer use (macOS GUI automation with Qwen3.5 vision)
     "screenshot",
     "click",
