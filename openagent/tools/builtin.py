@@ -846,17 +846,23 @@ def web_search(
         return f"Search configuration error: {e}"
 
 
+#: Response headers worth the tokens; the rest is noise to the model.
+_FETCH_HEADERS = ("content-type", "content-length", "last-modified", "retry-after", "www-authenticate")
+_FETCH_MAX_CHARS = 5000
+
+
 @tool
 def web_fetch(
     url: str,
 ) -> str:
-    """Fetch and read the contents of a URL.
+    """Fetch a URL: the status line, key headers, then the content as text.
 
     Args:
         url: URL to fetch
 
     Returns:
-        Page content as text, or error message if fetch fails
+        Status and headers, then the page text (HTML tags removed) or raw body;
+        an error status still shows the body, which usually says what went wrong
     """
     try:
         import httpx  # noqa: F401
@@ -864,39 +870,28 @@ def web_fetch(
         return "Error: Please install httpx (pip install httpx)"
 
     try:
-        response = httpx.get(url, timeout=10.0)
-        response.raise_for_status()
-
-        # Try to detect encoding
-        content_type = response.headers.get("content-type", "")
-        if "text/html" in content_type:
-            import re as regex_module
-
-            # Remove script and style tags
-            cleaned = regex_module.sub(
-                r"<script.*?</script>",
-                "",
-                response.text,
-                flags=regex_module.IGNORECASE | regex_module.DOTALL,
-            )
-            cleaned = regex_module.sub(
-                r"<style.*?</style>",
-                "",
-                cleaned,
-                flags=regex_module.IGNORECASE | regex_module.DOTALL,
-            )
-            # Remove HTML tags
-            text = regex_module.sub(r"<[^>]+>", "", cleaned)
-            return f"Content from {url}:\n\n{text[:5000]}"  # Limit to 5000 chars
-        else:
-            return f"Content from {url}:\n\n{response.text[:5000]}"
-
+        response = httpx.get(url, timeout=10.0, follow_redirects=True)
     except httpx.TimeoutException:
         return "Error: Request timed out."
-    except httpx.HTTPStatusError as e:
-        return f"Error: HTTP {e.response.status_code} - {e.response.reason_phrase}"
     except Exception as e:
         return f"Fetch failed: {e}"
+
+    status = f"HTTP {response.status_code} {response.reason_phrase}"
+    if str(response.url) != url:
+        status += f" ({response.url})"
+    lines = [status]
+    lines += [f"{name}: {response.headers[name]}" for name in _FETCH_HEADERS if name in response.headers]
+
+    text = response.text
+    if "text/html" in response.headers.get("content-type", ""):
+        text = re.sub(r"<script.*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"<style.*?</style>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"<[^>]+>", "", text)
+    if len(text) > _FETCH_MAX_CHARS:
+        text = text[:_FETCH_MAX_CHARS] + f"\n\n[cut at {_FETCH_MAX_CHARS:,} of {len(text):,} characters]"
+    if text.strip():
+        lines += ["", text]
+    return "\n".join(lines)
 
 
 # ============================================================================

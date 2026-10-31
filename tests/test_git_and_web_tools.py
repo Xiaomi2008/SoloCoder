@@ -1,4 +1,4 @@
-"""Tools ported from PR #10: git, http_request, async background shells, lazy MCP."""
+"""Git tools, web_fetch, async background shells, lazy MCP setup."""
 
 from __future__ import annotations
 
@@ -10,11 +10,9 @@ import pytest
 from openagent.core.agent import Agent
 from openagent.core.tool import ToolContext, ToolRegistry
 from openagent.core.types import ToolUseBlock
-from openagent.runtime.permissions import call_risk, tool_risk
-from openagent.tools import http as http_module
-from openagent.tools.builtin import bash_background, bash_output, kill_shell
+from openagent.runtime.permissions import tool_risk
+from openagent.tools.builtin import bash_background, bash_output, kill_shell, web_fetch
 from openagent.tools.git import git_commit, git_diff, git_log, git_status
-from openagent.tools.http import http_request
 from tests.support.streaming_provider import ScriptedStreamProvider
 
 
@@ -75,62 +73,67 @@ def test_read_only_git_tools_need_no_approval():
     assert tool_risk("git_commit") == "write"
 
 
-# --------------------------------------------------------------------- http
+# ---------------------------------------------------------------- web_fetch
 
 
 @pytest.fixture
 def served(monkeypatch):
-    """Route http_request through a mock transport; returns the requests seen."""
-    seen: list[httpx.Request] = []
+    """Route web_fetch through a mock transport."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        if request.url.path == "/moved":
-            return httpx.Response(302, headers={"location": "http://10.0.0.1/admin"})
-        return httpx.Response(201, json={"ok": True}, headers={"x-noise": "1"})
+        path = request.url.path
+        if path == "/old":
+            return httpx.Response(301, headers={"location": "https://example.com/new"})
+        if path == "/new":
+            return httpx.Response(
+                200,
+                html="<html><style>p{}</style><script>x()</script><p>Hello <b>page</b></p></html>",
+                headers={"x-noise": "1", "last-modified": "Wed, 01 Jan 2026 00:00:00 GMT"},
+            )
+        if path == "/limited":
+            return httpx.Response(429, json={"error": "slow down"}, headers={"retry-after": "30"})
+        return httpx.Response(200, text="x" * 6000)
 
-    real = httpx.AsyncClient
     monkeypatch.setattr(
-        http_module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
-    )
-    return seen
-
-
-async def test_http_request_sends_method_headers_and_body(served):
-    result = await http_request(
-        "https://api.example.com/items", method="post", headers={"X-Key": "k"}, body='{"a": 1}'
+        httpx, "get", lambda url, **kw: httpx.Client(transport=httpx.MockTransport(handler)).get(url, **kw)
     )
 
-    assert result.startswith("HTTP 201 Created")
-    assert "content-type: application/json" in result and "x-noise" not in result
-    assert '{"ok":true}' in result
-    request = served[0]
-    assert (request.method, request.headers["x-key"], request.content) == ("POST", "k", b'{"a": 1}')
+
+def test_web_fetch_shows_status_and_key_headers_then_text(served):
+    result = web_fetch("https://example.com/new")
+
+    lines = result.splitlines()
+    assert lines[0] == "HTTP 200 OK"
+    assert "content-type: text/html; charset=utf-8" in lines
+    assert "last-modified: Wed, 01 Jan 2026 00:00:00 GMT" in lines
+    assert "x-noise" not in result
+    assert lines[-1] == "Hello page"
 
 
-async def test_http_request_does_not_follow_a_redirect_into_the_private_network(served):
-    result = await http_request("https://api.example.com/moved")
-    assert result.startswith("HTTP 302")
-    assert "location: http://10.0.0.1/admin" in result
-    assert len(served) == 1
+def test_web_fetch_follows_redirects_and_says_where_it_landed(served):
+    """It used to stop at the redirect and report it as an error."""
+    result = web_fetch("https://example.com/old")
+    assert result.splitlines()[0] == "HTTP 200 OK (https://example.com/new)"
+    assert "Hello page" in result
 
 
-@pytest.mark.parametrize("url", ["http://192.168.1.1/", "http://10.0.0.5/x", "file:///etc/passwd", "http://nas.local/"])
-async def test_http_request_refuses_private_and_non_http_urls(served, url):
-    assert (await http_request(url)).startswith("Error")
-    assert not served
+def test_web_fetch_returns_the_body_of_an_error_status(served):
+    result = web_fetch("https://example.com/limited")
+    assert result.startswith("HTTP 429 Too Many Requests")
+    assert "retry-after: 30" in result
+    assert "slow down" in result
 
 
-async def test_http_request_rejects_bad_input(served):
-    assert (await http_request("https://api.example.com", method="TRACE")).startswith("Error")
-    assert (await http_request("https://api.example.com", body="x")).startswith("Error")
-    assert not served
+def test_web_fetch_cuts_long_content(served):
+    result = web_fetch("https://example.com/big")
+    assert "[cut at 5,000 of 6,000 characters]" in result
 
 
-def test_http_request_risk_follows_the_method():
-    assert call_risk("http_request", {"url": "https://x"}) == "network"
-    assert call_risk("http_request", {"method": "head"}) == "network"
-    assert call_risk("http_request", {"method": "DELETE"}) == "exec"
+def test_web_fetch_needs_no_approval_and_http_request_is_gone():
+    import openagent.tools as tools
+
+    assert tool_risk("web_fetch") == "network"
+    assert not hasattr(tools, "http_request")
 
 
 # --------------------------------------------------------- background shells
