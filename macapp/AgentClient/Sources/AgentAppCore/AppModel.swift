@@ -25,17 +25,45 @@ import Foundation
 @MainActor
 public final class AppModel: ObservableObject {
     @Published public var transcript = Transcript()
+    /// How full the conversation is, from the last `context_usage` (or the
+    /// estimate `session.load` returns). Nil for a new, empty conversation.
+    @Published public var contextUsed: Int?
+    /// Where the service compacts, from the last run. Nil before one.
+    @Published public var compactAt: Int?
+    private var runContextWindow: Int?
     /// Mirrored from the transcript so `.sheet(item:)` has an `Identifiable`
     /// value to present.
     @Published public var promptToAnswer: PermissionRequest?
     @Published public var modelRows: [ModelRow] = []
+    /// The agent's browser, live. Observed by the panel alone — see its type.
+    public let browserPanel = BrowserPanelModel()
     @Published public var modelPolicy = ""
     @Published public var sessions: [SessionRow] = []
     /// The model the next run asks for, `""` meaning "the router's choice".
     /// Remembered between launches, and validated against the model table the
     /// first time it loads — see `restorableModel`.
     @Published public var selectedModel = "" {
-        didSet { Self.store(selectedModel, forKey: Self.modelKey) }
+        didSet {
+            Self.store(selectedModel, forKey: Self.modelKey)
+            clampEffort()
+        }
+    }
+
+    /// The thinking levels the selected model takes: its own list when the
+    /// service has one (the ChatGPT backend refuses anything else with a 400),
+    /// otherwise the generic levels.
+    public var availableEfforts: [ReasoningEffort] {
+        let listed = modelRows.first { $0.key == selectedModel }?.caps.reasoningEfforts ?? []
+        let efforts = ReasoningEffort.allCases.filter { listed.contains($0.rawValue) }
+        return efforts.isEmpty ? ReasoningEffort.generic : efforts
+    }
+
+    /// A remembered level the newly chosen model cannot take falls back to its
+    /// default, rather than failing the next run.
+    private func clampEffort() {
+        if let effort = reasoningEffort, !availableEfforts.contains(effort) {
+            reasoningEffort = nil
+        }
     }
     /// The scope the agent works in, remembered between launches.
     ///
@@ -56,8 +84,31 @@ public final class AppModel: ObservableObject {
     /// What a risky tool may do, remembered between launches. `ask` is the
     /// default and the stored value is only ever what the user picked in the
     /// toolbar, which is on screen the whole time it is in force.
+    ///
+    /// `.allowAll` is the unattended mode: the run starts with a gate that never
+    /// asks, and a mode switched to it mid-run is enforced here too — a
+    /// `permission_requested` is answered immediately instead of opening the
+    /// sheet. It is not an OS sandbox; the built-in file tools are scoped to the
+    /// working directory, but shell commands are not.
     @Published public var permissionMode: PermissionMode = .ask {
-        didSet { UserDefaults.standard.set(permissionMode.rawValue, forKey: Self.modeKey) }
+        didSet {
+            UserDefaults.standard.set(permissionMode.rawValue, forKey: Self.modeKey)
+            let mode = permissionMode
+            // A run's gate and file-tool scope are fixed at `run.start`; the
+            // service's `run.permission_mode` changes both for the live run.
+            // Without it, switching to Auto mid-run would only answer prompts
+            // while the built-in file tools kept their old scope.
+            if let client, let runId = transcript.runId, transcript.state.isRunning, runId != "…" {
+                Task {
+                    do {
+                        try await client.setPermissionMode(runId: runId, permissionMode: mode)
+                    } catch {
+                        banner = "the permission mode did not reach the service: \(Self.describe(error))"
+                    }
+                }
+            }
+            autoAnswerIfNeeded()
+        }
     }
     /// How much the model may think before answering. `nil` means "model
     /// decides", which sends nothing — and on a reasoning model that default is
@@ -67,26 +118,89 @@ public final class AppModel: ObservableObject {
     @Published public var reasoningEffort: ReasoningEffort? = nil {
         didSet { Self.store(reasoningEffort?.rawValue, forKey: Self.effortKey) }
     }
+    /// Whether the service exposes the macOS GUI tools (`screenshot`, `click`,
+    /// ...). Off by default: every tool schema is prompt the model reads before
+    /// its first token, and these tools drive the machine a person is using.
+    /// Remembered, because it is a choice about what the agent may do, not a
+    /// per-prompt setting.
+    ///
+    /// Changing it restarts the service: the tool set is fixed when `serve`
+    /// starts, so a flag can only be passed by a new process. The conversation
+    /// in the window survives the restart; the connection and any run do not.
+    @Published public var computerUse = false {
+        didSet {
+            UserDefaults.standard.set(computerUse, forKey: Self.computerUseKey)
+            guard computerUse != oldValue, client != nil else { return }
+            Task { await restartService() }
+        }
+    }
+    /// Whether the service exposes the browser tools (`browser_navigate`,
+    /// `browser_click`, ...), which drive the agent's own Chromium window — a
+    /// separate profile, not the user's browser. A launch flag, like
+    /// `computerUse`, so changing it restarts the service the same way.
+    @Published public var browserUse = false {
+        didSet {
+            UserDefaults.standard.set(browserUse, forKey: Self.browserUseKey)
+            guard browserUse != oldValue, client != nil else { return }
+            Task { await restartService(changed: "browser use", on: browserUse) }
+        }
+    }
+    /// Whether the agent's browser keeps its profile between runs, so a site
+    /// the user signed into by hand stays signed in. Off by default: a
+    /// remembered session is something a misled agent can act with.
+    @Published public var browserRemembersSignIns = false {
+        didSet {
+            UserDefaults.standard.set(browserRemembersSignIns, forKey: Self.browserProfileKey)
+            guard browserRemembersSignIns != oldValue, client != nil, browserUse else { return }
+            Task { await restartService(changed: "remembered browser sign-ins", on: browserRemembersSignIns) }
+        }
+    }
+    /// Drive the installed Google Chrome instead of Playwright's Chrome for
+    /// Testing — the ordinary browser, with a profile of its own, never the
+    /// user's.
+    @Published public var browserUsesChrome = false {
+        didSet {
+            UserDefaults.standard.set(browserUsesChrome, forKey: Self.browserChromeKey)
+            guard browserUsesChrome != oldValue, client != nil, browserUse else { return }
+            Task { await restartService(changed: "using Google Chrome", on: browserUsesChrome) }
+        }
+    }
     @Published public var status = "not connected"
     @Published public var busy = false
     @Published public var connected = false
+    /// True when there is an actual client, not merely a preview's painted
+    /// "connected" state. The preview sets `connected` for its visuals and has
+    /// no service; actions that need the socket must use this instead.
+    public var serviceAvailable: Bool { connected && client != nil }
     /// An error to show. Kept separate from `notice`: an informational line
     /// that pops a modal titled "the service said no" teaches the user that
     /// alerts here are noise.
     @Published public var banner: String?
     /// An informational line for the status bar.
     @Published public var notice: String?
+    /// Whether the ⌘K command palette is showing. It is view state, but it
+    /// lives here because the menu command that opens it belongs to the app
+    /// scene, which has the model and not the view.
+    @Published public var paletteOpen = false
 
     public private(set) var sessionId: String?
     private let sidecar = Sidecar()
     private var client: AgentServiceClient?
     private var streamTask: Task<Void, Never>?
     private var terminalTypes: Set<String> = Wire.terminalEventTypes
+    /// Requests already answered by auto mode. A prompt can be applied again by
+    /// the next non-delta event while the server still waits, so the id is the
+    /// guard against a second `permission.respond`.
+    private var autoAnsweredRequests: Set<String> = []
 
     private static let workingDirKey = "openagent.workingDir"
     private static let modelKey = "openagent.model"
     private static let modeKey = "openagent.permissionMode"
     private static let effortKey = "openagent.reasoningEffort"
+    private static let computerUseKey = "openagent.computerUse"
+    private static let browserUseKey = "openagent.browserUse"
+    private static let browserProfileKey = "openagent.browserRemembersSignIns"
+    private static let browserChromeKey = "openagent.browserUsesChrome"
 
     /// Store a choice, and remove the key when the choice is "no choice" — a
     /// stored empty string and no key at all mean the same thing, and only one
@@ -144,6 +258,10 @@ public final class AppModel: ObservableObject {
         selectedModel = Self.restorableModel(stored.string(forKey: Self.modelKey), in: [])
         permissionMode = Self.restorableMode(stored.string(forKey: Self.modeKey))
         reasoningEffort = Self.restorableEffort(stored.string(forKey: Self.effortKey))
+        computerUse = stored.bool(forKey: Self.computerUseKey)
+        browserUse = stored.bool(forKey: Self.browserUseKey)
+        browserRemembersSignIns = stored.bool(forKey: Self.browserProfileKey)
+        browserUsesChrome = stored.bool(forKey: Self.browserChromeKey)
     }
 
     /// A non-bundled app has no Console entry that a developer finds quickly, so
@@ -180,28 +298,60 @@ public final class AppModel: ObservableObject {
             self?.stop()
         }
 
-        Task {
-            do {
-                try await sidecar.start()
-                let client = AgentServiceClient(
-                    endpoint: ServiceEndpoint(socketPath: sidecar.socketPath, clientName: "solocoder-app")
-                )
-                self.client = client
-                let info = try await client.connect()
-                terminalTypes = await client.terminalEventTypes
+        Task { await connectService() }
+    }
+
+    /// Apply a setting that is fixed at service launch.
+    ///
+    /// The tool set is decided when `serve` starts, so a new flag means a new
+    /// process. A run in flight is left alone: toggling a setting must not
+    /// silently cancel work. The banner says what to do instead.
+    public func restartService() async {
+        await restartService(changed: "computer use", on: computerUse)
+    }
+
+    func restartService(changed setting: String, on: Bool) async {
+        guard client != nil else { return }
+        if busy {
+            banner = "stop the run before changing \(setting)"
+            return
+        }
+        stop()
+        await connectService()
+        if connected {
+            notice = "\(setting) is now \(on ? "on" : "off") — service restarted"
+        }
+    }
+
+    private func connectService() async {
+        do {
+            try await sidecar.start(
+                computerUse: computerUse, browserUse: browserUse,
+                browserProfile: browserUse && browserRemembersSignIns,
+                browserChrome: browserUse && browserUsesChrome
+            )
+            let client = AgentServiceClient(
+                endpoint: ServiceEndpoint(socketPath: sidecar.socketPath, clientName: "solocoder-app")
+            )
+            self.client = client
+            let info = try await client.connect()
+            terminalTypes = await client.terminalEventTypes
+            // A restart keeps the conversation on screen. A fresh launch has
+            // no turns and gets the transcript built from the new connection.
+            if transcript.turns.isEmpty {
                 transcript = Transcript(terminalTypes: terminalTypes)
-                connected = true
-                status = "\(info.server) \(info.serverVersion) · protocol \(info.protocolVersion)"
-                banner = nil
-                self.log("connected: \(self.status) socket=\(self.sidecar.socketPath)")
-                consume(await client.events())
-                await refreshModels()
-                await refreshSessions()
-            } catch {
-                status = "not connected"
-                banner = Self.describe(error)
-                self.log("start failed: \(Self.describe(error))")
             }
+            connected = true
+            status = "\(info.server) \(info.serverVersion) · protocol \(info.protocolVersion)"
+            banner = nil
+            self.log("connected: \(self.status) socket=\(self.sidecar.socketPath) computer_use=\(self.computerUse)")
+            consume(await client.events())
+            await refreshModels()
+            await refreshSessions()
+        } catch {
+            status = "not connected"
+            banner = Self.describe(error)
+            self.log("start failed: \(Self.describe(error))")
         }
     }
 
@@ -209,6 +359,7 @@ public final class AppModel: ObservableObject {
         streamTask?.cancel()
         streamTask = nil
         sidecar.stop()
+        client = nil
         connected = false
         status = "not connected"
     }
@@ -274,6 +425,19 @@ public final class AppModel: ObservableObject {
     }
 
     private func applyEvent(_ event: AgentEvent) {
+        if case .contextUsage(let usage) = event {
+            // Twice a turn and not conversation: no flush, no transcript publish.
+            contextUsed = usage.usedTokens
+            compactAt = usage.compactAt
+            runContextWindow = usage.contextWindow
+            return
+        }
+        if case .browserFrame(let frame) = event {
+            // Not the conversation, and not a reason to flush the deltas or
+            // republish the transcript four times a second.
+            browserPanel.show(frame)
+            return
+        }
         if Self.isDelta(event) {
             pendingDeltas.append(event)
             if flushTask == nil {
@@ -287,7 +451,16 @@ public final class AppModel: ObservableObject {
         flushDeltas()
         transcript.apply(event)
         transcriptPublishes += 1
+        let hadPrompt = promptToAnswer != nil
         promptToAnswer = transcript.pendingPermission
+        autoAnswerIfNeeded()
+        // The computer-use tools hide this app before they look or act, so its
+        // window neither covers the screen nor takes the agent's typing. A
+        // prompt hidden with it would wait forever, and a finished run's answer
+        // belongs on screen.
+        if (!hadPrompt && promptToAnswer != nil && permissionMode != .allowAll) || event.isTerminal {
+            Self.revealIfHidden()
+        }
         if event.isTerminal {
             busy = false
             // The sidebar lists what is on disk, and this run has just put a
@@ -352,11 +525,13 @@ public final class AppModel: ObservableObject {
     ///
     /// Order is the order of what the user can act on: a dead service, a run in
     /// flight, the scope nothing can run in, then an empty field.
-    public func sendBlock(_ draft: String) -> SendBlock? {
+    public func sendBlock(_ draft: String, hasImages: Bool = false) -> SendBlock? {
         if !connected { return .notConnected }
         if busy { return .busy }
         if workingDir.isEmpty { return .noWorkingDir }
-        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .emptyDraft }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !hasImages {
+            return .emptyDraft
+        }
         return nil
     }
 
@@ -367,9 +542,9 @@ public final class AppModel: ObservableObject {
     /// card named a prompt that was already gone and the timeline stayed at "No
     /// run yet" — no record of what was refused, and nothing to fix.
     @discardableResult
-    public func send(_ prompt: String) -> SendBlock? {
+    public func send(_ prompt: String, images: [String] = []) -> SendBlock? {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let block = sendBlock(trimmed) {
+        if let block = sendBlock(trimmed, hasImages: !images.isEmpty) {
             // The composer disables Send for this, so arriving here means the
             // keyboard shortcut went past a disabled button. Say why, in the same
             // words the button uses.
@@ -384,18 +559,23 @@ public final class AppModel: ObservableObject {
             return .notConnected
         }
 
-        transcript.addUserMessage(trimmed)
+        // The wire requires a non-empty prompt, so an image with no words gets
+        // the question the image itself asks: what is in it. The timeline shows
+        // that prompt too, because it is what the run was told.
+        let text = trimmed.isEmpty ? "What is in this image?" : trimmed
+        transcript.addUserMessage(text, images: images)
         transcript.beginRun(runId: "…")
         busy = true
 
         Task {
             do {
                 let started = try await client.startRun(
-                    prompt: trimmed,
+                    prompt: text,
                     workingDir: workingDir,
                     model: selectedModel.isEmpty ? nil : selectedModel,
                     sessionId: sessionId,
                     permissionMode: permissionMode,
+                    images: images,
                     reasoningEffort: reasoningEffort
                 )
                 sessionId = started.sessionId
@@ -413,6 +593,30 @@ public final class AppModel: ObservableObject {
         return nil
     }
 
+    /// Stop the agent and hand the user its browser.
+    ///
+    /// The run is cancelled first: two hands on one page is a page neither
+    /// controls. With a window, it comes forward; headless, the page opens in
+    /// the user's own browser — signed-out, but the place the agent got to.
+    public func takeOver() {
+        cancel()
+        guard let client else { return }
+        Task {
+            do {
+                let shown = try await client.showBrowser()
+                if shown.open, !shown.headless, BrowserPanelModel.activateAgentBrowser(pid: shown.pid) { return }
+                let target = shown.url.isEmpty ? browserPanel.url : shown.url
+                if let url = URL(string: target), ["http", "https"].contains(url.scheme ?? "") {
+                    NSWorkspace.shared.open(url)
+                } else {
+                    banner = "the agent has no page open"
+                }
+            } catch {
+                banner = "could not reach the agent's browser: \(Self.describe(error))"
+            }
+        }
+    }
+
     public func cancel() {
         guard let client, let runId = transcript.runId, transcript.state.isRunning else { return }
         Task {
@@ -422,6 +626,14 @@ public final class AppModel: ObservableObject {
                 banner = Self.describe(error)
             }
         }
+    }
+
+    /// Unhide the app if computer use hid it. `NSApp` is nil in the checks,
+    /// which run without an application.
+    static func revealIfHidden() {
+        guard let app = NSApp, app.isHidden else { return }
+        app.unhide(nil)
+        app.activate(ignoringOtherApps: true)
     }
 
     /// Answer a permission prompt. The scope decides how long the answer
@@ -438,15 +650,65 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// In auto mode, answer a pending prompt without showing the sheet.
+    ///
+    /// The server's gate is fixed when `run.start` arrives, so switching the
+    /// mode while a run is in flight cannot change that gate. The client can
+    /// still make the mode true for the run it owns: a `permission_requested`
+    /// is granted immediately, and `.session` means the same tool is not asked
+    /// again in this run.
+    private func autoAnswerIfNeeded() {
+        guard permissionMode == .allowAll, let request = promptToAnswer else { return }
+        // The transcript's `pendingPermission` survives until the server's
+        // `permission_resolved`; a later event would otherwise put the sheet
+        // back on screen. Keep it dismissed.
+        if autoAnsweredRequests.contains(request.id) {
+            promptToAnswer = nil
+            return
+        }
+        guard let client else { return }
+
+        autoAnsweredRequests.insert(request.id)
+        // Dismiss the sheet at once: the prompt is answered, not waiting for a
+        // person. The timeline still records the grant when `permission_resolved`
+        // arrives from the service.
+        promptToAnswer = nil
+        Task {
+            do {
+                try await client.respondPermission(requestId: request.id, granted: true, scope: .session)
+                notice = "auto-approved \(request.toolName)"
+            } catch {
+                banner = "auto-approval did not reach the service: \(Self.describe(error))"
+            }
+        }
+    }
+
     /// Start over. The event stream is *not* re-subscribed: an `AsyncStream`
     /// has one consumer for its life, and the connection's stream is already
     /// being consumed. Only the timeline resets.
     public func newRun() {
         sessionId = nil
         transcript = Transcript(terminalTypes: terminalTypes)
+        resetContextMeter()
         promptToAnswer = nil
+        autoAnsweredRequests.removeAll()
         busy = false
         banner = nil
+        paletteOpen = false
+    }
+
+    /// The selected model's window. The selected model is what the next run
+    /// uses, so it wins over the last run's window when the two differ; the
+    /// run's is the fallback for the router's choice.
+    public var contextWindow: Int? {
+        let selected = modelRows.first { $0.key == selectedModel }?.caps.contextWindow
+        return selected.flatMap { $0 > 0 ? $0 : nil } ?? runContextWindow
+    }
+
+    private func resetContextMeter() {
+        contextUsed = nil
+        compactAt = nil
+        runContextWindow = nil
     }
 
     // MARK: models, sessions
@@ -456,6 +718,7 @@ public final class AppModel: ObservableObject {
         do {
             let list = try await client.models(discover: true)
             modelRows = list.models
+            clampEffort()
             modelPolicy = list.policy
             self.log("models: \(list.models.count) rows, policy=\(list.policy), selected=\(list.selected ?? "none")")
             // The table is the only thing that can say a model is gone, so it is
@@ -489,6 +752,39 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Add a model server and immediately read the model table back.
+    ///
+    /// The service persists the endpoint and discovers it in one call; the app
+    /// then calls `model.list` again because the table is the UI's source of
+    /// truth. A reachable server with no models is not an add failure: the
+    /// result carries a `discoveryError`, and the model list stays unchanged.
+    public func addEndpoint(
+        name: String,
+        baseURL: String,
+        wireApi: String,
+        label: String,
+        local: Bool,
+        requiresKey: Bool
+    ) async -> (result: EndpointAddResult?, error: String?) {
+        guard let client else {
+            return (nil, SendBlock.notConnected.reason)
+        }
+        do {
+            let result = try await client.addEndpoint(
+                name: name,
+                baseURL: baseURL,
+                wireApi: wireApi,
+                label: label,
+                local: local,
+                requiresKey: requiresKey
+            )
+            await refreshModels()
+            return (result, nil)
+        } catch {
+            return (nil, Self.describe(error))
+        }
+    }
+
     public func refreshSessions() async {
         guard let client else { return }
         do {
@@ -509,16 +805,20 @@ public final class AppModel: ObservableObject {
                 for message in record.messages {
                     guard let fields = message.objectValue else { continue }
                     let role = fields["role"]?.stringValue ?? "assistant"
-                    let text = Self.text(of: fields["content"] ?? .null)
-                    if text.isEmpty { continue }
+                    let content = fields["content"] ?? .null
+                    let text = Self.text(of: content)
+                    let images = role == "user" ? Self.images(of: content) : []
+                    if text.isEmpty, images.isEmpty { continue }
                     if role == "user" {
-                        history.addUserMessage(text)
+                        history.addUserMessage(text, images: images)
                     } else {
                         history.addAssistantMessage(text)
                     }
                 }
                 self.sessionId = record.sessionId
                 transcript = history
+                resetContextMeter()
+                contextUsed = record.contextTokens
                 promptToAnswer = nil
                 busy = false
                 self.notice = Self.resumedNotice(
@@ -584,6 +884,23 @@ public final class AppModel: ObservableObject {
 
     /// A tool result's content is a string, a block list, or a dict. A line of
     /// history needs one string.
+    /// The base64 of a stored message's images. The session file keeps each as
+    /// `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}`.
+    ///
+    /// The key arrives as `imageUrl`: `session.load` is decoded with
+    /// `.convertFromSnakeCase`, and that strategy renames the keys inside a
+    /// `JSONValue` too. Both spellings are read, so a decoder change cannot make
+    /// a resumed session's images vanish again.
+    nonisolated public static func images(of content: JSONValue) -> [String] {
+        (content.arrayValue ?? []).compactMap { block in
+            let fields = block.objectValue
+            guard let url = (fields?["imageUrl"] ?? fields?["image_url"])?.objectValue?["url"]?.stringValue,
+                url.hasPrefix("data:"), let comma = url.firstIndex(of: ",")
+            else { return nil }
+            return String(url[url.index(after: comma)...])
+        }
+    }
+
     private static func text(of content: JSONValue) -> String {
         if let text = content.stringValue { return text }
         if let blocks = content.arrayValue {

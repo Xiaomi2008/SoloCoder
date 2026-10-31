@@ -69,21 +69,25 @@ forever. A new terminal event type is therefore additive, not breaking.
 | --- | --- | --- |
 | `hello` | `protocol_version`, `client`, `client_version` | handshake above |
 | `ping` | — | `{"pong": true, "server_time": float}` |
-| `run.start` | `prompt` (str), `working_dir` (str, **required**, absolute), `model` (str, optional `provider/model`), `session_id` (optional), `max_turns` (int), `permission_mode` (`allow_all`\|`allow_readonly`\|`ask`), `images` ([base64], optional), `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`, optional) | `{"run_id": …, "session_id": …, "model": "provider/model"}` |
+| `run.start` | `prompt` (str), `working_dir` (str, **required**, absolute), `model` (str, optional `provider/model`), `session_id` (optional), `max_turns` (int), `permission_mode` (`allow_all`\|`allow_readonly`\|`ask`), `images` ([base64], optional), `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`\|`xhigh`\|`max`, optional) | `{"run_id": …, "session_id": …, "model": "provider/model"}` |
 | `run.cancel` | `run_id` | `{"cancelled": true}` (the `run_cancelled` event follows on the stream) |
+| `run.permission_mode` | `run_id`, `permission_mode` | `{"run_id": …, "permission_mode": str}` — changes the live run’s gate and file-tool scope |
 | `permission.respond` | `request_id`, `granted` (bool), `scope` (`once`\|`session`\|`never`) | `{"ok": true, "granted": bool, "scope": str}` |
 | `model.list` | `discover` (bool) | `{"models":[ModelRef…], "policy":…, "default_model":…, "selected":…}` |
 | `model.probe` | `model` | `{"ok":bool,"latency_ms":int,"tools":bool,"detail":str}` |
 | `model.select` | `model` | `{"default_model": …}` |
+| `model.add_endpoint` | `name`, `base_url`, `wire_api` (`openai-chat`\|`openai-responses`\|`anthropic-messages`\|`ollama-chat`\|`gemini`), `label` (optional), `local` (bool), `requires_key` (bool), `tools` (bool), `context_window` (int) | `{"endpoint": {…}, "models": [ModelRef…], "discovery_error": str\|null}` — persists the endpoint and discovers it in one call |
+| `model.remove_endpoint` | `name` | `{"name": …, "removed": bool}` — built-in endpoints are refused |
 | `auth.status` | — | `{"providers":[…], "servers":[…]}` (same rows as `cli_coder auth status`) |
 | `auth.logout` | `provider` | `{"ok": true}` |
 | `auth.login` | `provider` | `NOT_IMPLEMENTED` in v1 — needs an interactive browser, keep it in the CLI |
 | `tool.list` | — | `{"tools":[{"name","description","risk","requires_permission"}]}` |
 | `session.list` | — | `{"sessions":[{"session_id","path","updated_at","message_count"}]}` |
-| `session.load` | `session_id` | `{"session_id":…, "messages":[…], "system_prompt":…}` |
+| `session.load` | `session_id` | `{"session_id":…, "messages":[…], "system_prompt":…, "context_tokens":…}` |
 | `session.save` | `session_id`, `path` (optional) | `{"path": …}` |
 | `config.get` | `keys` ([str], optional) | `{"config": {…}}` (secrets never included) |
 | `config.set` | `values` (object) | `{"config": {…}}` |
+| `browser.show` | — | `{"open": bool, "headless": bool, "url": str, "pid": int}` — brings the agent's browser forward for the user to take over; `pid` is its process (0 unknown), for the client to activate |
 
 `run.start` **occupies the connection**: the server streams events for that run
 on the same socket until a terminal event. `run.cancel` and
@@ -131,6 +135,7 @@ and `run_id`.
 | `context_compaction_started` | `reason` |
 | `context_compaction_completed` | `reason` |
 | `context_compaction_failed` | `reason`, `error` |
+| `context_usage` | `used_tokens`, `context_window`, `compact_at` |
 | `run_completed` | `final_message_id`, `result{run_id, final_message_id, output_text, stop_reason}` |
 | `run_failed` | `error` |
 | `run_cancelled` | `reason` |
@@ -157,7 +162,25 @@ Ordering guarantees the UI is written against:
    allow. It is per-run and applies to every turn of it. `none` is not a
    cosmetic choice: measured on one reasoning model, the default spent 686,439
    characters on private reasoning and produced no answer at all, while `none`
-   answered in 1.1 seconds. An unknown value is `INVALID_PARAMS`.
+   answered in 1.1 seconds. An unknown value is `INVALID_PARAMS`, and so is a
+   value outside the model's `caps.reasoning_efforts` when that list is
+   non-empty (the error data carries `supported`). An empty list means the
+   server did not say; a client then offers its generic levels.
+
+8. `browser_frame` (`run_id`, `data` base64 JPEG, `url`, `title`, `width`,
+   `height`) is the agent's browser, live, on a service started with
+   `--browser-use`. Chromium screencasts only while the page changes; the
+   service sends at most ~4 a second and only the newest — a client that falls
+   behind skips frames, never replays them. It is not conversation: keep it out
+   of the transcript, and do not let it flush buffered deltas.
+
+9. `context_usage` comes before each `message_started` and once more before
+   `run_completed`. `used_tokens` estimates the next request — history, system
+   prompt and tool schemas; `compact_at` is where the history gets summarised;
+   `context_window` is the model's window, read from a llama.cpp server's
+   `/props` when it has one. The two window fields are null when the window is
+   unknown. `session.load`'s `context_tokens` is the same estimate, for a
+   session that has not run yet. Like `browser_frame`, it is not conversation.
 
 ## 5. Tool approval
 

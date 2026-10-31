@@ -140,6 +140,11 @@ class TestSerialization:
         image_blocks = [b for b in data[0]["content"] if b["type"] == "image_url"]
         assert len(image_blocks) == 1
 
+    def test_multimodal_keeps_every_image(self):
+        session = Session()
+        msg = session.add_user_multimodal(text="Compare", images=["img1", "img2"])
+        assert [b.data for b in msg.content if isinstance(b, ImageBlock)] == ["img1", "img2"]
+
     def test_save_and_load(self, tmp_path):
         session = Session(system_prompt="Test")
         session.add("user", "Hello")
@@ -152,6 +157,16 @@ class TestSerialization:
         loaded = Session.load(str(path))
         assert loaded.system_prompt == "Test"
         assert len(loaded.messages) == 2
+
+    def test_save_and_load_keeps_images(self, tmp_path):
+        session = Session()
+        session.add_user_multimodal(text="Compare", images=["img1", "img2"])
+        path = tmp_path / "session.json"
+        session.save(str(path))
+
+        loaded = Session.load(str(path))
+        images = [b for b in loaded.messages[0].content if isinstance(b, ImageBlock)]
+        assert [(b.data, b.mime_type) for b in images] == [("img1", "image/png"), ("img2", "image/png")]
 
     def test_save_missing_path_raises(self):
         session = Session()
@@ -345,3 +360,25 @@ class TestCompressionSummary:
             provider=RecordingProvider(), keep_recent=3, summary_type="detailed"
         )
         assert isinstance(summary, str)
+
+
+def test_images_and_tool_arguments_count_toward_the_context():
+    """Both counted as nothing, so a session of screenshots or large file
+    writes overflowed the window before compaction thought it was needed."""
+    from openagent.core.utils import IMAGE_TOKEN_ESTIMATE, count_tokens_for_messages
+
+    image = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:,x"}}]}]
+    assert count_tokens_for_messages(image) >= IMAGE_TOKEN_ESTIMATE
+
+    call = [{"role": "assistant", "content": [
+        {"type": "tool_use", "id": "t", "name": "write_file", "arguments": {"content": "line\n" * 2000}}
+    ]}]
+    assert count_tokens_for_messages(call) > 1000
+
+
+def test_the_fallback_counter_does_not_undercount_code_or_cjk():
+    from openagent.core.utils import _DeterministicFallbackEncoder
+
+    encoder = _DeterministicFallbackEncoder()
+    assert len(encoder.encode("a1b2c3d4" * 50)) >= 100
+    assert len(encoder.encode("你好世界今天天气很好")) == 10

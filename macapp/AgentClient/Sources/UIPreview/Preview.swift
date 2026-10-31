@@ -308,8 +308,25 @@ struct UIPreviewApp: App {
             model.transcript.addUserMessage("Find and fix the bug in the fence parser.")
             model.ingest(AsyncStream { continuation in
                 for event in script() { continuation.yield(event) }
+                // `UI_PREVIEW_BROWSER=<file.jpg>` adds a frame of the agent's
+                // browser, so the live view can be looked at without a run.
+                if let path = ProcessInfo.processInfo.environment["UI_PREVIEW_BROWSER"],
+                   let jpeg = FileManager.default.contents(atPath: path),
+                   let frame = event([
+                       "type": .string("browser_frame"), "run_id": .string("run_preview"),
+                       "data": .string(jpeg.base64EncodedString()),
+                       "url": .string("https://news.ycombinator.com/"), "title": .string("Hacker News"),
+                       "width": .int(1280), "height": .int(800),
+                   ]) {
+                    continuation.yield(frame)
+                }
                 continuation.finish()
             })
+        }
+        // `UI_PREVIEW_PALETTE=1` opens the command palette on a scripted
+        // transcript, so the overlay can be looked at without a keyboard.
+        if ProcessInfo.processInfo.environment["UI_PREVIEW_PALETTE"] != nil {
+            model.paletteOpen = true
         }
         return model
     }()
@@ -319,6 +336,23 @@ struct UIPreviewApp: App {
             RootView(prompt: draftSeed)
                 .environmentObject(model)
                 .frame(minWidth: 780, idealWidth: 1240, minHeight: 560, idealHeight: 820)
+        }
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("Command Palette") { model.paletteOpen = true }
+                    .keyboardShortcut("k", modifiers: .command)
+            }
+            CommandGroup(after: .pasteboard) {
+                Button("Paste Image") {
+                    NotificationCenter.default.post(name: .solocoderPasteImage, object: nil)
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            }
+        }
+
+        Settings {
+            SettingsView()
+                .environmentObject(model)
         }
     }
 }

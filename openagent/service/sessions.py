@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,11 @@ def new_session_id() -> str:
 
 def path_for(session_id: str) -> Path:
     return sessions_dir() / f"{check_session_id(session_id)}.json"
+
+
+def outputs_dir(session_id: str) -> Path:
+    """Where compaction saves the tool outputs it clears from a session."""
+    return sessions_dir() / check_session_id(session_id) / "outputs"
 
 
 TITLE_MAX = 200
@@ -242,6 +248,8 @@ def delete(session_id: str) -> bool:
     naming a session that does not exist is a typo worth reporting.
     """
     target = path_for(session_id)
+    # The outputs compaction saved go with the session.
+    shutil.rmtree(outputs_dir(session_id).parent, ignore_errors=True)
     try:
         target.unlink()
     except FileNotFoundError:
@@ -253,6 +261,7 @@ __all__ = [
     "SESSION_ID_RE",
     "TITLE_MAX",
     "check_session_id",
+    "outputs_dir",
     "delete",
     "derive_title",
     "list_sessions",

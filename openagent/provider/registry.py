@@ -40,6 +40,27 @@ OPTIONAL_EXTRAS = {
     WireAPI.GEMINI: "openagent[google]",
 }
 
+def codex_client_version(default: str = "0.164.0") -> str:
+    """The Codex version the subscription backend's model listing is asked for.
+
+    The installed Codex records the one it used in ``models_cache.json``; using
+    it keeps the listing working as Codex updates. (``version.json`` is the
+    update checker's last-seen release, not what is installed.)
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        version = json.loads((home / "models_cache.json").read_text()).get("client_version")
+    except (OSError, ValueError, AttributeError):
+        return default
+    return version if isinstance(version, str) and re.fullmatch(r"\d+\.\d+\.\d+", version) else default
+
+
+CODEX_CLIENT_VERSION = codex_client_version()
+
 # Local servers default to optimistic capability claims; the probe downgrades
 # them to facts. context_window is the common local default.
 _LOCAL_CAPS = Capabilities(tools=True, streaming=True, context_window=32768, max_output_tokens=8192)
@@ -176,7 +197,10 @@ CLOUD_ENDPOINTS: tuple[EndpointSpec, ...] = (
         # Subscription JWTs are rejected by api.openai.com; only this backend
         # accepts them, and it speaks the Responses API.
         base_url="https://chatgpt.com/backend-api/codex",
-        default_model="gpt-5-codex",
+        # The listing 400s without a client_version; with one it returns the
+        # slugs this account may use (they rotate, so discovery beats a table).
+        discover_path=f"/models?client_version={CODEX_CLIENT_VERSION}",
+        default_model="gpt-6.1-sol",
         default_caps=Capabilities(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
         docs_url="https://chatgpt.com",
     ),
@@ -334,6 +358,20 @@ class ProviderRegistry:
     def local_endpoints(self) -> list[EndpointSpec]:
         return [e for e in self._endpoints.values() if e.local]
 
+    def add_endpoint(self, spec: EndpointSpec) -> None:
+        """Add a validated endpoint to this live registry.
+
+        The config is the durable record; this is the process's table. A client
+        that adds a server needs both, or the next `model.list` would still be
+        reading the table built at startup.
+        """
+        self._endpoints[spec.provider] = spec
+
+    def remove_endpoint(self, provider: str) -> bool:
+        """Drop an endpoint from the live table. Built-ins are the caller's
+        responsibility to reject; this method only knows the table."""
+        return self._endpoints.pop(provider, None) is not None
+
     def base_url_for(self, spec: EndpointSpec) -> str | None:
         """Honour a host override env var (``OLLAMA_HOST`` etc.)."""
         if spec.host_env:
@@ -415,6 +453,9 @@ class ProviderRegistry:
                 api_key=token,
                 base_url=ref.base_url,
                 default_headers=headers or None,
+                # The subscription backend rejects non-streaming requests.
+                stream_only=ref.auth_mode is AuthMode.OAUTH_SUBSCRIPTION,
+                reasoning_summary="auto" if ref.caps.reasoning else None,
             )
 
         if ref.wire_api is WireAPI.ANTHROPIC_MESSAGES:

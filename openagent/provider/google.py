@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import base64
 import uuid
 from typing import Any
 
 from openagent.core.retry import get_provider_retryable_exceptions, with_retry
 from openagent.core.types import (
     ContentBlock,
+    ImageBlock,
     Message,
     TextBlock,
     ToolDef,
@@ -40,12 +42,18 @@ class GoogleConverterMixin(MessageConverterMixin):
                 )
 
             elif msg.role == "user":
-                contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=msg.text)],
-                    )
-                )
+                user_parts: list[types.Part] = []
+                if msg.text or isinstance(msg.content, str):
+                    user_parts.append(types.Part.from_text(text=msg.text))
+                if not isinstance(msg.content, str):
+                    for b in msg.content:
+                        if isinstance(b, ImageBlock):
+                            user_parts.append(
+                                types.Part.from_bytes(
+                                    data=base64.b64decode(b.data), mime_type=b.mime_type
+                                )
+                            )
+                contents.append(types.Content(role="user", parts=user_parts))
 
             elif msg.role == "assistant":
                 parts: list[types.Part] = []

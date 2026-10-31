@@ -24,6 +24,13 @@ def test_build_solocoder_tools_can_leave_out_notebooks():
     assert "edit" in tool_names
 
 
+def test_build_solocoder_tools_computer_use_can_type():
+    from openagent.apps.solocoder.agent import build_solocoder_tools
+
+    tool_names = {tool._tool_name for tool in build_solocoder_tools(computer_use=True)}
+    assert {"screenshot", "click", "type_text", "key_combination"} <= tool_names
+
+
 def test_coder_agent_exists():
     from openagent.apps.solocoder.agent import CoderAgent
 

@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-Risk = Literal["read", "write", "exec", "network", "gui", "interactive", "unknown"]
+Risk = Literal["read", "write", "exec", "network", "gui", "browser", "interactive", "unknown"]
 
 PermissionMode = Literal["allow_all", "allow_readonly", "ask"]
 
@@ -28,6 +28,7 @@ TOOL_RISK: dict[str, Risk] = {
     "grep": "read",
     "recall": "read",
     "todo_list": "read",
+    "recall_output": "read",
     "bash_output": "read",
     "get_screen_resolution": "read",
     "get_screenshot_info": "read",
@@ -49,6 +50,7 @@ TOOL_RISK: dict[str, Risk] = {
     # Data leaving the machine.
     "web_search": "network",
     "web_fetch": "network",
+    "ebay_search": "network",
     # Controlling the real desktop, outside any sandbox.
     "click": "gui",
     "double_click": "gui",
@@ -56,7 +58,19 @@ TOOL_RISK: dict[str, Risk] = {
     "key_combination": "gui",
     "move_mouse": "gui",
     "scroll": "gui",
-    "wait": "gui",
+    "wait": "read",
+    # The agent's own browser. Reading and navigating are network; acting on a
+    # page (clicks, typing, form submits) can send, buy, or delete.
+    "browser_navigate": "network",
+    "browser_back": "network",
+    "browser_snapshot": "read",
+    "browser_find": "read",
+    "browser_screenshot": "read",
+    "browser_close": "read",
+    "browser_click": "browser",
+    "browser_type": "browser",
+    "browser_select_option": "browser",
+    "browser_press_key": "browser",
     # The model talking to the user.
     "ask_user_question": "interactive",
 }
@@ -67,6 +81,7 @@ RISK_REASON: dict[str, str] = {
     "exec": "exec: runs arbitrary commands",
     "network": "network: sends data off the machine",
     "gui": "gui: drives the real desktop, outside the session directory",
+    "browser": "browser: acts on a web page (click, type, submit) in the agent's browser",
     "interactive": "interactive: interrupts the user",
     "unknown": "unknown tool: classified as exec",
 }
@@ -74,7 +89,7 @@ RISK_REASON: dict[str, str] = {
 #: Risks that need approval in ``ask`` mode. Reads and network are allowed:
 #: a coding agent that asks per web search is noise, and the user already
 #: chose a model that talks to a server.
-ASK_BY_DEFAULT: frozenset[str] = frozenset({"write", "exec", "gui", "unknown"})
+ASK_BY_DEFAULT: frozenset[str] = frozenset({"write", "exec", "gui", "browser", "unknown"})
 
 
 def tool_risk(name: str) -> Risk:
@@ -82,8 +97,21 @@ def tool_risk(name: str) -> Risk:
     return TOOL_RISK.get(name, "unknown")
 
 
-def risk_reason(name: str) -> str:
-    risk = tool_risk(name)
+def call_risk(name: str, arguments: dict[str, Any] | None = None) -> Risk:
+    """Risk of one call. Browser actions are judged by what they act on —
+    a link is a navigation, a payment form's submit is not; every other tool
+    by its name."""
+    if name.startswith("browser_"):
+        from openagent.tools.browser import call_risk as browser_call_risk
+
+        risk = browser_call_risk(name, arguments or {})
+        if risk is not None:
+            return risk  # type: ignore[return-value]
+    return tool_risk(name)
+
+
+def risk_reason(name: str, risk: str | None = None) -> str:
+    risk = risk or tool_risk(name)
     return f"{risk}: {RISK_REASON[risk].split(': ', 1)[-1]}"
 
 
@@ -219,6 +247,7 @@ __all__ = [
     "RiskGate",
     "TOOL_RISK",
     "gate_for_mode",
+    "call_risk",
     "risk_reason",
     "tool_risk",
 ]

@@ -356,8 +356,14 @@ about model ids.** With a valid token, an account id, and plan `plus`, every id
 account."}`, and `GET /models` returns a 403 HTML page. Sending the account id as
 `ChatGPT-Account-Id` instead of `OpenAI-Organization`, or not sending it, changes
 nothing. So the message is generic: it is not evidence that any id is right or
-obsolete, and no id added to the catalog here could be checked. The subscription
-path is not usable from this machine; `lan/swift-1.5-iq3_s` is.
+obsolete, and no id added to the catalog here could be checked.
+
+*Correction (2026-10-29):* the account was fine — the ids were wrong. `GET
+/models?client_version=0.164.0` returns 200 with the real slugs (`gpt-6.1-sol`,
+`gpt-6-sol`, `gpt-5.6-luna`, …); the 400/403 came from omitting
+`client_version`. Discovery now queries it for signed-in subscriptions, and the
+backend also requires `stream: true`, so the Responses adapter's `chat()`
+collects the stream there (`stream_only`).
 
 **The built-in model table is hand-curated, offline, and it went stale.** It is
 not fetched from anywhere, so it is a list of what the repo author knew when the

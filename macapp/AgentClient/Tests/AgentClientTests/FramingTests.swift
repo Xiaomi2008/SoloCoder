@@ -18,7 +18,13 @@ struct FramingTests {
     @Test("a frame split across chunks reassembles")
     func splitFrame() throws {
         var decoder = FrameDecoder()
-        let payload = bytes("{\"delta\":\"Writing — 中文 ✓\\n\"}\n")
+        // A frame on the wire is a JSON-RPC envelope, not a bare payload: the
+        // decoder has to see `method: event` and then the event's own object.
+        let payload = bytes(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{"
+            + "\"type\":\"message_delta\",\"run_id\":\"r\",\"message_id\":\"m1\","
+            + "\"delta\":\"Writing — 中文 ✓\\n\"}}\n"
+        )
         var frames: [Data] = []
         for byte in payload { frames.append(contentsOf: try decoder.append(Data([byte]))) }
 

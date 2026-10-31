@@ -189,3 +189,21 @@ def test_next_id_uses_prefix_and_is_unique() -> None:
 @pytest.mark.parametrize("prefix", ["run", "msg"])
 def test_next_id_prefixes(prefix: str) -> None:
     assert next_id(prefix).startswith(f"{prefix}_")
+
+
+@pytest.mark.parametrize(
+    ("window", "max_output", "budget"),
+    [
+        (32768, 8192, 24576),
+        (500000, 32000, 468000),
+        # A reply share bigger than a quarter of the window is capped there.
+        (32768, 32000, 24576),
+        (200000, None, 200000),
+        (None, 8192, None),
+        (0, 8192, None),
+    ],
+)
+def test_history_budget_leaves_room_for_the_reply(window, max_output, budget):
+    from openagent.runtime.loop import history_budget
+
+    assert history_budget(window, max_output) == budget

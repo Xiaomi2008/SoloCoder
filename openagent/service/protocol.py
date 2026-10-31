@@ -31,6 +31,8 @@ from openagent.runtime.events import (
     AgentResult,
     ContextCompactionCompleted,
     ContextCompactionFailed,
+    BrowserFrame,
+    ContextUsage,
     ContextCompactionStarted,
     MessageCompleted,
     MessageDelta,
@@ -68,10 +70,13 @@ class Method(StrEnum):
     PING = "ping"
     RUN_START = "run.start"
     RUN_CANCEL = "run.cancel"
+    RUN_PERMISSION_MODE = "run.permission_mode"
     PERMISSION_RESPOND = "permission.respond"
     MODEL_LIST = "model.list"
     MODEL_PROBE = "model.probe"
     MODEL_SELECT = "model.select"
+    MODEL_ADD_ENDPOINT = "model.add_endpoint"
+    MODEL_REMOVE_ENDPOINT = "model.remove_endpoint"
     AUTH_STATUS = "auth.status"
     AUTH_LOGOUT = "auth.logout"
     AUTH_LOGIN = "auth.login"
@@ -82,6 +87,7 @@ class Method(StrEnum):
     SESSION_DELETE = "session.delete"
     CONFIG_GET = "config.get"
     CONFIG_SET = "config.set"
+    BROWSER_SHOW = "browser.show"
 
 
 class ErrorCode:
@@ -349,6 +355,8 @@ EVENT_TYPES: dict[str, type] = {
     "context_compaction_started": ContextCompactionStarted,
     "context_compaction_completed": ContextCompactionCompleted,
     "context_compaction_failed": ContextCompactionFailed,
+    "context_usage": ContextUsage,
+    "browser_frame": BrowserFrame,
 }
 
 TERMINAL_EVENT_TYPES = frozenset({"run_completed", "run_failed", "run_cancelled"})

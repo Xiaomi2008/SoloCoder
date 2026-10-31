@@ -35,11 +35,15 @@ from openagent.tools import (
 )
 
 
-def build_solocoder_tools(computer_use: bool = True, notebooks: bool = True) -> list[Callable[..., Any]]:
+def build_solocoder_tools(
+    computer_use: bool = True, notebooks: bool = True, browser_use: bool = False
+) -> list[Callable[..., Any]]:
     """Build the default SoloCoder tool set.
 
     Args:
         computer_use: Include computer use tools (screenshot, click, etc.) for GUI automation.
+        browser_use: Include the browser tools (browser_navigate, browser_click, etc.), which drive
+            the agent's own Chromium window.
         notebooks: Include notebook_edit. Every tool schema is prompt the model reads before the first
             token, so small local models leave out tools they rarely need.
     """
@@ -63,6 +67,10 @@ def build_solocoder_tools(computer_use: bool = True, notebooks: bool = True) -> 
         web_fetch,
     ]
 
+    from openagent.tools.recall import recall_output
+
+    tools.append(recall_output)
+
     if computer_use:
         from openagent.tools.computer_use import (
             click,
@@ -71,6 +79,7 @@ def build_solocoder_tools(computer_use: bool = True, notebooks: bool = True) -> 
             key_combination,
             move_mouse,
             scroll,
+            type_text,
             wait,
         )
 
@@ -78,12 +87,25 @@ def build_solocoder_tools(computer_use: bool = True, notebooks: bool = True) -> 
             screenshot,
             click,
             double_click,
+            type_text,
             key_combination,
             move_mouse,
             scroll,
             get_screen_resolution,
             wait,
         ])
+
+    if browser_use:
+        from openagent.tools.browser import browser_tools
+
+        tools.extend(browser_tools)
+
+    # Offered only with a keyset: a tool that can only fail is prompt the
+    # model reads for nothing.
+    from openagent.tools.ebay import ebay_credentials, ebay_search
+
+    if ebay_credentials() is not None:
+        tools.append(ebay_search)
 
     return tools
 

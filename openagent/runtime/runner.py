@@ -29,6 +29,7 @@ from openagent.core.types import (
     ContentBlock,
     Message,
     TextBlock,
+    ToolDef,
     ToolResultBlock,
     ToolUseBlock,
 )
@@ -45,6 +46,7 @@ from openagent.runtime.events import (
     ContextCompactionCompleted,
     ContextCompactionFailed,
     ContextCompactionStarted,
+    ContextUsage,
     MessageCompleted,
     MessageDelta,
     MessageFailed,
@@ -60,13 +62,18 @@ from openagent.runtime.events import (
     ToolCallFailed,
     ToolCallStarted,
 )
+from openagent.runtime.clearing import clear_old_tool_outputs
 from openagent.runtime.loop import (
+    CLEAR_TARGET_FRACTION,
+    COMPACTION_KEEP_FRACTION,
     EMPTY_RESPONSE_EXHAUSTED_MESSAGE,
     EmptyResponseGuard,
     LoopSettings,
     add_screenshot_followup,
     compaction_needed,
+    history_budget,
     is_empty_final_response,
+    is_user_prompt,
     maybe_compact_context,
     next_id,
 )
@@ -75,8 +82,8 @@ from openagent.runtime.permissions import (
     PermissionGate,
     PermissionRequest,
     RiskGate,
+    call_risk,
     risk_reason,
-    tool_risk,
 )
 
 MAX_TURNS_MESSAGE = (
@@ -135,6 +142,8 @@ class AgentRunner:
         max_turns: int = 100,
         permission_gate: PermissionGate | None = None,
         reasoning_effort: str | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
     ) -> None:
         self.provider = provider
         # `session or Session(...)` is a trap here: Session defines __len__, so
@@ -150,6 +159,12 @@ class AgentRunner:
         # `swift-1.5-iq3_s`: the default produced 686,439 characters of private
         # reasoning and never emitted an answer; "none" answers in 1.1s.
         self.reasoning_effort = reasoning_effort
+        # The model's window, which sets when the history is compacted. Without
+        # it every model got the 128k default: a 32k local model overflowed
+        # before compaction ever ran, and a 500k one was summarised at a fifth
+        # of its window.
+        self.context_window = context_window
+        self.max_output_tokens = max_output_tokens
         self._cancel_reason: str | None = None
 
     # ----------------------------------------------------------- entry points
@@ -189,22 +204,40 @@ class AgentRunner:
     ) -> AsyncIterator[RuntimeEvent]:
         """Run one user turn to completion, yielding events as it goes.
 
-        ``images`` are base64 strings; the first, if any, is attached to the
-        user message (``Session`` carries one image per message).
+        ``images`` are base64 strings, all attached to the user message.
 
         ``run_id`` may be supplied by a caller that has to answer with the id
         *before* the first event arrives — the service returns it from
         ``run.start``, and the client uses it for ``run.cancel``.
         """
         run_id = run_id or next_id("run")
+        tool_defs = self.tool_registry.definitions or None
+        # Every request carries the system prompt and the tool schemas besides
+        # the history; ~40 tool schemas are several thousand tokens. They are
+        # counted once here, so the compaction point and the usage the client
+        # shows both describe the whole request.
+        overhead = _fixed_overhead(self.session.system_prompt, tool_defs)
+        budget = history_budget(self.context_window, self.max_output_tokens)
+        if budget and "max_context_tokens" not in kwargs:
+            kwargs["max_context_tokens"] = max(budget - overhead, budget // 2)
         settings, provider_kwargs = LoopSettings.from_kwargs(kwargs)
         guard = EmptyResponseGuard(settings.max_empty_response_retries)
-        tool_defs = self.tool_registry.definitions or None
+        compact_at = (
+            overhead + int(settings.max_context_tokens * settings.compact_threshold)
+            if budget and not settings.disable_compaction
+            else None
+        )
+
+        def usage() -> ContextUsage:
+            return ContextUsage(
+                run_id=run_id,
+                used_tokens=self.session.token_count + overhead,
+                context_window=self.context_window,
+                compact_at=compact_at,
+            )
 
         if prompt or images:
-            self.session.add_user_multimodal(
-                text=prompt, image_data=(list(images) + [None])[0] if images else None
-            )
+            self.session.add_user_multimodal(text=prompt, images=images)
 
         yield RunStarted(run_id=run_id)
 
@@ -226,11 +259,32 @@ class AgentRunner:
             # Compaction is decided before its event is emitted: a
             # `context_compaction_started` with no matching completion would
             # leave the UI with a spinner that never clears.
+            cleared: str | None = None
             if compaction_needed(self.session, settings):
                 yield ContextCompactionStarted(run_id=run_id, reason=COMPACTION_REASON)
+                cleared = self._clear_old_outputs(settings)
+                if cleared is not None:
+                    yield ContextCompactionCompleted(run_id=run_id, reason=cleared)
+            if compaction_needed(self.session, settings):
+                # Clearing was not enough (or the person's messages, not tool
+                # output, fill the window): summarise. From the original
+                # history — the cleared copy was discarded — so the summary
+                # sees every output it describes.
+                if cleared is not None:
+                    yield ContextCompactionStarted(run_id=run_id, reason=COMPACTION_REASON)
                 try:
                     summary = await maybe_compact_context(
-                        self.session, self.provider, settings
+                        self.session,
+                        self.provider,
+                        settings,
+                        keep_tokens=int(settings.max_context_tokens * COMPACTION_KEEP_FRACTION),
+                        tools=tool_defs,
+                        chat_kwargs=(
+                            {"reasoning_effort": self.reasoning_effort}
+                            if self.reasoning_effort
+                            else {}
+                        ),
+                        is_prompt=is_user_prompt,
                     )
                 except asyncio.CancelledError:
                     yield RunCancelled(
@@ -242,15 +296,22 @@ class AgentRunner:
                         run_id=run_id, reason=COMPACTION_REASON, error=str(exc)
                     )
                 else:
-                    if summary and summary.startswith("Compaction failed"):
-                        yield ContextCompactionFailed(
-                            run_id=run_id, reason=COMPACTION_REASON, error=summary
-                        )
-                    elif summary:
+                    # Every started compaction ends with one of these two. An
+                    # empty summary, or "No messages to compact.", sent
+                    # neither, and the app showed "compacting context" until
+                    # it was restarted.
+                    if summary and not summary.startswith(("Compaction failed", "No messages")):
                         yield ContextCompactionCompleted(
                             run_id=run_id, reason=COMPACTION_REASON
                         )
+                    else:
+                        yield ContextCompactionFailed(
+                            run_id=run_id,
+                            reason=COMPACTION_REASON,
+                            error=summary or "the history did not need compacting",
+                        )
 
+            yield usage()
             message_id = next_id("msg")
             last_message_id = message_id
             yield MessageStarted(run_id=run_id, message_id=message_id)
@@ -338,6 +399,7 @@ class AgentRunner:
             yield MessageCompleted(run_id=run_id, message_id=message_id, output_text=text)
 
             if not tool_calls:
+                yield usage()
                 yield RunCompleted(
                     run_id=run_id,
                     final_message_id=message_id,
@@ -414,6 +476,7 @@ class AgentRunner:
             return
 
         # Turn exhaustion is a stop, not a crash: the work done so far stands.
+        yield usage()
         yield RunCompleted(
             run_id=run_id,
             final_message_id=last_message_id,
@@ -450,8 +513,8 @@ class AgentRunner:
         request = PermissionRequest(
             tool_name=call.name,
             arguments=call.arguments,
-            risk=tool_risk(call.name),
-            reason=risk_reason(call.name),
+            risk=(risk := call_risk(call.name, call.arguments)),
+            reason=risk_reason(call.name, risk),
             run_id=run_id,
             request_id=next_id("req"),
         )
@@ -486,6 +549,33 @@ class AgentRunner:
                 reason=decision.reason,
             )
 
+    def _clear_old_outputs(self, settings: LoopSettings) -> str | None:
+        """Clear old tool outputs if that alone brings the history down far
+        enough; the reason to report, or None when it did not (and nothing
+        was changed).
+
+        The target is well under the compaction point, so the next one — and
+        the prompt-cache rebuild every compaction costs — is many turns away.
+        """
+        budget = settings.max_context_tokens
+        clearing = clear_old_tool_outputs(
+            self.session.messages,
+            target_tokens=int(budget * CLEAR_TARGET_FRACTION),
+            keep_tokens=int(budget * COMPACTION_KEEP_FRACTION),
+            outputs_dir=self.tool_context.outputs_dir,
+        )
+        if not clearing.cleared or clearing.tokens_after > budget * CLEAR_TARGET_FRACTION:
+            return None
+        try:
+            clearing.write(self.tool_context.outputs_dir)
+        except OSError:
+            # A placeholder that promises a recall nobody can serve is worse
+            # than a summary.
+            return None
+        self.session.replace_history(clearing.messages)
+        noun = "output" if clearing.cleared == 1 else "outputs"
+        return f"cleared {clearing.cleared} old tool {noun} (−{clearing.freed:,} tokens)"
+
     def _provider_kwargs_for_turn(
         self, base_kwargs: dict[str, Any], screenshot_followup_added: bool
     ) -> dict[str, Any]:
@@ -504,8 +594,26 @@ class AgentRunner:
         return kwargs
 
 
+def _fixed_overhead(system_prompt: str, tool_defs: Sequence[ToolDef] | None) -> int:
+    """Tokens every request spends before the history: prompt and tool schemas."""
+    import json
+
+    from openagent.core.utils import count_tokens_for_messages
+
+    tools = [
+        {"name": t.name, "description": t.description, "parameters": t.parameters}
+        for t in tool_defs or ()
+    ]
+    return count_tokens_for_messages(
+        [
+            {"role": "system", "content": system_prompt or ""},
+            {"role": "system", "content": json.dumps(tools)},
+        ]
+    )
+
+
 #: What a client may ask the model to spend on thinking. The literals are wire
 #: values, sent to the provider as `reasoning_effort`.
-REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high")
+REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 __all__ = ["MAX_TURNS_MESSAGE", "REASONING_EFFORTS", "AgentRunner"]

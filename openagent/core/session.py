@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from openagent.provider.base import BaseProvider
@@ -94,13 +95,15 @@ class Session:
         text: str | None = None,
         image_data: str | None = None,
         image_mime_type: str = "image/png",
+        images: Sequence[str] | None = None,
     ) -> Message:
         """Add a user message that can contain text, images, or both.
 
         Args:
             text: Optional text content
             image_data: Optional base64-encoded image data
-            image_mime_type: MIME type for the image block
+            image_mime_type: MIME type for the image blocks
+            images: Further base64-encoded images, appended after ``image_data``
 
         Returns:
             Message with text and/or image blocks
@@ -110,8 +113,9 @@ class Session:
         if text:
             blocks.append(TextBlock(text=text))
 
-        if image_data:
-            blocks.append(ImageBlock(data=image_data, mime_type=image_mime_type))
+        for data in [image_data, *(images or ())]:
+            if data:
+                blocks.append(ImageBlock(data=data, mime_type=image_mime_type))
 
         # If only image provided, wrap in user message
         if not blocks:
@@ -188,6 +192,13 @@ class Session:
                     block_type = block_data.get("type")
                     if block_type == "text":
                         blocks.append(TextBlock(text=block_data["text"]))
+                    elif block_type == "image_url":
+                        # Saved as a data URL: "data:<mime>;base64,<data>".
+                        url = block_data.get("image_url", {}).get("url", "")
+                        header, _, data = url.partition(",")
+                        if header.startswith("data:") and data:
+                            mime_type = header[len("data:"):].split(";")[0] or "image/png"
+                            blocks.append(ImageBlock(data=data, mime_type=mime_type))
                     elif block_type == "tool_use":
                         blocks.append(
                             ToolUseBlock(
@@ -251,129 +262,121 @@ class Session:
         return out
 
     def _get_compaction_tail(self, keep_recent: int) -> list[Message]:
-        """Return a recent message slice that starts on a conversation boundary."""
-        if keep_recent <= 0:
+        """The last ``keep_recent`` messages, never starting on a tool result.
+
+        Any message may start the tail: tool calls and their results count
+        like everything else. This used to require a *user* message at the
+        start, and in an agent run the only one is the prompt before 60 tool
+        steps — so the "tail" was the whole run, compaction freed nothing, and
+        it ran again on the next turn.
+        """
+        if keep_recent <= 0 or not self._messages:
             return []
+        return self._messages[self._safe_start(len(self._messages) - keep_recent) :]
 
-        start = max(0, len(self._messages) - keep_recent)
+    def _safe_start(self, start: int) -> int:
+        """Move ``start`` back so a tool result keeps the call it answers."""
+        start = max(0, min(start, len(self._messages) - 1))
+        while start > 0 and self._messages[start].role == "tool_result":
+            start -= 1
+        return start
 
-        for index in range(start, len(self._messages)):
-            if self._messages[index].role in {"user", "system"}:
-                start = index
+    def _tail_start_by_tokens(self, keep_tokens: int) -> int:
+        """Where the verbatim tail starts: the newest messages that fit in
+        ``keep_tokens``, and at least the last step."""
+        from .utils import count_tokens_for_messages
+
+        messages = self.to_list_for_compaction()
+        start = len(messages)
+        used = 0
+        for index in range(len(messages) - 1, -1, -1):
+            cost = count_tokens_for_messages([messages[index]])
+            if start < len(messages) and used + cost > keep_tokens:
                 break
-        else:
-            while start > 0 and self._messages[start].role not in {"user", "system"}:
-                start -= 1
-
-        return list(self._messages[start:])
+            used += cost
+            start = index
+        return self._safe_start(start)
 
     async def compact_context(
         self,
         provider: BaseProvider,
         keep_recent: int = 5,
         summary_type: str = "detailed",
+        *,
+        keep_tokens: int | None = None,
+        tools: Sequence[Any] | None = None,
+        chat_kwargs: dict[str, Any] | None = None,
+        is_prompt: Any = None,
     ) -> str:
-        """Compact conversation history by summarizing past messages.
+        """Summarise the older history into one message; keep the recent part.
 
-        Args:
-            provider: LLM provider for generating summary
-            keep_recent: Number of recent messages to preserve (default: 5)
-            summary_type: Type of summary ("brief", "detailed", "structured")
+        ``keep_tokens`` sizes the verbatim tail by tokens (at least the last
+        step); without it the tail is the last ``keep_recent`` messages. The
+        newest message ``is_prompt`` accepts — the person's latest request — is
+        kept verbatim even when it is older than the tail, so the agent never
+        knows its task only from a summary.
 
-        Returns:
-            Generated summary text
-
-        Note:
-            This method replaces old messages with a summary while keeping
-            the most recent N messages for immediate context.
+        The summary request is the conversation as the model last saw it —
+        same system prompt, same tools, same messages — with the instruction
+        appended. A server's prompt cache (llama.cpp's, OpenAI's) matches the
+        longest common prefix, so it serves the whole history from cache and
+        processes only the instruction. The old request re-sent the history
+        as JSON text under a different system prompt: nothing matched, and a
+        200k-token history was prefilled from scratch just to be summarised.
+        Pass ``tools`` as the runs send them, or the prefix differs at the
+        tool schemas.
         """
-        from .utils import count_tokens_for_messages
-
-        # Get current message list in API format
-        messages = self.to_list_for_compaction()
-
-        if len(messages) <= keep_recent:
+        if len(self._messages) < 2:
             return "No messages to compact."
-
-        # Prepare summary prompt based on type
-        system_prompt = """You are a conversation summarizer for a coding agent. Your task is to create a concise yet informative summary of the conversation history that preserves important decisions, file changes, and project state."""
-
-        if summary_type == "brief":
-            user_prompt = """Create a brief summary (max 200 words) covering:
-1. Key decisions made during this session
-2. Files created or modified and their purposes
-3. Current task status
-4. Any important constraints or requirements
-
-Keep it concise but preserve essential information."""
-        elif summary_type == "structured":
-            user_prompt = """Create a structured summary with the following sections:
-
-## Key Decisions
-- List major decisions made
-
-## Files Modified
-- File paths and what was changed/purpose
-
-## Tasks & Progress
-- Current task status and completion percentage
-
-## Project State
-- Brief description of current project state
-
-## Important Constraints
-- Any limitations or requirements to remember
-
-Keep each section concise (2-3 bullet points max)."""
-        else:  # detailed
-            user_prompt = """Create a comprehensive summary covering:
-1. Key decisions made during this session and their rationale
-2. All files created, modified, or deleted with their purposes
-3. Tasks that were started/completed and current status
-4. Important constraints, requirements, or preferences mentioned
-5. Current project state and next steps
-
-Be thorough but avoid unnecessary details."""
-
-        # Prepare messages for summarization (exclude the last few to keep context)
-        summary_messages = (
-            messages[:-keep_recent] if len(messages) > keep_recent else []
+        start = (
+            self._tail_start_by_tokens(keep_tokens)
+            if keep_tokens is not None
+            else self._safe_start(len(self._messages) - keep_recent)
         )
+        if start <= 0:
+            return "No messages to compact."
+        tail = list(self._messages[start:])
+        prompt_check = is_prompt or (lambda m: m.role == "user" and bool(m.text.strip()))
+        latest = next(
+            (m for m in reversed(self._messages) if prompt_check(m)), None
+        )
+        if latest is not None and all(m is not latest for m in tail):
+            tail.insert(0, latest)
 
-        # Create a compacted message list with summary placeholder
-        compaction_request = {
-            "role": "user",
-            "content": f"""Here is part of our conversation history. Please summarize the key information:
-
-{json.dumps(summary_messages, indent=2)}
-
-Please provide the summary now.""",
-        }
-
-        # Call LLM to generate summary
+        instruction = _SUMMARY_INSTRUCTIONS.get(summary_type, _SUMMARY_INSTRUCTIONS["detailed"])
+        instruction += (
+            f"\n\nThe last {len(self._messages) - start} messages stay in the conversation "
+            "word for word; concentrate on everything before them. Reply with the "
+            "summary as plain text only; do not call any tools."
+        )
+        request = [*self._messages, Message(role="user", content=instruction)]
+        tool_defs = list(tools) if tools else None
+        kwargs = dict(chat_kwargs or {})
         try:
             response = await provider.chat(
-                messages=[
-                    Message(role="system", content=system_prompt),
-                    Message(role="user", content=compaction_request["content"]),
-                ],
-                tools=None,
-                system_prompt="",
+                messages=request, tools=tool_defs, system_prompt=self.system_prompt, **kwargs
             )
+            summary_text = response.text.strip()
+            if not summary_text:
+                # A thinking model can spend the whole reply on reasoning, or
+                # answer with a tool call, and return no text (qwen3.8-flash
+                # did). Ask again without thinking; a backend that does not
+                # take the knob raises into the fallback below.
+                response = await provider.chat(
+                    messages=request,
+                    tools=tool_defs,
+                    system_prompt=self.system_prompt,
+                    **{**kwargs, "reasoning_effort": "none"},
+                )
+                summary_text = response.text.strip()
+            if not summary_text:
+                # Replacing the history with an empty summary erased the
+                # whole conversation and reported success.
+                raise ValueError("the model returned an empty summary")
 
-            summary_text = response.text
-
-            # Replace old messages with summary and keep recent ones
             self.replace_history(
-                [
-                    Message(
-                        role="system",
-                        content=f"Conversation summary:\n\n{summary_text}",
-                    )
-                ]
-                + self._get_compaction_tail(keep_recent)
+                [Message(role="system", content=f"Conversation summary:\n\n{summary_text}")] + tail
             )
-
             return (
                 f"Context compacted. Summary:\n{summary_text[:200]}..."
                 if len(summary_text) > 200
@@ -381,8 +384,8 @@ Please provide the summary now.""",
             )
 
         except Exception as e:
-            # Fallback: simple truncation without LLM summarization
-            self.replace_history(self._get_compaction_tail(keep_recent * 2))
+            # No summary: keep the same tail, so the history still shrinks.
+            self.replace_history(tail)
             return f"Compaction failed ({e}). Kept last {len(self._messages)} messages."
 
     def check_compaction_needed(
@@ -415,3 +418,23 @@ Please provide the summary now.""",
 
         messages_list = self.to_list_for_compaction()
         return count_tokens_for_messages(messages_list)
+
+
+_SUMMARY_INSTRUCTIONS = {
+    "brief": (
+        "Summarise the conversation so far in at most 200 words: key decisions, "
+        "files created or modified, current task status, and constraints."
+    ),
+    "structured": (
+        "Summarise the conversation so far under these headings, 2-3 bullets each: "
+        "Key Decisions; Files Modified; Tasks & Progress; Project State; Important Constraints."
+    ),
+    "detailed": (
+        "Summarise the conversation so far so that the work can continue from the "
+        "summary alone. Cover: the user's requests and goals; key decisions and why; "
+        "every file created, modified or deleted and what changed; commands run and "
+        "what they showed (errors, test results); what is finished and what remains; "
+        "and constraints or preferences the user stated. Keep exact file paths, "
+        "names and error messages."
+    ),
+}

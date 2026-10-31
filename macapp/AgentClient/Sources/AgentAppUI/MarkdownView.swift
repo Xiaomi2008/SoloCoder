@@ -169,7 +169,8 @@ struct CodeView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .background(Theme.fill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .hairline(6, color: Theme.hairline)
         .overlay(alignment: .topTrailing) {
             CopyButton(text: text, label: "this block").padding(4)
         }

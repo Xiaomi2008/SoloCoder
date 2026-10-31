@@ -151,7 +151,7 @@ async def test_stream_yields_deltas_then_a_terminal_event(provider):
         yield SimpleNamespace(type="response.output_text.delta", delta="he")
         yield SimpleNamespace(type="response.output_text.delta", delta="llo")
         yield SimpleNamespace(
-            type="response.output_item.added",
+            type="response.output_item.done",
             item=SimpleNamespace(type="function_call", call_id="c1", name="bash", arguments='{"command":"ls"}'),
         )
         yield SimpleNamespace(
@@ -198,3 +198,108 @@ async def test_stream_reports_errors_as_events(provider):
     assert len(errors) == 1
     assert "401" in errors[0].error
     assert not any(type(e).__name__ == "ProviderMessageCompleted" for e in collected)
+
+
+async def test_stream_only_chat_collects_the_stream():
+    from openagent.provider.responses import OpenAIResponsesProvider
+
+    provider = OpenAIResponsesProvider(api_key="jwt", base_url="http://localhost:1", stream_only=True)
+    sent = {}
+
+    async def events():
+        yield SimpleNamespace(type="response.created", response=SimpleNamespace(id="resp_1"))
+        yield SimpleNamespace(type="response.output_text.delta", delta="ok")
+        yield SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(type="function_call", call_id="c1", name="bash", arguments='{"command":"ls"}'),
+        )
+
+    async def create(**kwargs):
+        sent.update(kwargs)
+        return events()
+
+    provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    message = await provider.chat([Message(role="user", content="hi")])
+    assert sent["stream"] is True
+    assert message.text == "ok"
+    assert message.tool_calls[0].name == "bash"
+    assert message.tool_calls[0].arguments == {"command": "ls"}
+
+
+async def test_stream_only_chat_raises_the_backend_error():
+    from openagent.provider.responses import OpenAIResponsesProvider
+
+    provider = OpenAIResponsesProvider(api_key="jwt", base_url="http://localhost:1", stream_only=True)
+
+    async def create(**kwargs):
+        raise ValueError("model_not_found")
+
+    provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    with pytest.raises(RuntimeError, match="model_not_found"):
+        await provider.chat([Message(role="user", content="hi")])
+
+
+async def test_chat_completions_kwargs_are_translated(provider):
+    await provider.chat([Message(role="user", content="hi")], reasoning_effort="high", max_tokens=256)
+    sent = provider._client.responses.kwargs
+    assert sent["reasoning"] == {"effort": "high"}
+    assert sent["max_output_tokens"] == 256
+    assert "reasoning_effort" not in sent and "max_tokens" not in sent
+
+
+def _streaming(provider, events):
+    sent = {}
+
+    async def create(**kwargs):
+        sent.update(kwargs)
+
+        async def gen():
+            yield SimpleNamespace(type="response.created", response=SimpleNamespace(id="resp_1"))
+            for event in events:
+                yield event
+
+        return gen()
+
+    provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    return sent
+
+
+async def test_a_tool_call_sent_whole_on_added_and_done_runs_once(provider):
+    from openagent.providers.events import ProviderToolCall
+
+    item = SimpleNamespace(type="function_call", call_id="c1", name="bash", arguments='{"command":"rm x"}')
+    _streaming(provider, [
+        SimpleNamespace(type="response.output_item.added", item=item),
+        SimpleNamespace(type="response.output_item.done", item=item),
+    ])
+    collected = [e async for e in provider.stream([Message(role="user", content="hi")])]
+    assert len([e for e in collected if isinstance(e, ProviderToolCall)]) == 1
+
+
+async def test_reasoning_summaries_stream_as_thinking(provider):
+    from openagent.providers.events import ProviderReasoningDelta, ProviderTextDelta
+
+    _streaming(provider, [
+        SimpleNamespace(type="response.reasoning_summary_part.added", summary_index=0),
+        SimpleNamespace(type="response.reasoning_summary_text.delta", delta="**Factoring**"),
+        SimpleNamespace(type="response.reasoning_summary_part.added", summary_index=1),
+        SimpleNamespace(type="response.reasoning_summary_text.delta", delta="7 x 143"),
+        SimpleNamespace(type="response.output_text.delta", delta="No."),
+    ])
+    collected = [e async for e in provider.stream([Message(role="user", content="hi")])]
+    thinking = "".join(e.delta for e in collected if isinstance(e, ProviderReasoningDelta))
+    assert thinking == "**Factoring**\n\n7 x 143"
+    assert [e.delta for e in collected if isinstance(e, ProviderTextDelta)] == ["No."]
+
+
+async def test_a_reasoning_model_asks_for_a_summary_alongside_the_effort():
+    provider = OpenAIResponsesProvider(api_key="jwt", base_url="http://localhost:1", reasoning_summary="auto")
+    sent = _streaming(provider, [])
+    _ = [e async for e in provider.stream([Message(role="user", content="hi")], reasoning_effort="low")]
+    assert sent["reasoning"] == {"effort": "low", "summary": "auto"}
+
+
+async def test_a_model_without_reasoning_gets_no_reasoning_parameter(provider):
+    sent = _streaming(provider, [])
+    _ = [e async for e in provider.stream([Message(role="user", content="hi")])]
+    assert "reasoning" not in sent

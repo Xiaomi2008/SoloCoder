@@ -87,7 +87,7 @@ Type 'quit' or 'exit' to stop the agent.
     )
     save_key_parser.add_argument(
         "provider",
-        choices=["tavily"],
+        choices=["tavily", "ebay_id", "ebay_secret"],
         help="Provider name (e.g., tavily)",
     )
     save_key_parser.add_argument(
@@ -101,7 +101,7 @@ Type 'quit' or 'exit' to stop the agent.
     )
     delete_key_parser.add_argument(
         "provider",
-        choices=["tavily"],
+        choices=["tavily", "ebay_id", "ebay_secret"],
         help="Provider name (e.g., tavily)",
     )
 
@@ -179,8 +179,8 @@ Type 'quit' or 'exit' to stop the agent.
     parser.add_argument(
         "--max-context-tokens",
         type=int,
-        default=128000,
-        help="Maximum context window size in tokens (default: 128000)",
+        default=None,
+        help="Maximum context window size in tokens (default: the model's, else 128000)",
     )
 
     parser.add_argument(
@@ -464,8 +464,8 @@ def display_context_status_bar(coder, turn_counter: int = 0) -> None:
     """
     try:
         current_tokens = coder.session.token_count
-        max_tokens = getattr(coder, "max_context_tokens", 128000)
-        threshold = getattr(coder, "compact_threshold", 0.8)
+        max_tokens = getattr(coder, "loop_defaults", {}).get("max_context_tokens", 128000)
+        threshold = getattr(coder, "loop_defaults", {}).get("compact_threshold", 0.8)
         threshold_tokens = int(max_tokens * threshold)
 
         # Calculate percentage and color
@@ -620,7 +620,7 @@ async def run_interactive_session(
                     if not arg:
                         # Take a screenshot and analyze
                         print(f"\n{green('⎿')} Taking screenshot...")
-                        img_base64 = screenshot(return_base64=True)
+                        img_base64 = await screenshot(return_base64=True)
 
                         if img_base64:
                             # Run multimodal analysis
@@ -731,8 +731,8 @@ async def run_interactive_session(
                 elif cmd == "/compact":
                     """Manually compact conversation context."""
                     try:
-                        max_tokens = getattr(coder, "max_context_tokens", 128000)
-                        threshold = getattr(coder, "compact_threshold", 0.8)
+                        max_tokens = getattr(coder, "loop_defaults", {}).get("max_context_tokens", 128000)
+                        threshold = getattr(coder, "loop_defaults", {}).get("compact_threshold", 0.8)
 
                         summary = await coder.session.compact_context(
                             provider=coder.provider,
@@ -883,15 +883,38 @@ async def main():
     if args.base_url:
         provider_kwargs["base_url"] = args.base_url
 
-    # Create provider with optional API key override
-    provider = ProviderClass(**provider_kwargs)
+    # A catalog key (`openai_oauth/gpt-6.1-sol`) names an endpoint and its auth;
+    # the registry resolves stored credentials (subscription sign-ins included).
+    from openagent.provider.registry import ProviderRegistry
+
+    registry = ProviderRegistry()
+    endpoint, _, registry_model = args.model.partition("/")
+    max_context_tokens = args.max_context_tokens
+    if registry_model and endpoint in registry.endpoints and not args.api_key:
+        from openagent.provider.catalog import ModelCatalog
+
+        # The catalog knows the model's real window (gpt-6.1-sol: 500k); the
+        # endpoint default is a guess. Discovery is skipped when it is known.
+        catalog = ModelCatalog(registry)
+        ref = catalog.get(args.model)
+        if ref is None:
+            await catalog.discover(endpoint)
+            ref = catalog.get(args.model)
+        if ref is None or args.base_url:
+            ref = registry.ref(endpoint, registry_model, base_url=args.base_url)
+        provider = await registry.build_async(ref)
+        max_context_tokens = max_context_tokens or ref.caps.context_window
+        print(f"Using {endpoint} (model: {registry_model}, context {ref.caps.context_window:,})")
+    else:
+        # Create provider with optional API key override
+        provider = ProviderClass(**provider_kwargs)
 
     # Create the coder agent with compaction settings
     coder = CoderAgent(
         provider=provider,
         max_turns=args.max_turns,
         working_dir=args.working_dir,
-        max_context_tokens=args.max_context_tokens,
+        max_context_tokens=max_context_tokens or 128000,
         compact_threshold=args.compact_threshold,
         disable_compaction=args.disable_compaction,
     )
@@ -1021,8 +1044,18 @@ async def handle_config_command(args: argparse.Namespace) -> None:
         )
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Synchronous entry point for the installed console script.
+
+    ``main`` is async, but a console script calls it synchronously. Without
+    this wrapper, ``openagent auth login …`` returns a coroutine object and
+    never awaits it — the command prints the coroutine and exits.
+    """
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
+
+
+if __name__ == "__main__":
+    run()

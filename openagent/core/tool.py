@@ -16,6 +16,7 @@ PYTHON_TYPE_TO_JSON: dict[type, str] = {
     float: "number",
     bool: "boolean",
     list: "array",
+    tuple: "array",
     dict: "object",
 }
 
@@ -79,6 +80,24 @@ def _json_type(hint: Any) -> str:
     return PYTHON_TYPE_TO_JSON.get(hint, "string")
 
 
+def _items_schema(hint: Any) -> dict[str, Any] | None:
+    """The item schema of a ``list[X]`` / ``tuple[X, ...]`` hint, if it has one.
+
+    Without it an array parameter is an array of anything, and a model asked
+    for ``region: tuple[int, int, int, int]`` sends one string instead.
+    """
+    origin = get_origin(hint)
+    if origin in (Union, UnionType):
+        non_none = [a for a in get_args(hint) if a is not type(None)]
+        return _items_schema(non_none[0]) if len(non_none) == 1 else None
+    if origin not in (list, tuple):
+        return None
+    args = [a for a in get_args(hint) if a is not Ellipsis]
+    if not args or len(set(args)) != 1:
+        return None
+    return {"type": _json_type(args[0])}
+
+
 def _build_parameters_schema(func: Callable[..., Any]) -> dict[str, Any]:
     hints = get_type_hints(func)
     sig = inspect.signature(func)
@@ -93,6 +112,9 @@ def _build_parameters_schema(func: Callable[..., Any]) -> dict[str, Any]:
             continue
         hint = hints.get(name, str)
         properties[name] = {"type": _json_type(hint)}
+        items = _items_schema(hint)
+        if items is not None:
+            properties[name]["items"] = items
         if arg_docs.get(name):
             properties[name]["description"] = arg_docs[name]
 
@@ -139,6 +161,13 @@ class ToolContext:
     """
 
     working_dir: str | None = None
+    #: When true, the built-in file tools must keep paths inside
+    #: ``working_dir``. This is a path check, not an OS sandbox: ``bash`` can
+    #: still leave the directory until a VM/container boundary exists.
+    enforce_scope: bool = False
+    #: Where compaction saves the tool outputs it clears from this session,
+    #: for ``recall_output``. None when the session is not stored.
+    outputs_dir: str | None = None
 
     def resolve(self, path: str | Path | None = None) -> Path:
         """Absolute path for ``path``, anchored at the session directory."""
@@ -151,6 +180,21 @@ class ToolContext:
             return base
         candidate = Path(path).expanduser()
         return candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()
+
+    def contains(self, path: str | Path) -> bool:
+        """Whether ``path`` resolves inside the session directory.
+
+        ``resolve()`` follows symlinks, so a link in the working directory that
+        points outside it is refused: the check is on the resolved target, not
+        on the string the model wrote.
+        """
+        base = (
+            Path(self.working_dir).expanduser().resolve()
+            if self.working_dir
+            else Path.cwd().resolve()
+        )
+        candidate = Path(path).expanduser().resolve()
+        return candidate == base or candidate.is_relative_to(base)
 
 
 # Parameters the harness fills in; they must never reach the model's schema.

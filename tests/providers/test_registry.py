@@ -95,6 +95,17 @@ def test_build_oauth_anthropic_sends_bearer_and_beta_header(registry):
     assert client._custom_headers["anthropic-account-id"] == "acct_1"
 
 
+def test_the_codex_version_comes_from_the_installed_codex(tmp_path, monkeypatch):
+    from openagent.provider.registry import codex_client_version
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert codex_client_version("9.9.9") == "9.9.9", "no Codex installed: the fallback"
+    (tmp_path / "models_cache.json").write_text('{"client_version": "0.170.2", "models": []}')
+    assert codex_client_version("9.9.9") == "0.170.2"
+    (tmp_path / "models_cache.json").write_text('{"client_version": "x; rm -rf /"}')
+    assert codex_client_version("9.9.9") == "9.9.9", "only a plain version goes into the URL"
+
+
 def test_build_subscription_openai_uses_responses_adapter(registry):
     ref = registry.ref("openai_oauth")
     creds = Credentials(
@@ -106,6 +117,10 @@ def test_build_subscription_openai_uses_responses_adapter(registry):
     assert isinstance(provider, OpenAIResponsesProvider)
     assert provider.base_url == "https://chatgpt.com/backend-api/codex"
     assert provider._client._custom_headers["OpenAI-Organization"] == "acct_9"
+    # The subscription backend rejects non-streaming requests.
+    assert provider._stream_only is True
+    # A reasoning model asks for summaries, which the app shows as thinking.
+    assert provider._reasoning_summary == "auto"
 
 
 def test_local_anthropic_server_gets_a_placeholder_key(registry):

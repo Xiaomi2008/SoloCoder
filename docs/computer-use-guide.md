@@ -40,6 +40,21 @@ python cli_coder.py \
     -w /path/to/project
 ```
 
+### Using the Mac app
+
+The app does not expose the GUI tools by default. Open **Settings** (⌘,) →
+**Computer use**, turn on **Expose macOS GUI tools**, and the app restarts its
+service with `--computer-use`. The choice is remembered between launches.
+
+```bash
+# dependencies
+uv pip install -e ".[computer-use]"
+```
+
+The app also needs macOS **Screen Recording** and **Accessibility** permission.
+The selected model must be vision-capable; computer use is screenshot → model
+reads the image → click coordinates.
+
 ### Using the Web UI
 
 ```bash

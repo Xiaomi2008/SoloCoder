@@ -53,7 +53,11 @@ public final class Sidecar {
     }
 
     public let socketPath: String
-    private let process = Process()
+    /// Replaced on every `start`: a `Process` launches once, and `run()` on one
+    /// that already ran raises "task already launched" — which, thrown inside
+    /// the restart task a settings toggle starts, left the concurrency runtime
+    /// corrupt and crashed the next view update.
+    private var process = Process()
     private let logPath: String
     /// Held for the process's life: closing it early would tell the service its
     /// parent is gone while the app is running fine.
@@ -124,9 +128,17 @@ public final class Sidecar {
         } ?? ""
     }
 
-    public func start() async throws {
+    /// `computerUse` adds the service's GUI tool set; `browserUse` its browser tools.
+    ///
+    /// The tools are fixed at process start, so this is a launch flag and not a
+    /// runtime setting: changing it requires a new service, which the app does
+    /// by restarting its connection.
+    public func start(
+        computerUse: Bool = false, browserUse: Bool = false, browserProfile: Bool = false, browserChrome: Bool = false
+    ) async throws {
         if running { return }
         guard let launch = Self.resolveLaunch() else { throw Failure.noService }
+        process = Process()
         let directory = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
         sweepStaleDirectories(under: "/tmp/oa-\(getuid())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -144,6 +156,15 @@ public final class Sidecar {
             arguments += ["-I", "-B", "-u"]
         }
         arguments += [launch.script.path, "serve", "--socket", socketPath, "--quiet"]
+        if computerUse {
+            arguments.append("--computer-use")
+        }
+        if browserUse {
+            arguments.append("--browser-use")
+            // The service's default profile directory, ~/.openagent/browser-profile.
+            if browserProfile { arguments.append("--browser-profile") }
+            if browserChrome { arguments += ["--browser-channel", "chrome"] }
+        }
         process.arguments = arguments
         // The bundle is read-only under translocation, so the service's cwd is
         // the home directory — where its sessions and config already live. In
@@ -250,6 +271,9 @@ func serviceEnvironment(for launch: Sidecar.Launch) -> [String: String] {
     if environment["TMPDIR"] == nil { environment["TMPDIR"] = NSTemporaryDirectory() }
     if environment["LANG"] == nil { environment["LANG"] = "en_US.UTF-8" }
     environment["PATH"] = loginShellPath()
+    // The computer-use tools hide this app before they act, so the agent's
+    // typing lands in the app the person was using and not in our composer.
+    environment["OPENAGENT_HOST_PID"] = String(ProcessInfo.processInfo.processIdentifier)
     if case .repository(let root) = launch {
         // Development: the interpreter is the checkout's venv, and a venv needs
         // its `VIRTUAL_ENV` to find its own site-packages when the interpreter

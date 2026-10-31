@@ -72,6 +72,23 @@ def _decode_payload(provider: str, raw: str | None) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _stored_headers(spec: OAuthProviderSpec, credentials: Credentials) -> dict[str, str]:
+    """The headers worth persisting: not the ones the spec derives.
+
+    ``credentials`` comes from ``resolve()``, so its headers already carry the
+    spec's (vendor headers, the account id under the spec's header name).
+    Saving those froze them into the keychain, where they override the spec
+    from then on — a renamed account header kept sending the old name. Any
+    header carrying the account id is derived, whatever it is called.
+    """
+    account_id = credentials.tokens.account_id if credentials.tokens else None
+    return {
+        name: value
+        for name, value in credentials.headers.items()
+        if name not in spec.api_headers and name != spec.account_header and not (account_id and value == account_id)
+    }
+
+
 class AuthBroker:
     """Credential resolution, storage, and refresh."""
 
@@ -239,7 +256,7 @@ class AuthBroker:
             mode=credentials.mode,
             api_key=credentials.api_key,
             tokens=refreshed,
-            headers=credentials.headers,
+            headers=_stored_headers(spec, credentials),
             source="oauth",
             label=credentials.label,
         )

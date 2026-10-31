@@ -176,6 +176,14 @@ class ServiceClient:
     async def cancel(self, run_id: str) -> dict[str, Any]:
         return await self.call(Method.RUN_CANCEL, {"run_id": run_id})
 
+    async def set_permission_mode(
+        self, run_id: str, permission_mode: str
+    ) -> dict[str, Any]:
+        return await self.call(
+            Method.RUN_PERMISSION_MODE,
+            {"run_id": run_id, "permission_mode": permission_mode},
+        )
+
     async def respond_permission(
         self, request_id: str, granted: bool, scope: str = "once"
     ) -> dict[str, Any]:
@@ -192,6 +200,34 @@ class ServiceClient:
 
     async def select_model(self, model: str) -> dict[str, Any]:
         return await self.call(Method.MODEL_SELECT, {"model": model})
+
+    async def add_endpoint(
+        self,
+        name: str,
+        base_url: str,
+        *,
+        wire_api: str = "openai-chat",
+        label: str = "",
+        local: bool = True,
+        requires_key: bool = False,
+        tools: bool = True,
+        context_window: int = 32768,
+    ) -> dict[str, Any]:
+        params = {
+            "name": name,
+            "base_url": base_url,
+            "wire_api": wire_api,
+            "local": local,
+            "requires_key": requires_key,
+            "tools": tools,
+            "context_window": context_window,
+        }
+        if label:
+            params["label"] = label
+        return await self.call(Method.MODEL_ADD_ENDPOINT, params)
+
+    async def remove_endpoint(self, name: str) -> bool:
+        return bool((await self.call(Method.MODEL_REMOVE_ENDPOINT, {"name": name}))["removed"])
 
     async def auth_status(self) -> dict[str, Any]:
         return await self.call(Method.AUTH_STATUS)

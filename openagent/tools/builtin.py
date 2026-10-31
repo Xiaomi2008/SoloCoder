@@ -21,6 +21,22 @@ from ..core.tool import ToolContext, tool
 # ============================================================================
 
 
+def _scope(ctx: ToolContext, path: str | None = None) -> tuple[Path | None, str | None]:
+    """Resolve ``path`` and enforce the auto-mode file scope.
+
+    This is a path check, not an OS sandbox: it keeps the built-in file tools
+    inside the run's directory, but shell commands can still leave it until a
+    VM/container boundary exists.
+    """
+    resolved = ctx.resolve(path)
+    if ctx.enforce_scope and not ctx.contains(resolved):
+        return None, (
+            f"Error: Access denied. Path '{resolved}' is outside the working "
+            f"directory '{ctx.working_dir}'."
+        )
+    return resolved, None
+
+
 @tool
 def read(
     path: str,
@@ -38,14 +54,10 @@ def read(
     Returns:
         File contents as string, or base64-encoded image data for image files
     """
-    file_path = (tool_context or ToolContext()).resolve(path)
-
-    # Security check: ensure path is within allowed directory if set
-    import os
-
-    project_root = os.environ.get("AGENT_PROJECT_ROOT")
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
-        return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
+    ctx = tool_context or ToolContext()
+    file_path, denied = _scope(ctx, path)
+    if denied:
+        return denied
 
     if not file_path.exists():
         return f"Error: File '{path}' does not exist."
@@ -101,14 +113,10 @@ def write(
     Returns:
         Success message with file size
     """
-    file_path = (tool_context or ToolContext()).resolve(path)
-
-    # Security check: ensure path is within allowed directory if set
-    import os
-
-    project_root = os.environ.get("AGENT_PROJECT_ROOT")
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
-        return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
+    ctx = tool_context or ToolContext()
+    file_path, denied = _scope(ctx, path)
+    if denied:
+        return denied
 
     if create_parents:
         try:
@@ -143,14 +151,10 @@ def edit(
     Returns:
         Number of replacements and a unified diff
     """
-    file_path = (tool_context or ToolContext()).resolve(path)
-
-    # Security check: ensure path is within allowed directory if set
-    import os
-
-    project_root = os.environ.get("AGENT_PROJECT_ROOT")
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
-        return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
+    ctx = tool_context or ToolContext()
+    file_path, denied = _scope(ctx, path)
+    if denied:
+        return denied
 
     if not file_path.exists():
         return f"Error: File '{path}' does not exist."
@@ -222,14 +226,10 @@ def notebook_edit(
     Returns:
         Result message with cell update info
     """
-    file_path = (tool_context or ToolContext()).resolve(path)
-
-    # Security check: ensure path is within allowed directory if set
-    import os
-
-    project_root = os.environ.get("AGENT_PROJECT_ROOT")
-    if project_root and not str(file_path).startswith(os.path.realpath(project_root)):
-        return f"Error: Access denied. File '{file_path}' is outside the project root '{project_root}'."
+    ctx = tool_context or ToolContext()
+    file_path, denied = _scope(ctx, path)
+    if denied:
+        return denied
 
     if not file_path.exists():
         return f"Error: Notebook '{path}' does not exist."
@@ -279,14 +279,10 @@ def glob(pattern: str, path: str | None = None, max_results: int = 100, tool_con
     Returns:
         Newline-separated list of matching file paths
     """
-    base = (tool_context or ToolContext()).resolve(path)
-
-    # Security check: ensure path is within allowed directory if set
-    import os
-
-    project_root = os.environ.get("AGENT_PROJECT_ROOT")
-    if project_root and not str(base).startswith(os.path.realpath(project_root)):
-        return f"Error: Access denied. Path '{base}' is outside the project root '{project_root}'."
+    ctx = tool_context or ToolContext()
+    base, denied = _scope(ctx, path)
+    if denied:
+        return denied
 
     if not base.exists():
         return f"Error: Directory '{path}' does not exist."
@@ -332,14 +328,10 @@ def grep(
     Returns:
         Matches with file paths, line numbers and context
     """
-    base = (tool_context or ToolContext()).resolve(path)
-
-    # Security check: ensure path is within allowed directory if set
-    import os
-
-    project_root = os.environ.get("AGENT_PROJECT_ROOT")
-    if project_root and not str(base).startswith(os.path.realpath(project_root)):
-        return f"Error: Access denied. Path '{base}' is outside the project root '{project_root}'."
+    ctx = tool_context or ToolContext()
+    base, denied = _scope(ctx, path)
+    if denied:
+        return denied
 
     if not base.exists():
         return f"Error: Path '{path}' does not exist."
@@ -452,24 +444,17 @@ def bash(
     if background:
         return f"Error: Background execution requires special handling. Use bash_background instead."
 
+    ctx = tool_context or ToolContext()
     try:
         # Set up working directory
-        cwd = (tool_context or ToolContext()).resolve(working_dir)
+        cwd, denied = _scope(ctx, working_dir)
+        if denied:
+            return denied
         if not cwd.exists():
             return f"Error: Working directory '{working_dir or cwd}' does not exist."
 
-        # Security check: ensure working_dir is within allowed directory if set
-        import os
-
-        project_root = os.environ.get("AGENT_PROJECT_ROOT")
-        if (
-            cwd
-            and project_root
-            and not str(cwd).startswith(os.path.realpath(project_root))
-        ):
-            return f"Error: Access denied. Working directory '{cwd}' is outside the project root '{project_root}'."
-
-        # Execute command
+        # `cwd` is the starting directory, not a boundary: no OS sandbox is
+        # installed yet, so an absolute path or `cd /` can still escape.
         process = subprocess.Popen(
             command,
             shell=True,
@@ -671,12 +656,18 @@ def bash_background(
     """
     from ..core.bash_manager import get_bash_manager
 
+    ctx = tool_context or ToolContext()
     try:
         manager = get_bash_manager()
-        session_dir = working_dir or (tool_context.working_dir if tool_context else None)
+        session_dir, denied = _scope(ctx, working_dir)
+        if denied:
+            return denied
         # Run the async function in a new event loop if needed
         session_id = asyncio.run(
-            manager.start_session(command=command, working_dir=session_dir)
+            manager.start_session(
+                command=command,
+                working_dir=str(session_dir),
+            )
         )
         return f"Started bash session '{session_id}' in '{session_dir or '.'}'. Use bash_output to retrieve output."
     except Exception as e:

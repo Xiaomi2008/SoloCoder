@@ -7,6 +7,7 @@ from typing import Any
 from openagent.core.retry import get_provider_retryable_exceptions, with_retry
 from openagent.core.types import (
     ContentBlock,
+    ImageBlock,
     Message,
     TextBlock,
     ToolDef,
@@ -33,7 +34,12 @@ class OllamaConverterMixin(MessageConverterMixin):
                 converted.append({"role": "system", "content": msg.text})
 
             elif msg.role == "user":
-                converted.append({"role": "user", "content": msg.text})
+                entry: dict[str, Any] = {"role": "user", "content": msg.text}
+                if not isinstance(msg.content, str):
+                    images = [b.data for b in msg.content if isinstance(b, ImageBlock)]
+                    if images:
+                        entry["images"] = images
+                converted.append(entry)
 
             elif msg.role == "assistant":
                 entry: dict[str, Any] = {"role": "assistant"}

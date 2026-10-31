@@ -35,6 +35,7 @@ from openagent.providers.events import (
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,
+    ProviderReasoningDelta,
     ProviderStreamEvent,
     ProviderTextDelta,
     ProviderToolCall,
@@ -152,17 +153,26 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
 
     def __init__(
         self,
-        model: str = "gpt-5-codex",
+        model: str = "gpt-6.1-sol",
         api_key: str | None = None,
         base_url: str | None = None,
         max_retries: int = 3,
         default_headers: dict[str, str] | None = None,
         store: bool = False,
+        stream_only: bool = False,
+        reasoning_summary: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(model=model, api_key=api_key)
         self._max_retries = max_retries
         self._store = store
+        # The ChatGPT subscription backend answers a non-streaming request with
+        # 400 "Stream must be set to true"; chat() then collects the stream.
+        self._stream_only = stream_only
+        # A reasoning model streams nothing while it thinks unless a summary is
+        # requested; with one, the summary is the app's thinking line. Only for
+        # reasoning models: others reject the `reasoning` parameter outright.
+        self._reasoning_summary = reasoning_summary
         self.base_url = base_url
         try:
             from openai import AsyncOpenAI
@@ -183,6 +193,18 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         self, messages: list[Message], tools: list[ToolDef] | None, system_prompt: str, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         converted = self.convert_messages(messages, system_prompt)
+        # The runner speaks chat-completions kwargs; the Responses API nests
+        # effort under `reasoning` and calls the output cap `max_output_tokens`.
+        effort = kwargs.pop("reasoning_effort", None)
+        if effort or self._reasoning_summary:
+            reasoning = dict(kwargs.get("reasoning") or {})
+            if effort:
+                reasoning.setdefault("effort", effort)
+            if self._reasoning_summary:
+                reasoning.setdefault("summary", self._reasoning_summary)
+            kwargs["reasoning"] = reasoning
+        if "max_tokens" in kwargs:
+            kwargs.setdefault("max_output_tokens", kwargs.pop("max_tokens"))
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "input": converted["input"],
@@ -203,6 +225,9 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         system_prompt: str = "",
         **kwargs: Any,
     ) -> Message:
+        if self._stream_only:
+            return await self._chat_via_stream(messages, tools, system_prompt, kwargs)
+
         retryable = get_provider_retryable_exceptions("openai")
 
         @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
@@ -213,6 +238,25 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
             return self.convert_response(response)
 
         return await _call()
+
+    async def _chat_via_stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef] | None,
+        system_prompt: str,
+        kwargs: dict[str, Any],
+    ) -> Message:
+        text: list[str] = []
+        calls: list[ContentBlock] = []
+        async for event in self.stream(messages, tools, system_prompt, **kwargs):
+            if isinstance(event, ProviderTextDelta):
+                text.append(event.delta)
+            elif isinstance(event, ProviderToolCall):
+                calls.append(ToolUseBlock(id=event.id, name=event.name, arguments=event.arguments))
+            elif isinstance(event, ProviderError):
+                raise RuntimeError(event.error)
+        blocks: list[ContentBlock] = [TextBlock(text="".join(text))] if text else []
+        return Message(role="assistant", content=[*blocks, *calls] or [TextBlock(text="")])
 
     async def stream(
         self,
@@ -247,7 +291,20 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
                     if delta:
                         yield ProviderTextDelta(message_id=message_id, delta=delta)
 
-                elif event_type in ("response.output_item.added", "response.output_item.done"):
+                elif event_type in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+                    delta = getattr(event, "delta", "")
+                    if delta:
+                        yield ProviderReasoningDelta(message_id=message_id, delta=delta)
+
+                elif event_type == "response.reasoning_summary_part.added":
+                    # Each part is a paragraph; without the break they run together.
+                    if getattr(event, "summary_index", 0):
+                        yield ProviderReasoningDelta(message_id=message_id, delta="\n\n")
+
+                elif event_type == "response.output_item.done":
+                    # `.done` only: the item is complete there. `.added` carries
+                    # empty arguments on the ChatGPT backend, but a server that
+                    # sends them whole on both would have the tool run twice.
                     item = getattr(event, "item", None)
                     if getattr(item, "type", None) != "function_call":
                         continue

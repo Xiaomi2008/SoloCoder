@@ -19,6 +19,14 @@ import SwiftUI
 /// `.regular` is the line that makes it a normal app; the delayed raise is
 /// because SwiftUI has not created the window at `didFinishLaunching`.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// ⌘V with an image on the pasteboard. The focused `TextField` disables the
+    /// system Paste item for an image-only clipboard — it has no text to paste —
+    /// so the event is intercepted before the field sees it. A clipboard with
+    /// text is left alone: the field's own paste still handles it, with its
+    /// cursor position and undo intact. The rule is `ClipboardImage`'s, and only
+    /// the composer's ⌘V is taken: a paste in Settings or the search box is theirs.
+    private var pasteMonitor: Any?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if SelfTest.requested() {
             setvbuf(stdout, nil, _IONBF, 0)
@@ -39,7 +47,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // reverse of what the numbers suggest, and getting it backwards turns a
         // visible app into a background one.
         NSApp.setActivationPolicy(.regular)
-        raiseWindows(after: 0.2)
+        positionAndRaiseWindows(after: 0.2)
+        ImagePaste.install()
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags.contains(.command),
+                !flags.contains(.shift),
+                !flags.contains(.option),
+                event.charactersIgnoringModifiers?.lowercased() == "v",
+                ImagePaste.composerIsFocused(in: event.window),
+                ClipboardImage.shouldPasteAsImage()
+            else { return event }
+            NotificationCenter.default.post(name: .solocoderPasteImage, object: nil)
+            return nil
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -52,13 +73,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         !SelfTest.requested()
     }
 
-    /// Raise the app's own window, and only that one.
+    /// Position the app's window on the focused screen and raise it.
+    ///
+    /// This runs once, at launch. SwiftUI restores a window at its saved frame,
+    /// which may be on a display the user is not looking at; positioning it at
+    /// launch puts it where the focus is. It must not run again on activation,
+    /// or a window the user dragged would snap back to the top-center.
     ///
     /// SwiftUI keeps hidden helper windows in `NSApp.windows` — the alert host,
     /// the menu bar's window. Ordering *those* to the front shows them: a small
     /// empty panel on top of everything, which is what a user sees instead of
     /// the app. Titled and visible is the filter.
-    private func raiseWindows(after delay: TimeInterval) {
+    private func positionAndRaiseWindows(after delay: TimeInterval) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             let main = NSApp.windows.first { $0.isVisible && !$0.title.isEmpty }
             // `center()` centers on the screen the window is already on, which
@@ -74,6 +100,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             main?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// Raise the window without moving it. Activation happens every time the
+    /// user clicks the app, so this is where a dragged window must stay put.
+    private func raiseWindows(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            let main = NSApp.windows.first { $0.isVisible && !$0.title.isEmpty }
+            main?.makeKeyAndOrderFront(nil)
         }
     }
 }
@@ -97,7 +132,23 @@ struct SoloCoderApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New run") { model.newRun() }
                     .keyboardShortcut("n", modifiers: .command)
+                Button("Command Palette") { model.paletteOpen = true }
+                    .keyboardShortcut("k", modifiers: .command)
             }
+            // The system Paste item is greyed for an image-only pasteboard in a
+            // `TextField`. This is the same action, named, with a shortcut that
+            // does not collide with text paste.
+            CommandGroup(after: .pasteboard) {
+                Button("Paste Image") {
+                    NotificationCenter.default.post(name: .solocoderPasteImage, object: nil)
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            }
+        }
+
+        Settings {
+            SettingsView()
+                .environmentObject(model)
         }
     }
 }
