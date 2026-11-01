@@ -159,6 +159,10 @@ class SecretManager:
             input=f"{secret}\n{secret}\n",
             capture_output=True,
             text=True,
+            # Without this, a run from a terminal prompts on that terminal
+            # ("password data for new item:") instead of reading the pipe:
+            # the CLI asks /dev/tty first. A new session has no controlling tty.
+            start_new_session=True,
         )
         if result.returncode != 0:
             logger.debug(f"Keychain write failed for {account}: {result.stderr.strip()}")
