@@ -71,6 +71,8 @@ find_selfcontained() {
         {
             find "$APP" -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.bundle' \) -print
             echo "$APP/Contents/MacOS/SoloCoder"
+            # A native engine is a Mach-O of its own, borrowing nothing either.
+            [[ -f "$APP/Contents/Resources/sidecar/openagent" ]] && echo "$APP/Contents/Resources/sidecar/openagent"
         } | while IFS= read -r macho; do
             otool -L "$macho" 2>/dev/null | awk '
                 /^\t/ { n++; if (n > 1) { sub(/ \(.*$/, ""); sub(/^\t+/, ""); print } }'
@@ -111,6 +113,13 @@ check "self-test (relocated, read-only)" \
 # the dependency set with byte-code writing on fills the bundle's site-packages
 # with `__pycache__`, and that is a resource added after the seal: this check,
 # written the first way, broke the seal of the bundle the gate was verifying.
+if [[ -x "$APP/Contents/Resources/sidecar/openagent" ]]; then
+# A native engine has no imports to resolve; the equivalent question is whether
+# it starts at all with the developer's environment gone.
+check "native engine (scrubbed env)" bash -c '
+    env -i HOME="$HOME" PATH=/usr/bin:/bin "$1/Contents/Resources/sidecar/openagent" serve --help > /dev/null
+' _ "$WORK/SoloCoder.app"
+else
 check "imports (scrubbed env)" bash -c '
     scrub=(env -i HOME="$HOME" PATH=/usr/bin:/bin)
     py="$1/Contents/Resources/sidecar/python/bin/python3"
@@ -119,6 +128,7 @@ check "imports (scrubbed env)" bash -c '
 import mcp, anthropic, openai, httpx, google.genai, ollama
 print(\"deps ok\")
 " ' _ "$WORK/SoloCoder.app"
+fi
 
 # A real run, against the read-only copy: the provider path, the TLS roots, the
 # model's base_url, the tool set, from inside a bundle that cannot write. Off by

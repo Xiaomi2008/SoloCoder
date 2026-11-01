@@ -70,6 +70,13 @@ enum SelfTest {
                 // under test has no sidecar, and the app would be running the
                 // developer's tree — a green run proving nothing.
                 return "bundled python=\(python.lastPathComponent) app=\(Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/sidecar/app").path)"
+            case .native(let engine):
+                // Native is only a pass when it is the bundle's own: an
+                // `AGENT_ENGINE` binary is the developer's, not what ships.
+                guard engine.path.hasPrefix(Bundle.main.bundleURL.path + "/") else {
+                    throw Failure("not a bundled sidecar; resolved AGENT_ENGINE at \(engine.path)")
+                }
+                return "bundled native engine=\(engine.lastPathComponent)"
             case .repository(let root):
                 throw Failure("not a bundled sidecar; resolved the repository at \(root.path)")
             }

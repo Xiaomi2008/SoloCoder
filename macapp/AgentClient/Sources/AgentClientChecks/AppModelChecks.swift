@@ -508,7 +508,23 @@ func appChecks(_ checks: Checks) async {
     // which shows up as the check below failing with "not connected", with no
     // hint that the cause is a path. So the root is asserted to be absolute and
     // to carry an executable interpreter, before anything is spawned.
-    if let root = Sidecar.repositoryRoot() {
+    // `AGENT_ENGINE` names a native engine only when it is an executable file;
+    // a typo must fall through to the Python launch, not spawn nothing.
+    let configuredEngine = ProcessInfo.processInfo.environment["AGENT_ENGINE"]
+    setenv("AGENT_ENGINE", "/bin/sh", 1)
+    checks.expect(Sidecar.engineOverride()?.path == "/bin/sh", "AGENT_ENGINE names a native engine")
+    checks.expect(
+        Sidecar.resolveLaunch() == .native(engine: URL(fileURLWithPath: "/bin/sh")),
+        "an unbundled app launches AGENT_ENGINE before any repository"
+    )
+    checks.expect(Sidecar.Launch.native(engine: URL(fileURLWithPath: "/bin/sh")).script == nil, "a native engine has no script")
+    setenv("AGENT_ENGINE", "/definitely/not/an/engine", 1)
+    checks.expect(Sidecar.engineOverride() == nil, "an AGENT_ENGINE that is not executable is ignored")
+    if let configuredEngine { setenv("AGENT_ENGINE", configuredEngine, 1) } else { unsetenv("AGENT_ENGINE") }
+
+    if let engine = Sidecar.engineOverride() {
+        checks.note("live sidecar: native engine \(engine.path)")
+    } else if let root = Sidecar.repositoryRoot() {
         checks.expect(
             root.isFileURL && root.path.hasPrefix("/") && !root.pathComponents.contains(".."),
             "the sidecar's root is absolute, with no hops left in it: \(root.path)"
@@ -520,7 +536,7 @@ func appChecks(_ checks: Checks) async {
             "the root has an executable .venv/bin/python: \(root.path)"
         )
     } else {
-        checks.note("skipped: no repository with .venv/bin/python (set AGENT_REPO_ROOT)")
+        checks.note("skipped: no repository with .venv/bin/python (set AGENT_REPO_ROOT or AGENT_ENGINE)")
         return
     }
 

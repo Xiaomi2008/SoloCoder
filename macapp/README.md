@@ -54,6 +54,7 @@ cd macapp/AgentClient
 swift run agent-checks                        # fixtures, framing, live service, app model
 AGENT_REPO_ROOT=.. swift run agent-checks     # enable the app-model checks
 AGENT_REPO_ROOT=.. AGENT_LIVE_MODEL=lan/swift-1.5-iq3_s swift run agent-checks
+AGENT_ENGINE=~/Projects/openagent-rs/target/release/openagent swift run agent-checks  # …against the Rust engine
 swift run solocoder                           # the app itself
 swift run ui-preview                          # the views, on a scripted transcript
 UI_PREVIEW_SHORT=1 swift run ui-preview       # …top of the timeline in one window
@@ -69,8 +70,17 @@ refused permission, a 40-line result, a table.
 
 `solocoder` spawns its own service (`Sidecar`), so it needs a repository to run
 it from: `AGENT_REPO_ROOT` pointing at the SoloCoder checkout, or a working
-directory that contains `.venv/bin/python`. A shipped app embeds a frozen build
-of the service instead — that packaging step is not done.
+directory that contains `.venv/bin/python`. A shipped app runs the engine its
+bundle carries instead (`scripts/build_app.sh`).
+
+The engine is whatever speaks the socket protocol. `AGENT_ENGINE` names a
+native engine binary — the Rust port, [openagent-rs](../../openagent-rs) — and
+takes precedence over `AGENT_REPO_ROOT` in an unbundled app; a bundle always
+runs its own. `scripts/build_app.sh --engine rust` bundles that binary as
+`Contents/Resources/sidecar/openagent` in place of the interpreter: an 11 MB app
+instead of 125 MB, the same `~/.openagent` state, and `scripts/package_check.sh`
+gates both shapes. The Rust engine does not have the computer-use and browser
+tools yet, so the four checks for those flags fail against it.
 
 `agent-checks` is the gate that runs everywhere Swift runs. It spawns the real
 service (`.venv/bin/python cli_coder.py serve --socket …`), drives it, and
@@ -141,6 +151,7 @@ the run writes a session into `~/.openagent/sessions`.
 ```sh
 cd macapp/AgentClient
 AGENT_REPO_ROOT=/path/to/SoloCoder swift run solocoder
+AGENT_ENGINE=/path/to/openagent-rs/target/release/openagent swift run solocoder
 ```
 
 A window opens: a chat over the event stream, a tool timeline, a permission

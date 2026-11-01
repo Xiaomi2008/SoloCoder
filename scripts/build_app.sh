@@ -2,6 +2,14 @@
 # Build SoloCoder.app: the Swift app, and a self-contained Python service inside it.
 #
 #   scripts/build_app.sh [--clean] [--python 3.14] [--deps "mcp openai …"]
+#   scripts/build_app.sh --engine rust [--binary]
+#
+# `--engine rust` bundles the Rust engine (openagent-rs, built from
+# $OPENAGENT_RS, default ../openagent-rs) as `Contents/Resources/sidecar/openagent`
+# instead of the interpreter and the source: the same protocol and the same
+# ~/.openagent state in one 7 MB binary, with no Python in the bundle. The app
+# runs whichever engine its bundle carries. It is built for this machine's
+# architecture only.
 #
 # The service is not frozen with PyInstaller. It is a python-build-standalone
 # interpreter (the kind `uv python install` downloads) with the runtime
@@ -30,6 +38,9 @@ PY_VERSION="3.14"
 # `computer-use` is pyobjc, which needs Accessibility grants a bundled app does
 # not have. Both are flags to add later, not omissions to rediscover.
 DEPS="mcp openai anthropic httpx google-genai ollama"
+ENGINE="python"
+OPENAGENT_RS="${OPENAGENT_RS:-$ROOT/../openagent-rs}"
+BINARY_ONLY=0
 
 # The Swift build, with its output kept. `| tail -1` on a *failing* build prints
 # a code frame and hides the error line, and the script then exits with that
@@ -75,29 +86,69 @@ copy_app_source() {
     find "$sidecar/python" -name '__pycache__' -type d -prune -exec rm -rf {} +
 }
 
+# The Rust engine, built and placed where `Sidecar.resolveLaunch()` looks first.
+# Signed before the bundle, innermost first, like the interpreter's binaries.
+install_rust_engine() {
+    local log="$ROOT/.build/cargo-release.log"
+    mkdir -p "$ROOT/.build"
+    if ! cargo build --release --manifest-path "$OPENAGENT_RS/Cargo.toml" --bin openagent > "$log" 2>&1; then
+        echo "cargo build failed; full output:" >&2
+        cat "$log" >&2
+        exit 1
+    fi
+    local sidecar="$APP/Contents/Resources/sidecar"
+    # One engine per bundle: a leftover interpreter would never run, and it is
+    # 118 MB of seal to verify.
+    rm -rf "$sidecar"
+    mkdir -p "$sidecar"
+    cp "$OPENAGENT_RS/target/release/openagent" "$sidecar/openagent"
+    xattr -c "$sidecar/openagent" 2>/dev/null || true
+    codesign --force --sign - --timestamp=none "$sidecar/openagent" >/dev/null 2>&1
+    echo "    $("$sidecar/openagent" --version) ($(du -h "$sidecar/openagent" | cut -f1))"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean) rm -rf "$STAGE" "$ROOT/.build/pythons"; shift ;;
         --python) PY_VERSION="$2"; shift 2 ;;
         --deps) DEPS="$2"; shift 2 ;;
+        --engine)
+            ENGINE="$2"; shift 2
+            [[ "$ENGINE" == python || "$ENGINE" == rust ]] || { echo "--engine is python or rust" >&2; exit 2; } ;;
         # The app binary alone, into an existing bundle: the interpreter copy is
         # the slow part of a full build, and iterating on the Swift side should
         # not pay for 118 MB of `cp` each time.
-        --binary)
-            build_app_binary
-            copy_app_source
-            [[ -f "$APP/Contents/MacOS/SoloCoder" ]] || { echo "no bundle to update; run without --binary first" >&2; exit 1; }
-            cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
-            codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/SoloCoder" >/dev/null
-            codesign --force --sign - --entitlements "$ROOT/macapp/entitlements.plist" --timestamp=none "$APP" >/dev/null
-            codesign --verify --deep --strict "$APP" && echo "==> $APP"
-            exit 0 ;;
+        --binary) BINARY_ONLY=1; shift ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
     esac
 done
 
-command -v uv >/dev/null || { echo "uv is required: https://docs.astral.sh/uv/" >&2; exit 1; }
+# Prerequisites before anything is built or removed: a full build starts by
+# deleting the old bundle, and a missing tool found after that leaves half an app.
+require_rust_engine() {
+    command -v cargo >/dev/null || { echo "cargo is required for --engine rust: https://rustup.rs" >&2; exit 1; }
+    [[ -f "$OPENAGENT_RS/Cargo.toml" ]] || { echo "no openagent-rs checkout at $OPENAGENT_RS (set OPENAGENT_RS)" >&2; exit 1; }
+}
+[[ "$ENGINE" == rust ]] && require_rust_engine
+
+if (( BINARY_ONLY )); then
+    [[ -f "$APP/Contents/MacOS/SoloCoder" ]] || { echo "no bundle to update; run without --binary first" >&2; exit 1; }
+    build_app_binary
+    if [[ "$ENGINE" == rust ]]; then
+        install_rust_engine
+    else
+        copy_app_source
+    fi
+    cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
+    codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/SoloCoder" >/dev/null
+    codesign --force --sign - --entitlements "$ROOT/macapp/entitlements.plist" --timestamp=none "$APP" >/dev/null
+    codesign --verify --deep --strict "$APP" && echo "==> $APP"
+    exit 0
+fi
+
 command -v swift >/dev/null || { echo "the Swift toolchain is required" >&2; exit 1; }
+if [[ "$ENGINE" == python ]]; then
+command -v uv >/dev/null || { echo "uv is required: https://docs.astral.sh/uv/" >&2; exit 1; }
 
 PY_HOME="$ROOT/.build/pythons"
 # The installed interpreter's directory is named by the full version, so resolve
@@ -121,6 +172,7 @@ echo "==> service dependencies"
 uv pip install --python "$PY_BIN" --link-mode=clone --target "$SITE" $DEPS --quiet
 # Not needed at runtime, and 6 MB of the payload.
 rm -rf "$SITE/pip" "$SITE/pip-"*.dist-info
+fi
 
 echo "==> app"
 build_app_binary
@@ -130,11 +182,16 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/sidecar"
 cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
 
+if [[ "$ENGINE" == rust ]]; then
+    echo "==> rust engine"
+    install_rust_engine
+else
 # The sidecar: the interpreter, and the project's own source. `cp -R` of the
 # interpreter keeps its symlinks (`bin/python3` → `python3.14`), which is what
 # makes the tree relocatable.
 cp -R "$PY_DIR" "$APP/Contents/Resources/sidecar/python"
 copy_app_source
+fi
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -180,6 +237,9 @@ ENTITLEMENTS="$ROOT/macapp/entitlements.plist"
 # site-packages is a first-exec prompt the user cannot answer usefully.
 xattr -cr "$APP"
 # Innermost first: signing a directory before its contents invalidates it.
+# (The Rust engine was signed when it was installed; `xattr -cr` does not touch
+# a signature.)
+if [[ "$ENGINE" == python ]]; then
 find "$APP/Contents/Resources/sidecar/python" -type f \
     \( -name '*.dylib' -o -name '*.so' -o -name '*.bundle' \) -print0 |
     while IFS= read -r -d '' item; do
@@ -189,6 +249,7 @@ find "$APP/Contents/Resources/sidecar/python/bin" -type f -print0 |
     while IFS= read -r -d '' item; do
         codesign --force --sign - --timestamp=none "$item" >/dev/null 2>&1 || true
     done
+fi
 codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/SoloCoder"
 codesign --force --sign - --entitlements "$ENTITLEMENTS" --timestamp=none "$APP"
 codesign --verify --deep --strict --verbose=1 "$APP" 2>&1 | tail -1

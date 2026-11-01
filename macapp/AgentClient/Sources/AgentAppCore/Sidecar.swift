@@ -7,6 +7,12 @@ import Foundation
 /// same socket, the same protocol. In a shipped `.app` it is the interpreter and
 /// source under `Contents/Resources/sidecar/`, built by `scripts/build_app.sh`.
 ///
+/// The engine may instead be a native binary that speaks the same protocol —
+/// the Rust port (`openagent-rs`), bundled as `Contents/Resources/sidecar/openagent`
+/// by `scripts/build_app.sh --engine rust`, or named by `AGENT_ENGINE` in
+/// development. The app cannot tell the difference, by design: the socket is
+/// the only interface.
+///
 /// The socket lives in a short temp directory on purpose: macOS caps an
 /// `AF_UNIX` path at ~104 bytes, and a deep container path fails at `connect`
 /// in ways that look like a dead server.
@@ -20,8 +26,8 @@ public final class Sidecar {
         public var errorDescription: String? {
             switch self {
             case .noService:
-                "no service to spawn — not a bundled sidecar, and no repository with "
-                    + ".venv/bin/python (set AGENT_REPO_ROOT to the SoloCoder checkout)"
+                "no service to spawn — not a bundled sidecar, no AGENT_ENGINE binary, and no "
+                    + "repository with .venv/bin/python (set AGENT_REPO_ROOT to the SoloCoder checkout)"
             case .exited(let code, let log):
                 "the service exited with \(code)\n\(log)"
             case .notReady(let path, let log):
@@ -36,20 +42,33 @@ public final class Sidecar {
         case bundled(python: URL, app: URL)
         /// The repository's own venv, in development.
         case repository(root: URL)
+        /// A native engine binary run as `<engine> serve …`: bundled at
+        /// `Contents/Resources/sidecar/openagent`, or `AGENT_ENGINE` in development.
+        case native(engine: URL)
 
         public var executable: URL {
             switch self {
             case .bundled(let python, _): python
             case .repository(let root): root.appendingPathComponent(".venv/bin/python")
+            case .native(let engine): engine
             }
         }
         public var workingDirectory: URL {
             switch self {
             case .bundled(_, let app): app
             case .repository(let root): root
+            // Its sessions and config live in ~/.openagent; the binary needs no
+            // source tree beside it.
+            case .native: FileManager.default.homeDirectoryForCurrentUser
             }
         }
-        public var script: URL { workingDirectory.appendingPathComponent("cli_coder.py") }
+        /// The Python entry point; a native engine has none.
+        public var script: URL? {
+            switch self {
+            case .bundled, .repository: workingDirectory.appendingPathComponent("cli_coder.py")
+            case .native: nil
+            }
+        }
     }
 
     public let socketPath: String
@@ -75,8 +94,12 @@ public final class Sidecar {
         logPath = "\(directory)/a.log"
     }
 
-    /// The service to spawn: a bundled sidecar, else `AGENT_REPO_ROOT`, else the
-    /// current directory if it looks like the repository.
+    /// The service to spawn: a bundled sidecar (a native engine, else Python),
+    /// else `AGENT_ENGINE`, else `AGENT_REPO_ROOT`, else the current directory if
+    /// it looks like the repository.
+    ///
+    /// The bundle wins over the environment: a shipped app runs what it ships,
+    /// whatever a developer's shell exported.
     public static func resolveLaunch() -> Launch? {
         // `bundleURL` and not `Bundle.main.resourceURL`: the latter is documented
         // to fall back to the current directory when it cannot resolve a
@@ -87,14 +110,31 @@ public final class Sidecar {
         let manager = FileManager.default
         let sidecar = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Resources/sidecar")
+        let native = sidecar.appendingPathComponent("openagent")
+        if manager.isExecutableFile(atPath: native.path) {
+            return .native(engine: native)
+        }
         let python = sidecar.appendingPathComponent("python/bin/python3")
         let app = sidecar.appendingPathComponent("app")
         if manager.isExecutableFile(atPath: python.path),
            manager.fileExists(atPath: app.appendingPathComponent("cli_coder.py").path) {
             return .bundled(python: python, app: app)
         }
+        if let engine = engineOverride() { return .native(engine: engine) }
         if let root = repositoryRoot() { return .repository(root: root) }
         return nil
+    }
+
+    /// `AGENT_ENGINE`: a native engine binary to run in development, e.g.
+    /// `~/Projects/openagent-rs/target/release/openagent`. Absolute and
+    /// standardized for the same reason `repositoryRoot()` is; ignored unless it
+    /// names an executable file.
+    public static func engineOverride() -> URL? {
+        guard let configured = ProcessInfo.processInfo.environment["AGENT_ENGINE"], !configured.isEmpty else {
+            return nil
+        }
+        let engine = URL(fileURLWithPath: configured).standardizedFileURL
+        return FileManager.default.isExecutableFile(atPath: engine.path) ? engine : nil
     }
 
     /// The checkout to run the service from: `AGENT_REPO_ROOT`, else the current
@@ -155,7 +195,8 @@ public final class Sidecar {
             // read-only. `-u` unbuffers the log.
             arguments += ["-I", "-B", "-u"]
         }
-        arguments += [launch.script.path, "serve", "--socket", socketPath, "--quiet"]
+        if let script = launch.script { arguments.append(script.path) }
+        arguments += ["serve", "--socket", socketPath, "--quiet"]
         if computerUse {
             arguments.append("--computer-use")
         }
@@ -170,7 +211,7 @@ public final class Sidecar {
         // the home directory — where its sessions and config already live. In
         // development the cwd is the checkout, as it has always been.
         process.currentDirectoryURL = switch launch {
-        case .bundled: FileManager.default.homeDirectoryForCurrentUser
+        case .bundled, .native: FileManager.default.homeDirectoryForCurrentUser
         case .repository(let root): root
         }
         // Off the main actor: this asks a login shell for its PATH, and a shell
