@@ -122,7 +122,11 @@ class ModelCatalog:
         specs = (
             [self.registry.endpoint(provider)]
             if provider
-            else [*self.registry.local_endpoints(), *self._signed_in_subscriptions()]
+            else [
+                *self.registry.local_endpoints(),
+                *self._signed_in_subscriptions(),
+                *self._keyed_anthropic(),
+            ]
         )
         self.discovery_errors = {}
 
@@ -138,6 +142,10 @@ class ModelCatalog:
                     headers = await self._subscription_headers(spec.provider)
                 else:
                     headers = self._discovery_headers(spec.provider)
+                if spec.provider in _ANTHROPIC_LISTINGS:
+                    headers["anthropic-version"] = "2023-06-01"
+                    if "Authorization" in headers and spec.auth_mode is AuthMode.API_KEY:
+                        headers["x-api-key"] = headers.pop("Authorization").removeprefix("Bearer ")
                 async with httpx.AsyncClient(timeout=wait) as client:
                     response = await client.get(url, headers=headers)
                     response.raise_for_status()
@@ -186,6 +194,16 @@ class ModelCatalog:
             if creds is not None and creds.tokens is not None:
                 out.append(spec)
         return out
+
+    def _keyed_anthropic(self) -> list[Any]:
+        """Anthropic's API when a key is stored: its listing is the current
+        model line-up, which the curated rows lag behind."""
+        try:
+            spec = self.registry.endpoint("anthropic")
+            creds = self.registry.broker.load_credentials("anthropic")
+        except Exception:
+            return []
+        return [spec] if creds is not None and creds.api_key else []
 
     async def _subscription_headers(self, provider: str) -> dict[str, str]:
         """Bearer plus the vendor headers, refreshing an expired token first."""
@@ -267,6 +285,10 @@ class ModelCatalog:
     def clear(self) -> None:
         self._discovered.clear()
         self._probed.clear()
+
+
+#: Anthropic's API, keyed or signed in: its listing wants a version header.
+_ANTHROPIC_LISTINGS = frozenset({"anthropic", "anthropic_oauth"})
 
 
 def _discovery_error(spec: Any, url: str, exc: Exception, timeout: float) -> str:
@@ -379,9 +401,40 @@ def _parse_listing(
             )
         return out
 
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if wire_api is WireAPI.ANTHROPIC_MESSAGES and isinstance(data, list) and any(
+        isinstance(e, dict) and e.get("type") == "model" for e in data
+    ):
+        # Anthropic's own listing: each model declares its window, output
+        # limit, and image and thinking support. Retired models are left out.
+        for entry in data:
+            model_id = entry.get("id")
+            if not model_id or entry.get("lifecycle", "active") != "active":
+                continue
+            declared = entry.get("capabilities") or {}
+
+            def supported(name: str, fallback: bool) -> bool:
+                value = (declared.get(name) or {}).get("supported")
+                return fallback if value is None else bool(value)
+
+            base = default_caps or Capabilities(tools=True, streaming=True)
+            out.append(
+                DiscoveredModel(
+                    model=model_id,
+                    label=entry.get("display_name") or model_id,
+                    caps=replace(
+                        base,
+                        vision=supported("image_input", base.vision),
+                        reasoning=supported("thinking", base.reasoning),
+                        context_window=int(entry.get("max_input_tokens") or 0) or default_context,
+                        max_output_tokens=int(entry.get("max_tokens") or 0) or base.max_output_tokens,
+                    ),
+                )
+            )
+        return out
+
     # OpenAI-compatible (LM Studio, MLX, llama.cpp, vLLM) and Anthropic-compat
     # servers that expose /v1/models.
-    data = payload.get("data") if isinstance(payload, dict) else None
     if isinstance(data, list):
         for entry in data:
             model_id = entry.get("id") or entry.get("name")
@@ -434,12 +487,22 @@ _BUILTINS: tuple[tuple[str, str, Capabilities, CostHint], ...] = (
         CostHint(CostKind.PER_TOKEN),
     ),
     (
-        "anthropic", "claude-haiku-4-5",
-        _caps(tools=True, vision=True, streaming=True, json_mode=True, context_window=200000, max_output_tokens=8192),
+        "anthropic", "claude-haiku-5-5",
+        _caps(tools=True, vision=True, reasoning=True, streaming=True, json_mode=True, context_window=200000, max_output_tokens=64000),
         CostHint(CostKind.PER_TOKEN),
     ),
     (
+        "anthropic_oauth", "claude-sonnet-5-5",
+        _caps(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
+        CostHint(CostKind.SUBSCRIPTION),
+    ),
+    (
         "anthropic_oauth", "claude-opus-5-5",
+        _caps(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
+        CostHint(CostKind.SUBSCRIPTION),
+    ),
+    (
+        "anthropic_oauth", "claude-haiku-5-5",
         _caps(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
         CostHint(CostKind.SUBSCRIPTION),
     ),

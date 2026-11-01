@@ -240,3 +240,28 @@ async def test_a_llama_cpp_server_reports_the_window_it_serves(catalog, monkeypa
     assert found["llama_cpp"][0].caps.context_window == 262144
     # A server with no /props keeps the endpoint's default.
     assert found["lmstudio"][0].caps.context_window == 32768
+
+
+def test_anthropic_listing_carries_each_models_declared_limits():
+    """Anthropic's own /v1/models: the account's line-up, with the window,
+    output limit and image and thinking support each model declares."""
+    from openagent.provider.catalog import _parse_listing
+
+    payload = {
+        "data": [
+            {
+                "type": "model",
+                "id": "claude-haiku-9",
+                "display_name": "Claude Haiku 9",
+                "lifecycle": "active",
+                "max_input_tokens": 1_000_000,
+                "max_tokens": 128_000,
+                "capabilities": {"image_input": {"supported": True}, "thinking": {"supported": True}},
+            },
+            {"type": "model", "id": "claude-retired-1", "lifecycle": "retired"},
+        ]
+    }
+    [model] = _parse_listing(WireAPI.ANTHROPIC_MESSAGES, payload, 200000)
+    assert (model.model, model.label) == ("claude-haiku-9", "Claude Haiku 9")
+    assert (model.caps.context_window, model.caps.max_output_tokens) == (1_000_000, 128_000)
+    assert model.caps.vision and model.caps.reasoning and model.caps.tools

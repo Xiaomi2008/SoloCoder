@@ -163,7 +163,8 @@ CLOUD_ENDPOINTS: tuple[EndpointSpec, ...] = (
         wire_api=WireAPI.ANTHROPIC_MESSAGES,
         auth_mode=AuthMode.API_KEY,
         base_url="https://api.anthropic.com",
-        discover_path="/v1/models",
+        # The listing pages at 20 by default.
+        discover_path="/v1/models?limit=1000",
         default_model="claude-sonnet-5-5",
         default_caps=Capabilities(tools=True, vision=True, reasoning=True, streaming=True, json_mode=True, context_window=200000, max_output_tokens=64000),
         docs_url="https://docs.anthropic.com",
@@ -174,6 +175,8 @@ CLOUD_ENDPOINTS: tuple[EndpointSpec, ...] = (
         wire_api=WireAPI.ANTHROPIC_MESSAGES,
         auth_mode=AuthMode.OAUTH_SUBSCRIPTION,
         base_url="https://api.anthropic.com",
+        # The models this account may use, as Anthropic lists them.
+        discover_path="/v1/models?limit=1000",
         default_model="claude-sonnet-5-5",
         default_caps=Capabilities(tools=True, vision=True, reasoning=True, streaming=True, context_window=200000, max_output_tokens=32000),
         docs_url="https://claude.ai",
