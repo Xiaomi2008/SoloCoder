@@ -322,6 +322,17 @@ class Connection:
             pass
 
 
+#: What ``auth.login`` accepts from the app: the subscriptions, by any name
+#: the CLI takes for them.
+_SIGN_IN_PROVIDERS = {
+    "claude": "anthropic_oauth",
+    "anthropic_oauth": "anthropic_oauth",
+    "chatgpt": "openai_oauth",
+    "codex": "openai_oauth",
+    "openai_oauth": "openai_oauth",
+}
+
+
 class AgentService:
     """The method table, the engine, and the socket."""
 
@@ -343,6 +354,10 @@ class AgentService:
         #: wait on a model probe that has nothing to do with it.
         self._conn_tasks: set[asyncio.Task] = set()
         self._bg_tasks: set[asyncio.Task] = set()
+        #: The browser sign-in the app started, as ``auth.status`` reports it
+        #: under ``sign_in``; and the task waiting on its loopback redirect.
+        self._sign_in: dict[str, Any] | None = None
+        self._sign_in_task: asyncio.Task | None = None
         #: Session ids a run has claimed, mapped to the run once it exists.
         #:
         #: `conn.run` cannot be the guard for "is this session in use". It is set
@@ -1028,19 +1043,109 @@ class AgentService:
                     "local": spec.local,
                 }
             )
-        return {"providers": rows, "servers": servers}
+        return {"providers": rows, "servers": servers, "sign_in": self._sign_in}
 
     async def _auth_logout(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
         provider = str(params.get("provider") or "")
         if not provider:
             raise RpcError(ErrorCode.INVALID_PARAMS, "provider is required")
-        return {"provider": provider, "removed": self.broker.delete_credentials(provider)}
+        await self._cancel_sign_in(provider)
+        removed = self.broker.delete_credentials(provider)
+        self.catalog.forget(provider)
+        return {"provider": provider, "removed": removed}
 
     async def _auth_login(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
-        raise RpcError(
-            ErrorCode.NOT_IMPLEMENTED,
-            "sign-in needs an interactive browser; run `openagent auth login <provider>` in a terminal",
+        """Start a subscription sign-in: answer with the URL the app opens.
+
+        The loopback redirect is awaited in the background and ``auth.status``
+        reports the outcome under ``sign_in``; ``cancel: true`` stops it. One
+        attempt at a time — the redirect ports are fixed by the vendors. API
+        keys stay a CLI job: a key typed into the app would pass through it.
+        """
+        from openagent.provider.auth.flow import (
+            LoopbackCallback,
+            OAuthError,
+            build_authorization_request,
+            exchange_code,
         )
+        from openagent.provider.auth.spec import all_specs
+
+        provider = str(params.get("provider") or "")
+        if not provider:
+            raise RpcError(ErrorCode.INVALID_PARAMS, "provider is required")
+        key = _SIGN_IN_PROVIDERS.get(provider)
+        if key is None:
+            raise RpcError(
+                ErrorCode.NOT_IMPLEMENTED,
+                f"only subscriptions sign in from the app; run `openagent auth login {provider}` in a terminal",
+            )
+        if params.get("cancel"):
+            return {"provider": key, "cancelled": await self._cancel_sign_in(key)}
+
+        await self._cancel_sign_in(None)
+        spec = all_specs()[key]
+        listener = LoopbackCallback(spec.redirect_uri)
+        try:
+            redirect_uri = await listener.start()
+        except OSError as exc:
+            raise RpcError(
+                ErrorCode.PROVIDER_ERROR,
+                f"could not listen on {spec.redirect_uri} ({exc}); the port is fixed by the vendor "
+                "— close the app holding it and retry",
+            ) from exc
+        request = build_authorization_request(spec, redirect_uri)
+        attempt: dict[str, Any] = {
+            "provider": key,
+            "label": spec.label,
+            "url": request.authorize_url,
+            "state": "pending",
+            "error": "",
+        }
+        self._sign_in = attempt
+
+        async def finish() -> None:
+            try:
+                try:
+                    code, state = await listener.wait()
+                finally:
+                    await listener.stop()
+                if state and state != request.state:
+                    raise OAuthError("Sign-in state mismatch — possible CSRF, aborting.")
+                tokens = await exchange_code(spec, code, state, request.verifier, redirect_uri)
+                self.broker.save_tokens(key, tokens, label=spec.label)
+                # Discovery may have recorded "not signed in"; ask again.
+                self.catalog.forget(key)
+                attempt["state"] = "signed_in"
+            except asyncio.CancelledError:
+                attempt["state"] = "cancelled"
+                raise
+            except Exception as exc:
+                attempt["state"] = "failed"
+                attempt["error"] = str(exc)
+
+        task = asyncio.create_task(finish())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        self._sign_in_task = task
+        return {
+            "provider": key,
+            "label": spec.label,
+            "url": request.authorize_url,
+            "redirect_uri": redirect_uri,
+            "unofficial": True,
+        }
+
+    async def _cancel_sign_in(self, provider: str | None) -> bool:
+        """Stop a pending sign-in (for ``provider``, or any) and free its port."""
+        attempt, task = self._sign_in, self._sign_in_task
+        if attempt is None or task is None or attempt["state"] != "pending":
+            return False
+        if provider is not None and provider != attempt["provider"]:
+            return False
+        task.cancel()
+        # The listener closes in the task's ``finally``; wait for the port.
+        await asyncio.gather(task, return_exceptions=True)
+        return True
 
     # ------------------------------------------------------------------ tools
 

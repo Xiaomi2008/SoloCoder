@@ -1063,11 +1063,96 @@ async def test_auth_status_reports_providers_and_servers(connected: ServiceClien
     assert isinstance(data["servers"], list)
 
 
-async def test_auth_login_is_refused_with_a_usable_hint(connected: ServiceClient):
+async def test_auth_login_refuses_api_keys_with_a_usable_hint(connected: ServiceClient):
     with pytest.raises(RpcError) as exc:
         await connected.call(Method.AUTH_LOGIN, {"provider": "anthropic"})
     assert exc.value.code == ErrorCode.NOT_IMPLEMENTED
     assert "openagent auth login" in exc.value.message
+
+
+async def test_the_app_signs_in_to_a_subscription(harness: Harness, monkeypatch):
+    """``auth.login`` as the app drives it: the call answers with the URL, the
+    "browser" follows the loopback redirect, and ``auth.status`` reports it.
+    A mock stands in for the token endpoint; the redirect port is the real,
+    vendor-fixed one."""
+    import httpx
+    from urllib.parse import parse_qs, urlsplit
+
+    from openagent.provider.auth.broker import AuthBroker
+    from openagent.provider.registry import ProviderRegistry
+    from tests.providers.test_auth_broker import DictStore
+
+    async def token_endpoint(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.read(16384)
+        body = json.dumps({"access_token": "sk-ant-oat-test", "refresh_token": "rt-test", "expires_in": 3600})
+        writer.write(
+            f"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {len(body)}\r\n"
+            f"connection: close\r\n\r\n{body}".encode()
+        )
+        await writer.drain()
+        writer.close()
+
+    tokens = await asyncio.start_server(token_endpoint, "127.0.0.1", 0)
+    port = tokens.sockets[0].getsockname()[1]
+    monkeypatch.setenv("OPENAGENT_ANTHROPIC_OAUTH_TOKEN_URL", f"http://127.0.0.1:{port}/v1/oauth/token")
+
+    broker = AuthBroker(store=DictStore(), env={})
+    service = AgentService(
+        ServiceSettings(socket_path=harness.sock_dir / "signin.sock", tools=[echo], discover_on_start=False),
+        broker=broker,
+        registry=ProviderRegistry(broker=broker),
+    )
+    await service.start()
+    harness._services.append(service)
+    client = await harness.connect(service)
+
+    async def redirect(query: str) -> str:
+        async with httpx.AsyncClient() as http:
+            return (await http.get(f"http://127.0.0.1:53692/callback?{query}")).text
+
+    async def settled() -> dict[str, Any]:
+        async with asyncio.timeout(TIMEOUT):
+            while True:
+                status = await client.call(Method.AUTH_STATUS)
+                if status["sign_in"]["state"] != "pending":
+                    return status
+                await asyncio.sleep(0.05)
+
+    def row(status: dict[str, Any]) -> dict[str, Any]:
+        return next(p for p in status["providers"] if p["provider"] == "anthropic_oauth")
+
+    try:
+        assert (await client.call(Method.AUTH_STATUS))["sign_in"] is None
+
+        # A redirect carrying someone else's state is refused, and says why.
+        started = await client.call(Method.AUTH_LOGIN, {"provider": "claude"})
+        assert started["url"].startswith("https://claude.ai/oauth/authorize?")
+        assert started["provider"] == "anthropic_oauth" and started["unofficial"] is True
+        await redirect("code=abc&state=forged")
+        status = await settled()
+        assert status["sign_in"]["state"] == "failed"
+        assert "state mismatch" in status["sign_in"]["error"]
+
+        # A second attempt replaces a pending one and gets the port back.
+        await client.call(Method.AUTH_LOGIN, {"provider": "claude"})
+        started = await client.call(Method.AUTH_LOGIN, {"provider": "anthropic_oauth"})
+        state = parse_qs(urlsplit(started["url"]).query)["state"][0]
+
+        # The browser comes back with a code: the tokens are stored.
+        await redirect(f"code=abc&state={state}")
+        status = await settled()
+        assert status["sign_in"]["state"] == "signed_in", status
+        assert row(status)["configured"] is True
+
+        # Cancel frees the port; sign-out removes the tokens.
+        await client.call(Method.AUTH_LOGIN, {"provider": "claude"})
+        cancelled = await client.call(Method.AUTH_LOGIN, {"provider": "claude", "cancel": True})
+        assert cancelled["cancelled"] is True
+        assert (await settled())["sign_in"]["state"] == "cancelled"
+        assert (await client.call(Method.AUTH_LOGOUT, {"provider": "anthropic_oauth"}))["removed"] is True
+        assert row(await client.call(Method.AUTH_STATUS))["configured"] is False
+    finally:
+        tokens.close()
 
 
 async def test_a_run_compacts_against_the_models_own_window(

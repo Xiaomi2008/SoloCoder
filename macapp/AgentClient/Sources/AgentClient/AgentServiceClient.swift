@@ -294,9 +294,40 @@ public struct AuthServerRow: Decodable, Sendable, Equatable {
     public let local: Bool
 }
 
+/// The browser sign-in the app last started, as `auth.status` reports it.
+public struct SignInProgress: Decodable, Sendable, Equatable {
+    public let provider: String
+    public let label: String
+    public let url: String
+    /// `pending`, `signed_in`, `failed` or `cancelled`.
+    public let state: String
+    public let error: String
+
+    public init(provider: String, label: String, url: String, state: String, error: String) {
+        self.provider = provider
+        self.label = label
+        self.url = url
+        self.state = state
+        self.error = error
+    }
+
+    public var pending: Bool { state == "pending" }
+}
+
 public struct AuthStatus: Decodable, Sendable, Equatable {
     public let providers: [AuthProviderRow]
     public let servers: [AuthServerRow]
+    /// Nil before any sign-in, and from a service that predates `auth.login`.
+    public let signIn: SignInProgress?
+}
+
+/// `auth.login`'s answer: the page to open. The sign-in finishes in the
+/// service, and `auth.status` says how it went.
+public struct SignInStart: Decodable, Sendable, Equatable {
+    public let provider: String
+    public let label: String
+    public let url: String
+    public let unofficial: Bool
 }
 
 public struct ModelProbe: Decodable, Sendable, Equatable {
@@ -644,6 +675,29 @@ public actor AgentServiceClient {
 
     public func authStatus() async throws -> AuthStatus {
         try decode(AuthStatus.self, from: try await call("auth.status", params: nil))
+    }
+
+    /// Start a subscription sign-in (`anthropic_oauth`, `openai_oauth`). The
+    /// service listens on the vendor's loopback redirect; the caller opens `url`.
+    public func signIn(_ provider: String) async throws -> SignInStart {
+        try decode(
+            SignInStart.self,
+            from: try await call("auth.login", params: .object(["provider": .string(provider)]))
+        )
+    }
+
+    /// Stop a pending sign-in, freeing its redirect port.
+    public func cancelSignIn(_ provider: String) async throws {
+        _ = try await call(
+            "auth.login", params: .object(["provider": .string(provider), "cancel": .bool(true)])
+        )
+    }
+
+    /// Remove stored credentials, and report whether there were any.
+    @discardableResult
+    public func signOut(_ provider: String) async throws -> Bool {
+        let result = try await call("auth.logout", params: .object(["provider": .string(provider)]))
+        return result.objectValue?["removed"]?.boolValue ?? false
     }
 
     /// Read the config. The server answers with the whole config object

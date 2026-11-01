@@ -153,6 +153,10 @@ public struct SettingsView: View {
                     }
                 }
 
+                SettingsSection(title: "Subscriptions") {
+                    AccountsSection()
+                }
+
                 SettingsSection(title: "Add a model server") {
                     VStack(alignment: .leading, spacing: 10) {
                         Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
@@ -302,6 +306,97 @@ public struct SettingsView: View {
         }
         revealError = nil
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+}
+
+/// Sign in to Claude Pro/Max or ChatGPT Plus/Pro in the browser.
+///
+/// The sign-in itself runs in the service, which owns the vendor's loopback
+/// redirect; this view starts it, shows that it is waiting, and offers the
+/// page again and a cancel while it does.
+private struct AccountsSection: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.accounts.isEmpty {
+                Text(model.serviceAvailable
+                    ? "This service reports no subscription sign-ins."
+                    : "Connect to the service to sign in.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.faint)
+            }
+            ForEach(model.accounts, id: \.provider) { row in
+                AccountRow(row: row, attempt: model.signIn?.provider == row.provider ? model.signIn : nil)
+            }
+            if let error = model.accountError {
+                Text(error).font(.caption2).foregroundStyle(Theme.danger)
+            }
+            Text(
+                "Uses the vendor's own sign-in, not an official third-party integration: "
+                    + "it can stop working, and vendors may revoke it. Tokens are kept in the "
+                    + "macOS Keychain and refresh automatically. API keys: `openagent auth login <provider>`."
+            )
+            .font(.caption2)
+            .foregroundStyle(Theme.faint)
+        }
+    }
+}
+
+private struct AccountRow: View {
+    @EnvironmentObject var model: AppModel
+    let row: AuthProviderRow
+    let attempt: SignInProgress?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(row.configured ? Theme.success : Theme.faint)
+                    .frame(width: 8, height: 8)
+                Text(row.label).font(.callout)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.faint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                if attempt?.pending == true {
+                    ProgressView().controlSize(.small)
+                    Button("Open page") { model.reopenSignIn() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.accent)
+                        .font(.caption)
+                    Button("Cancel") { Task { await model.cancelSignIn() } }
+                        .buttonStyle(.bordered)
+                } else if row.configured {
+                    Button("Sign out") { Task { await model.signOut(of: row.provider) } }
+                        .buttonStyle(.bordered)
+                        .disabled(!model.serviceAvailable)
+                } else {
+                    Button("Sign in…") { Task { await model.signIn(to: row.provider) } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.serviceAvailable || model.signIn?.pending == true)
+                }
+            }
+            if let attempt {
+                switch attempt.state {
+                case "pending":
+                    Text("Finish signing in in your browser. This window updates when you do.")
+                        .font(.caption2).foregroundStyle(Theme.muted)
+                case "failed":
+                    Text("Sign-in failed: \(attempt.error)").font(.caption2).foregroundStyle(Theme.danger)
+                default:
+                    EmptyView()
+                }
+            }
+        }
+    }
+
+    private var detail: String {
+        guard row.configured else { return "not signed in" }
+        let who = [row.plan, row.account].filter { !$0.isEmpty }.joined(separator: " · ")
+        return who.isEmpty ? "signed in" : "signed in · \(who)"
     }
 }
 

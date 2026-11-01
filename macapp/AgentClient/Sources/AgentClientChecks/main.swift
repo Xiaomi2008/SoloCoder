@@ -337,6 +337,16 @@ func liveSession(
 
     let status = try await client.authStatus()
     checks.expect(!status.providers.isEmpty, "auth.status reports providers")
+    checks.expect(status.signIn == nil, "auth.status reports no sign-in before one starts")
+
+    // A sign-in answers with the vendor's page and waits; cancel frees the port.
+    // Nothing opens the page, so nothing signs in.
+    let signIn = try await client.signIn("claude")
+    checks.equal(signIn.provider, "anthropic_oauth", "auth.login names the subscription it signs in to")
+    checks.expect(signIn.url.hasPrefix("https://claude.ai/oauth/authorize?"), "auth.login answers with the sign-in page")
+    checks.equal(try await client.authStatus().signIn?.state, "pending", "auth.status shows the sign-in waiting")
+    try await client.cancelSignIn("anthropic_oauth")
+    checks.equal(try await client.authStatus().signIn?.state, "cancelled", "a cancelled sign-in reports so")
 
     _ = try await client.sessions()
     let config = try await client.config(keys: ["models"])

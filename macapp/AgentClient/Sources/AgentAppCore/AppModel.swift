@@ -35,6 +35,13 @@ public final class AppModel: ObservableObject {
     /// value to present.
     @Published public var promptToAnswer: PermissionRequest?
     @Published public var modelRows: [ModelRow] = []
+    /// The subscription sign-ins (Claude Pro/Max, ChatGPT Plus/Pro), from
+    /// `auth.status`.
+    @Published public var accounts: [AuthProviderRow] = []
+    /// The browser sign-in the app last started, while and after it runs.
+    @Published public var signIn: SignInProgress?
+    @Published public var accountError: String?
+    private var signInWatch: Task<Void, Never>?
     /// The agent's browser, live. Observed by the panel alone — see its type.
     public let browserPanel = BrowserPanelModel()
     @Published public var modelPolicy = ""
@@ -348,6 +355,7 @@ public final class AppModel: ObservableObject {
             consume(await client.events())
             await refreshModels()
             await refreshSessions()
+            await refreshAccounts()
         } catch {
             status = "not connected"
             banner = Self.describe(error)
@@ -783,6 +791,87 @@ public final class AppModel: ObservableObject {
         } catch {
             return (nil, Self.describe(error))
         }
+    }
+
+    public func refreshAccounts() async {
+        guard let client else { return }
+        do {
+            let status = try await client.authStatus()
+            accounts = status.providers.filter { $0.mode == "oauth_subscription" }
+            signIn = status.signIn
+        } catch {
+            accountError = Self.describe(error)
+        }
+    }
+
+    /// Sign in to a subscription in the user's browser.
+    ///
+    /// The service binds the vendor's loopback redirect and answers with the
+    /// page; the browser comes back to the service, not to the app, so the app
+    /// watches `auth.status` until the attempt settles, then reloads the model
+    /// table — a new sign-in is new models.
+    public func signIn(to provider: String) async {
+        guard let client else {
+            accountError = SendBlock.notConnected.reason
+            return
+        }
+        accountError = nil
+        do {
+            let started = try await client.signIn(provider)
+            signIn = SignInProgress(
+                provider: started.provider, label: started.label, url: started.url, state: "pending", error: ""
+            )
+            self.log("sign-in: \(started.provider) started")
+            if let url = URL(string: started.url) { NSWorkspace.shared.open(url) }
+        } catch {
+            accountError = Self.describe(error)
+            return
+        }
+        signInWatch?.cancel()
+        signInWatch = Task { [weak self] in
+            // The service gives the browser five minutes.
+            for _ in 0..<320 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                await self.refreshAccounts()
+                guard let attempt = self.signIn, !attempt.pending else { continue }
+                self.log("sign-in: \(attempt.provider) \(attempt.state)")
+                if attempt.state == "signed_in" {
+                    self.notice = "signed in to \(attempt.label)"
+                    await self.refreshModels()
+                }
+                return
+            }
+        }
+    }
+
+    /// Open the pending sign-in's page again, for a closed browser tab.
+    public func reopenSignIn() {
+        guard let attempt = signIn, attempt.pending, let url = URL(string: attempt.url) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    public func cancelSignIn() async {
+        guard let client, let attempt = signIn, attempt.pending else { return }
+        signInWatch?.cancel()
+        do {
+            try await client.cancelSignIn(attempt.provider)
+        } catch {
+            accountError = Self.describe(error)
+        }
+        await refreshAccounts()
+    }
+
+    public func signOut(of provider: String) async {
+        guard let client else { return }
+        accountError = nil
+        do {
+            try await client.signOut(provider)
+        } catch {
+            accountError = Self.describe(error)
+        }
+        await refreshAccounts()
+        await refreshModels()
     }
 
     public func refreshSessions() async {

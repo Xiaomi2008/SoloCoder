@@ -78,9 +78,9 @@ forever. A new terminal event type is therefore additive, not breaking.
 | `model.select` | `model` | `{"default_model": …}` |
 | `model.add_endpoint` | `name`, `base_url`, `wire_api` (`openai-chat`\|`openai-responses`\|`anthropic-messages`\|`ollama-chat`\|`gemini`), `label` (optional), `local` (bool), `requires_key` (bool), `tools` (bool), `context_window` (int) | `{"endpoint": {…}, "models": [ModelRef…], "discovery_error": str\|null}` — persists the endpoint and discovers it in one call |
 | `model.remove_endpoint` | `name` | `{"name": …, "removed": bool}` — built-in endpoints are refused |
-| `auth.status` | — | `{"providers":[…], "servers":[…]}` (same rows as `cli_coder auth status`) |
-| `auth.logout` | `provider` | `{"ok": true}` |
-| `auth.login` | `provider` | `NOT_IMPLEMENTED` in v1 — needs an interactive browser, keep it in the CLI |
+| `auth.status` | — | `{"providers":[…], "servers":[…], "sign_in": {"provider","label","url","state","error"}\|null}` (same rows as `cli_coder auth status`; `sign_in` is the last `auth.login`, `state` one of `pending`\|`signed_in`\|`failed`\|`cancelled`) |
+| `auth.logout` | `provider` | `{"provider": …, "removed": bool}` — also cancels a pending sign-in for it |
+| `auth.login` | `provider` (`claude`\|`anthropic_oauth`\|`chatgpt`\|`codex`\|`openai_oauth`), `cancel` (bool, optional) | `{"provider","label","url","redirect_uri","unofficial": true}` — binds the vendor's loopback redirect and answers at once; the client opens `url`, and the outcome lands in `auth.status` → `sign_in`. One attempt at a time; a new one replaces a pending one. `cancel: true` → `{"provider", "cancelled": bool}`. API-key providers: `NOT_IMPLEMENTED` (keys stay in the CLI) |
 | `tool.list` | — | `{"tools":[{"name","description","risk","requires_permission"}]}` |
 | `session.list` | — | `{"sessions":[{"session_id","path","updated_at","message_count"}]}` |
 | `session.load` | `session_id` | `{"session_id":…, "messages":[…], "system_prompt":…, "context_tokens":…}` |
@@ -252,7 +252,8 @@ written with `decodeIfPresent`.
 - **No mid-run resume.** Reconnect = `session.load` + a new `run.start`. A
   durable event journal is a real feature, not a patch.
 - **No multi-tenancy.** One user, one socket, one engine.
-- **`auth.login` stays in the CLI** — an OAuth loopback browser flow cannot be
-  driven from a socket client.
+- **API keys stay in the CLI.** `auth.login` runs only the subscription
+  sign-ins, whose loopback redirect lands in the service, never in the client;
+  a key typed into the app would pass through it.
 - **Cancellation is cooperative** at turn and tool boundaries; a blocked
   provider call is cancelled when it returns.
