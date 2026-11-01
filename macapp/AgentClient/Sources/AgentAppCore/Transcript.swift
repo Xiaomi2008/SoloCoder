@@ -348,6 +348,15 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
         }
     }
 
+    /// A line a turn can end on: an answer with text in it, or a failure.
+    public var isResult: Bool {
+        switch kind {
+        case .assistant(let text): return !text.isEmpty
+        case .messageFailed: return true
+        default: return false
+        }
+    }
+
     /// The last instant this line speaks about.
     ///
     /// For most lines, the arrival. For a tool call, the moment the call stopped
@@ -503,6 +512,40 @@ public struct Turn: Identifiable, Equatable, Sendable {
         return out
     }
     public var answers: [TranscriptLine] { lines.filter { !$0.isActivity } }
+
+    /// The turn as the screen draws it: the steps, in arrival order, then the
+    /// result.
+    ///
+    /// `activity` and `answers` sorted the lines into two piles, so every
+    /// answer drew below every step: a run's "Let me check the tests" landed
+    /// under the tool calls it introduced, and the thinking for the final
+    /// answer sat above a stack of earlier answers it had nothing to do with.
+    /// Here only the *last* answer is the result — the one the run ended on —
+    /// and everything before it, prose between tool calls included, is a step
+    /// in the order it happened.
+    ///
+    /// The result is the last line with something to read (an assistant text
+    /// or a failure) plus the non-activity lines after it; activity after it
+    /// (a closing todo update) stays with the steps, so the answer is never
+    /// folded away. An empty assistant line is the "thinking…" placeholder,
+    /// which is a step.
+    public var steps: [TranscriptLine] { split.steps }
+    public var result: [TranscriptLine] { split.result }
+
+    ///
+    /// While the run is going, an answer with anything after it is a step: the
+    /// model moved on from it, and drawing it below the thinking that came
+    /// later puts the timeline out of order.
+    private var split: (steps: [TranscriptLine], result: [TranscriptLine]) {
+        guard let last = lines.lastIndex(where: \.isResult) else { return (lines, []) }
+        if running, last != lines.index(before: lines.endIndex) { return (lines, []) }
+        var steps = Array(lines[..<last])
+        var result = [lines[last]]
+        for line in lines[(last + 1)...] {
+            if line.isActivity { steps.append(line) } else { result.append(line) }
+        }
+        return (steps, result)
+    }
 
     /// The run's terminal event, set on the last turn of a finished transcript.
     ///

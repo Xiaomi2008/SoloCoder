@@ -288,6 +288,74 @@ func rowChecks(_ checks: Checks) throws {
     )
     checks.equal(failed.turns.first?.activity.count, 0, "a failed message is not hidden inside 'Worked'")
     checks.equal(failed.turns.first?.answers.count, 1, "…it is shown as the turn's result")
+    checks.equal(failed.turns.first?.result.count, 1, "…and the timeline ends on it too")
+
+    // MARK: steps and result
+
+    func event(_ json: String) throws -> AgentEvent { try AgentEvent.decode(from: Data(json.utf8)) }
+    func texts(_ lines: [TranscriptLine]?) -> [String] {
+        (lines ?? []).map {
+            switch $0.kind {
+            case .assistant(let text): return "say:\(text)"
+            case .reasoning: return "think"
+            case .tool(let row): return "tool:\(row.name)"
+            default: return "other"
+            }
+        }
+    }
+
+    // A run that talks between its tool calls: the prose is a step, in place,
+    // and only the last answer is the result. The old split drew both answers
+    // under both tool calls.
+    var talky = Transcript()
+    talky.addUserMessage("fix it")
+    for json in [
+        #"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":"Let me read it."}"#,
+        #"{"type":"tool_call_started","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"read","arguments":{"path":"/tmp/a"}}"#,
+        #"{"type":"tool_call_completed","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"read","result":"a"}"#,
+        #"{"type":"reasoning_delta","run_id":"r1","message_id":"m2","delta":"so the fix is"}"#,
+        #"{"type":"message_completed","run_id":"r1","message_id":"m2","output_text":"Fixed."}"#,
+        #"{"type":"run_completed","run_id":"r1","final_message_id":"m2","result":{"run_id":"r1","final_message_id":"m2","output_text":"Fixed.","stop_reason":"end_turn"}}"#,
+    ] { talky.apply(try event(json)) }
+    checks.equal(
+        texts(talky.turns.first?.steps), ["say:Let me read it.", "tool:read", "think"],
+        "the steps are in arrival order, the prose between tool calls included"
+    )
+    checks.equal(texts(talky.turns.first?.result), ["say:Fixed."], "the result is the answer the run ended on")
+
+    // An answer followed by a closing tool call: the answer is still the
+    // result, not folded away behind "Worked".
+    var closing = Transcript()
+    closing.addUserMessage("do it")
+    for json in [
+        #"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":"Done."}"#,
+        #"{"type":"tool_call_started","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"todo_update","arguments":{}}"#,
+        #"{"type":"tool_call_completed","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"todo_update","result":"ok"}"#,
+        #"{"type":"run_completed","run_id":"r1","final_message_id":"m1","result":{"run_id":"r1","final_message_id":"m1","output_text":"Done.","stop_reason":"end_turn"}}"#,
+    ] { closing.apply(try event(json)) }
+    checks.equal(texts(closing.turns.first?.result), ["say:Done."], "a finished run's last answer stays the result")
+    checks.equal(texts(closing.turns.first?.steps), ["tool:todo_update"], "…and the closing call is a step")
+
+    // Mid-run, the model has moved on from its earlier answer: it is a step,
+    // so the new thinking is drawn after it, not above it.
+    var moving = Transcript()
+    moving.addUserMessage("go")
+    for json in [
+        #"{"type":"run_started","run_id":"r1"}"#,
+        #"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":"First pass."}"#,
+        #"{"type":"message_started","run_id":"r1","message_id":"m2"}"#,
+        #"{"type":"reasoning_delta","run_id":"r1","message_id":"m2","delta":"now the second"}"#,
+    ] { moving.apply(try event(json)) }
+    checks.expect(moving.turns.first?.running == true, "the run is still going")
+    checks.equal(moving.turns.first?.result.count, 0, "mid-run, an answer with work after it is not the result")
+    checks.equal(
+        Array(texts(moving.turns.first?.steps).prefix(2)), ["say:First pass.", "think"],
+        "…it is a step, before the thinking that came after it"
+    )
+
+    checks.equal(ToolDisplay.symbol(tool: "read"), "doc.text", "a step's marker says what kind of tool ran")
+    checks.equal(ToolDisplay.symbol(tool: "frobnicate"), "wrench.and.screwdriver", "…and an unknown tool still gets one")
+    checks.equal(label("git_status", [:]), "Checked git status", "git tools have labels of their own")
 }
 
 // MARK: - Sessions
