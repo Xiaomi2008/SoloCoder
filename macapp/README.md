@@ -79,8 +79,8 @@ takes precedence over `AGENT_REPO_ROOT` in an unbundled app; a bundle always
 runs its own. `scripts/build_app.sh --engine rust` bundles that binary as
 `Contents/Resources/sidecar/openagent` in place of the interpreter: an 11 MB app
 instead of 125 MB, the same `~/.openagent` state, and `scripts/package_check.sh`
-gates both shapes. The Rust engine does not have the computer-use and browser
-tools yet, so the four checks for those flags fail against it.
+gates both shapes. The Rust engine passes the same `agent-checks`, the
+computer-use and browser flags included.
 
 `agent-checks` is the gate that runs everywhere Swift runs. It spawns the real
 service (`.venv/bin/python cli_coder.py serve --socket …`), drives it, and
