@@ -361,6 +361,16 @@ class Agent:
         """
         return False
 
+    def _repair_textual_tool_call(self) -> bool:
+        """Application hook: append a corrective turn after a malformed answer.
+
+        Some models print tool calls as text (``<tool_use>...</tool_use>``)
+        instead of invoking them. Returning True keeps the loop alive with a
+        repair message; the default returns False, so ordinary agents end as
+        before.
+        """
+        return False
+
     async def _loop(self, **kwargs: Any) -> str:
         tool_defs = (
             self.tool_registry.definitions if len(self.tool_registry) > 0 else None
@@ -470,6 +480,11 @@ class Agent:
             self._logger.turn_end(turn_number, has_tools)
 
             if not has_tools:
+                # Application hook: a specialized agent can recognize a malformed
+                # final answer (e.g. a tool call printed as plain text) and ask
+                # for a real tool call instead of ending the run.
+                if self._repair_textual_tool_call():
+                    continue
                 self._logger.run_end(completed_turns)
                 return response.text
 

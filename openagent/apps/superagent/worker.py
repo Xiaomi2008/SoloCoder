@@ -8,6 +8,7 @@ its own ticket id: the host bound it when it built these tools.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from openagent.core.agent import Agent
 from openagent.core.tool import ToolContext, tool
@@ -65,7 +66,52 @@ def format_turn(ticket: Ticket, inputs: list[Input]) -> str:
     )
 
 
+PSEUDO_TOOL_CALL_PATTERN = re.compile(
+    r'<\s*(?:tool_use|function_call|invoke)[^>]*>.*?</\s*(?:tool_use|function_call|invoke)\s*>'
+    r'|<\|[^|>\n]{0,40}(?:call|tool)[^|>\n]{0,40}\|>.*?<\|[^|>\n]{0,40}end[^|>\n]{0,40}\|>'
+    r'|<\|[^|>\n]{0,40}(?:call|tool)[^|>\n]{0,40}\|>'
+    r'|</?(?:tool_call|antml:invoke)[^>]*>',
+    re.S)
+
+PSEUDO_TOOL_RETRY = (
+    "Your previous message contained a tool call written as plain text instead "
+    "of a real tool call. Do not print XML or JSON for tool calls. Emit actual "
+    "tool calls through the tool interface, one step at a time, then continue."
+)
+
+
+def repair_textual_tool_calls(agent) -> bool:
+    """Detect a model that printed its tool call instead of invoking one.
+
+    Some models emit ``<tool_use>``/``<path>`` XML as ordinary text. The Agent
+    loop treats that as a final answer, so the Worker would end with no report
+    and no file written. Appending a corrective system message makes the next
+    call a real tool call. Returns True when a repair was appended.
+    """
+    if not agent.session.messages:
+        return False
+    last = agent.session.messages[-1]
+    if last.role != 'assistant' or last.has_tool_calls:
+        return False
+    text = last.text or ''
+    if not PSEUDO_TOOL_CALL_PATTERN.search(text):
+        return False
+    if agent.session.messages[-1].text == PSEUDO_TOOL_RETRY:
+        return False
+    agent.session.add('system', PSEUDO_TOOL_RETRY)
+    return True
+
+
 class TicketAgent(Agent):
+    def _finish_after_tools(self) -> bool:
+        # The Worker never "finishes" on its own: a ticket is done only when the
+        # host verification gate accepts a report(ready). Ending early would
+        # silently drop work, so keep the loop going until the turn limit.
+        return False
+
+    def _repair_textual_tool_call(self) -> bool:
+        return repair_textual_tool_calls(self)
+
     @property
     def tool_context(self) -> ToolContext:
         return ToolContext(working_dir=self.working_dir, enforce_scope=True)
