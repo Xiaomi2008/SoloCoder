@@ -1,4 +1,5 @@
 from openagent.providers.events import (
+    CallClock,
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,
@@ -7,9 +8,11 @@ from openagent.providers.events import (
     ProviderTerminalEvent,
     ProviderTextDelta,
     ProviderToolCall,
+    ProviderUsage,
 )
 
 __all__ = [
+    "CallClock",
     "ProviderError",
     "ProviderMessageCompleted",
     "ProviderMessageStarted",
@@ -18,4 +21,5 @@ __all__ = [
     "ProviderTerminalEvent",
     "ProviderTextDelta",
     "ProviderToolCall",
+    "ProviderUsage",
 ]

@@ -39,6 +39,7 @@ from openagent.providers import (
     ProviderError,
     ProviderTextDelta,
     ProviderToolCall,
+    ProviderUsage,
 )
 from openagent.runtime.events import (
     ReasoningDelta,
@@ -51,6 +52,7 @@ from openagent.runtime.events import (
     MessageDelta,
     MessageFailed,
     MessageStarted,
+    MessageStats,
     PermissionRequested,
     PermissionResolved,
     RunCancelled,
@@ -322,6 +324,7 @@ class AgentRunner:
             text_parts: list[str] = []
             tool_calls: list[ToolUseBlock] = []
             provider_error: str | None = None
+            stats: ProviderUsage | None = None
 
             try:
                 async for chunk in self.provider.stream(
@@ -348,6 +351,8 @@ class AgentRunner:
                                 name=chunk.name, arguments=chunk.arguments, id=chunk.id
                             )
                         )
+                    elif isinstance(chunk, ProviderUsage):
+                        stats = chunk
                     elif isinstance(chunk, ProviderError):
                         provider_error = chunk.error
             except asyncio.CancelledError:
@@ -394,6 +399,17 @@ class AgentRunner:
             turn += 1
             awaiting_final_response = False
 
+            if stats is not None:
+                yield MessageStats(
+                    run_id=run_id,
+                    message_id=message_id,
+                    input_tokens=stats.input_tokens,
+                    output_tokens=stats.output_tokens,
+                    cached_tokens=stats.cached_tokens,
+                    prefill_tps=stats.prefill_tps,
+                    decode_tps=stats.decode_tps,
+                    time_to_first_token=stats.time_to_first_token,
+                )
             # The assistant message closes before tool events begin, so a client
             # renders one message widget with tool rows under it.
             yield MessageCompleted(run_id=run_id, message_id=message_id, output_text=text)

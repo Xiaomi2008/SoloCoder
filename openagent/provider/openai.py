@@ -19,12 +19,14 @@ from openagent.core.types import (
 from openagent.provider.base import BaseProvider
 from openagent.provider.converter import MessageConverterMixin
 from openagent.providers.events import (
+    CallClock,
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,
     ProviderReasoningDelta,
     ProviderTextDelta,
     ProviderToolCall,
+    ProviderUsage,
 )
 
 
@@ -305,6 +307,8 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             "model": self.model,
             "messages": converted["messages"],
             "stream": True,
+            # The last chunk then carries token counts, for the speed readout.
+            "stream_options": {"include_usage": True},
             **kwargs,
         }
         if tools:
@@ -314,10 +318,25 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         message_id: str | None = None
         started = False
         tool_call_buffers: dict[int, dict[str, Any]] = {}
+        usage: Any = None
+        timings: Any = None
 
         try:
-            stream = await self._client.chat.completions.create(**api_kwargs)
+            clock = CallClock()
+            try:
+                stream = await self._client.chat.completions.create(**api_kwargs)
+            except Exception as exc:
+                # An older server that rejects the option still gets to answer,
+                # just without a speed readout.
+                if "stream_options" not in str(exc):
+                    raise
+                api_kwargs.pop("stream_options", None)
+                clock = CallClock()
+                stream = await self._client.chat.completions.create(**api_kwargs)
             async for chunk in stream:
+                usage = getattr(chunk, "usage", None) or usage
+                # llama.cpp's own measurements, on its last chunk.
+                timings = getattr(chunk, "timings", None) or timings
                 if message_id is None:
                     chunk_id = getattr(chunk, "id", None)
                     message_id = chunk_id or fallback_message_id
@@ -327,6 +346,11 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
                     yield ProviderMessageStarted(message_id=message_id)
 
                 if chunk.choices:
+                    first = chunk.choices[0].delta
+                    if first is not None and (
+                        first.content or getattr(first, "tool_calls", None) or self._reasoning_of(first)
+                    ):
+                        clock.token()
                     reasoning = self._reasoning_of(chunk.choices[0].delta)
                     if reasoning:
                         yield ProviderReasoningDelta(
@@ -396,4 +420,46 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             message_id = fallback_message_id
             yield ProviderMessageStarted(message_id=message_id)
 
+        stats = _usage_event(clock, message_id, usage, timings)
+        if stats is not None:
+            yield stats
         yield ProviderMessageCompleted(message_id=message_id)
+
+
+def _usage_event(clock: CallClock, message_id: str, usage: Any, timings: Any) -> ProviderUsage | None:
+    """Token counts from ``usage``, speeds from llama.cpp's ``timings`` when sent."""
+
+    def field(source: Any, name: str) -> Any:
+        return source.get(name) if isinstance(source, dict) else getattr(source, name, None)
+
+    def rate(value: Any) -> float | None:
+        # A fully cached prompt reports 0 tokens in 0 ms: no rate, not infinity.
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if 0 < number < 1e9 else None
+
+    input_tokens = field(usage, "prompt_tokens") if usage is not None else None
+    output_tokens = field(usage, "completion_tokens") if usage is not None else None
+    details = field(usage, "prompt_tokens_details") if usage is not None else None
+    cached = field(details, "cached_tokens") if details is not None else None
+    prefill = decode = None
+    if timings is not None:
+        prefill = rate(field(timings, "prompt_per_second"))
+        decode = rate(field(timings, "predicted_per_second"))
+        prompt_n = field(timings, "prompt_n")
+        if input_tokens is None:
+            input_tokens = prompt_n
+        elif isinstance(prompt_n, int) and cached is None and input_tokens >= prompt_n:
+            cached = input_tokens - prompt_n
+        if output_tokens is None:
+            output_tokens = field(timings, "predicted_n")
+    return clock.usage(
+        message_id,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached,
+        prefill_tps=prefill,
+        decode_tps=decode,
+    )
