@@ -30,6 +30,9 @@ public final class AppModel: ObservableObject {
     @Published public var contextUsed: Int?
     /// Where the service compacts, from the last run. Nil before one.
     @Published public var compactAt: Int?
+    /// The latest model call's token counts and speeds. Nil until a provider
+    /// reports them.
+    @Published public var lastStats: MessageStats?
     private var runContextWindow: Int?
     /// Mirrored from the transcript so `.sheet(item:)` has an `Identifiable`
     /// value to present.
@@ -432,6 +435,11 @@ public final class AppModel: ObservableObject {
             runContextWindow = usage.contextWindow
             return
         }
+        if case .messageStats(let stats) = event {
+            // Once per model call and not conversation, like context_usage.
+            lastStats = stats
+            return
+        }
         if case .browserFrame(let frame) = event {
             // Not the conversation, and not a reason to flush the deltas or
             // republish the transcript four times a second.
@@ -630,7 +638,7 @@ public final class AppModel: ObservableObject {
 
     /// Unhide the app if computer use hid it. `NSApp` is nil in the checks,
     /// which run without an application.
-    static func revealIfHidden() {
+    public static func revealIfHidden() {
         guard let app = NSApp, app.isHidden else { return }
         app.unhide(nil)
         app.activate(ignoringOtherApps: true)
@@ -709,6 +717,7 @@ public final class AppModel: ObservableObject {
         contextUsed = nil
         compactAt = nil
         runContextWindow = nil
+        lastStats = nil
     }
 
     // MARK: models, sessions

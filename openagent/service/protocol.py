@@ -33,6 +33,7 @@ from openagent.runtime.events import (
     ContextCompactionFailed,
     BrowserFrame,
     ContextUsage,
+    MessageStats,
     ContextCompactionStarted,
     MessageCompleted,
     MessageDelta,
@@ -356,6 +357,7 @@ EVENT_TYPES: dict[str, type] = {
     "context_compaction_completed": ContextCompactionCompleted,
     "context_compaction_failed": ContextCompactionFailed,
     "context_usage": ContextUsage,
+    "message_stats": MessageStats,
     "browser_frame": BrowserFrame,
 }
 

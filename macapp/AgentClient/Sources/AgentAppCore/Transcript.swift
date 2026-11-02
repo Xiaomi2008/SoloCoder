@@ -934,7 +934,7 @@ public struct Transcript: Equatable, Sendable {
             state = .cancelled(e.reason)
             closeStreamingLines()
 
-        case .browserFrame, .contextUsage:
+        case .browserFrame, .contextUsage, .messageStats:
             // Not the conversation: AppModel takes both before they reach here.
             break
 
