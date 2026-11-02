@@ -66,12 +66,32 @@ def format_turn(ticket: Ticket, inputs: list[Input]) -> str:
     )
 
 
+# Models sometimes emit fullwidth backslashes (U+FF5C '＼', U+FF3F '＿') and
+# fullwidth angle brackets instead of ASCII. Normalize before matching.
+_LOOKALIKES = str.maketrans({
+    '\uFF0F': '/',
+    '\uFF3C': '\\',
+    '\uFF5C': '\\',
+    '\uFF3F': '_',
+    '\uFF1C': '<',
+    '\uFF1E': '>',
+})
+
+
+def normalize_tool_text(text: str) -> str:
+    return text.translate(_LOOKALIKES)
+
+
+# Some providers leak control tokens into assistant text, e.g.
+# "<\\DSML\\ invoke name=\"write\">" or "<tool_use>...</tool_use>". Rather than
+# enumerating every leak shape, treat any tag whose payload names a real tool as
+# a printed-instead-of-invoked call. Prose rarely contains such a tag.
+_TOOL_NAME = r'(?:invoke|tool_use|tool_call|function_call|write|edit|read|bash|glob|grep|ack|report|subscribe|route|reply|tickets)'
 PSEUDO_TOOL_CALL_PATTERN = re.compile(
-    r'<\s*(?:tool_use|function_call|invoke)[^>]*>.*?</\s*(?:tool_use|function_call|invoke)\s*>'
-    r'|<\|[^|>\n]{0,40}(?:call|tool)[^|>\n]{0,40}\|>.*?<\|[^|>\n]{0,40}end[^|>\n]{0,40}\|>'
-    r'|<\|[^|>\n]{0,40}(?:call|tool)[^|>\n]{0,40}\|>'
-    r'|</?(?:tool_call|antml:invoke)[^>]*>',
-    re.S)
+    r'<[^<>]{0,80}\b' + _TOOL_NAME + r'\b[^<>]*>'
+    r'|<\|\|?[^|>\n]{0,40}(?:call|tool)[^|>\n]{0,40}\|>'
+    r'|DSML',
+    re.I | re.S)
 
 PSEUDO_TOOL_RETRY = (
     "Your previous message contained a tool call written as plain text instead "
@@ -94,7 +114,7 @@ def repair_textual_tool_calls(agent) -> bool:
     if last.role != 'assistant' or last.has_tool_calls:
         return False
     text = last.text or ''
-    if not PSEUDO_TOOL_CALL_PATTERN.search(text):
+    if not PSEUDO_TOOL_CALL_PATTERN.search(normalize_tool_text(text)):
         return False
     if agent.session.messages[-1].text == PSEUDO_TOOL_RETRY:
         return False

@@ -21,6 +21,8 @@ def assistant(text):
     '<tool_use>\n<path>a.txt</path>\n<content>x</content>\n</tool_use>',
     '<function_call name="write">{"path": "a"}</function_call>',
     '<|tool▁call▁begin|>{"name": "write"}<|tool▁call▁end|>',
+    '<\\DSML\\ invoke name="write">\n<\\DSML\\ parameter name="path">x',
+    '<\uff5cDSML\uff5c invoke name="write"\uff1e',
 ])
 def test_repairs_xml_tool_text(text):
     agent = Agent([assistant(text)])
