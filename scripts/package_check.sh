@@ -125,7 +125,7 @@ check "imports (scrubbed env)" bash -c '
     py="$1/Contents/Resources/sidecar/python/bin/python3"
     "${scrub[@]}" "$py" -I -B -u "$1/Contents/Resources/sidecar/app/cli_coder.py" --help > /dev/null
     "${scrub[@]}" "$py" -I -B -c "
-import mcp, anthropic, openai, httpx, google.genai, ollama
+import mcp, anthropic, openai, httpx, google.genai, ollama, wcwidth
 print(\"deps ok\")
 " ' _ "$WORK/SoloCoder.app"
 fi

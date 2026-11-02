@@ -130,6 +130,13 @@ def test_one_prompt_saves_a_session(model, tmp_path: Path) -> None:
     assert (tmp_path / "once" / "home" / ".openagent" / "sessions" / f"{session.group(1)}.json").exists()
 
 
+def test_the_service_runs_without_the_line_editor() -> None:
+    """The app's sidecar bundles a fixed dependency list (scripts/build_app.sh)."""
+    probe = "import sys, cli_coder, openagent.service.cli; print('prompt_toolkit' in sys.modules)"
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=REPO)
+    assert done.stdout.strip() == "False", done.stdout + done.stderr
+
+
 def _normal(text: str) -> str:
     text = re.sub(r"sess_\w+", "SESSION", text)
     # Token counts come from each engine's own tool schemas and are not the contract.

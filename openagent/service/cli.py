@@ -13,16 +13,18 @@ import asyncio
 import signal
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openagent.cli import blocks, style
-from openagent.cli.input import ESC, Input, Interrupted, Keys, ask_menu
 from openagent.cli.render import Renderer, answer
 from openagent.cli.style import bold, cyan, dim, red, yellow
 from openagent.runtime.events import RunCancelled, RunCompleted, RunFailed
 from openagent.service.client import ServiceClient, ServiceClosed
 from openagent.service.protocol import PROTOCOL_VERSION, RpcError
 from openagent.service.server import ServiceSettings, serve
+
+if TYPE_CHECKING:
+    from openagent.cli.input import Input, Keys
 
 
 def add_subcommands(subparsers: Any) -> None:
@@ -150,6 +152,8 @@ class _Terminal:
 
     async def ask(self, event: Any) -> tuple[bool, str]:
         """Ask a human. The question itself is drawn when the event is rendered."""
+        from openagent.cli.input import ask_menu
+
         if self.keys is not None:
             return await ask_menu(self.keys)
         print(f"{yellow('allow')} [y/n/a]? ", end="", flush=True)
@@ -157,6 +161,7 @@ class _Terminal:
 
 
 async def _run_once(client: ServiceClient, args: argparse.Namespace, prompt: str, term: _Terminal) -> int:
+    from openagent.cli.input import ESC, Keys
     from openagent.service.scope import validate_working_dir
 
     working_dir = args.working_dir or str(Path.cwd())
@@ -214,6 +219,8 @@ async def _run_once(client: ServiceClient, args: argparse.Namespace, prompt: str
 
 
 async def handle_tui(args: argparse.Namespace) -> int:
+    # Here, not at the top: the app's sidecar runs `serve` and ships no line editor.
+    from openagent.cli.input import Input, Interrupted
     from openagent.core.config import ConfigManager
 
     live = style.live_terminal() and not args.prompt
