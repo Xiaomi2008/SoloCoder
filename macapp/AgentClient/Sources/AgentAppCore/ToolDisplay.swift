@@ -120,12 +120,62 @@ public struct ToolDisplay: Equatable, Sendable {
             out = one(running ? "Typing" : "Typed", field("text").map(Self.quote))
         case "key_combination":
             out = one(running ? "Pressed" : "Pressed", field("keys"))
-        case "screenshot":
+        case "screenshot", "browser_screenshot":
             out = running ? "Taking a screenshot" : "Took a screenshot"
+        case "git_status":
+            out = running ? "Checking git status" : "Checked git status"
+        case "git_diff":
+            out = one(running ? "Diffing" : "Diffed", path() ?? field("ref"))
+        case "git_log":
+            out = one(running ? "Reading the git log" : "Read the git log", path())
+        case "git_commit":
+            out = one(running ? "Committing" : "Committed", field("message").map { Self.quote(firstLine($0)) })
+        case "browser_navigate":
+            out = one(running ? "Opening" : "Opened", field("url"))
+        case "browser_back":
+            out = running ? "Going back" : "Went back"
+        case "browser_snapshot":
+            out = running ? "Reading the page" : "Read the page"
+        case "browser_find":
+            out = one(running ? "Finding" : "Found", field("text").map(Self.quote))
+        case "browser_click":
+            out = one(running ? "Clicking" : "Clicked", field("ref").map { "element \($0)" })
+        case "browser_type":
+            out = one(running ? "Typing" : "Typed", field("text").map(Self.quote))
+        case "browser_select_option", "browser_press_key":
+            out = one(running ? "Using the page" : "Used the page", field("option") ?? field("key"))
+        case "browser_close":
+            out = running ? "Closing the browser" : "Closed the browser"
+        case "recall_output":
+            out = one(running ? "Recalling" : "Recalled", field("ref"))
         default:
             out = one(running ? "Running" : "Ran", tool)
         }
         return out.count > summaryKeep ? String(out.prefix(summaryKeep - 1)) + "…" : out
+    }
+
+    /// The SF Symbol a step shows for this tool: what kind of thing it did,
+    /// readable at a glance down the timeline without reading the labels.
+    public static func symbol(tool: String) -> String {
+        switch tool {
+        case "bash", "bash_background", "bash_output", "kill_shell": return "terminal"
+        case "read", "recall_output": return "doc.text"
+        case "write": return "square.and.pencil"
+        case "edit", "notebook_edit", "awk", "sed": return "pencil"
+        case "glob", "grep", "browser_find": return "magnifyingglass"
+        case "web_search": return "globe"
+        case "web_fetch", "browser_navigate", "browser_back": return "safari"
+        case "browser_snapshot": return "doc.richtext"
+        case "browser_click", "browser_type", "browser_select_option", "browser_press_key": return "cursorarrow.click"
+        case "click", "double_click", "move_mouse", "scroll": return "cursorarrow.click"
+        case "type_text", "key_combination": return "keyboard"
+        case "screenshot", "browser_screenshot": return "camera.viewfinder"
+        case "todo_write", "todo_update", "todo_list": return "checklist"
+        case "ask_user_question": return "questionmark.bubble"
+        case "git_status", "git_diff", "git_log", "git_commit": return "arrow.triangle.branch"
+        case "wait": return "hourglass"
+        default: return "wrench.and.screwdriver"
+        }
     }
 
     /// A path with its home abbreviated, and the tail kept: a row that shows

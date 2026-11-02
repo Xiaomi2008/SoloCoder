@@ -41,8 +41,18 @@ enum Theme {
     /// The window's ground, and the surface a card sits on.
     static let surface = dynamic(srgb(243), srgb(30))
     static let surfaceRaised = dynamic(srgb(232), srgb(41))
+    /// The conversation's ground: white, where the answer is read. The sidebar
+    /// and the window chrome stay on `surface`, so the column the eye works in
+    /// is the brightest thing on the screen and prose is black on white, not
+    /// grey on grey. Dark mode goes the other way, a step below `surface`.
+    static let canvas = dynamic(srgb(255), srgb(22))
 
     static let accent = dynamic(srgb(97, 65, 255), srgb(140, 128, 255))
+    /// The accent as a surface: the user's own messages, so they stand apart
+    /// from the agent's grey without a second colour on the screen.
+    static let accentSoft = dynamic(
+        srgb(97, 65, 255).withAlphaComponent(0.09), srgb(140, 128, 255).withAlphaComponent(0.14)
+    )
     static let success = dynamic(srgb(54, 163, 83), srgb(54, 163, 83))
     static let warning = dynamic(srgb(244, 153, 80), srgb(244, 153, 80))
     static let danger = dynamic(srgb(214, 78, 64), srgb(232, 106, 92))

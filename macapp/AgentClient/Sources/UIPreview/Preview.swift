@@ -237,6 +237,31 @@ private func script() -> [AgentEvent] {
         }
     }
 
+    // `UI_PREVIEW_RUNNING=1` stops mid-run with the model thinking: the state
+    // the streaming thinking window and the open timeline are drawn in.
+    if ProcessInfo.processInfo.environment["UI_PREVIEW_RUNNING"] != nil {
+        // Without the permission prompts: unresolved by a terminal event, the
+        // state machine would present the sheet over the view being looked at.
+        var running = Array(events.prefix { if case .messageStarted(let e) = $0 { return e.messageId != "m2" }; return true })
+            .filter {
+                switch $0 {
+                case .permissionRequested, .permissionResolved: return false
+                default: return true
+                }
+            }
+        let thinking = (1...14).map { "Step \($0): checking whether the fence reader keeps the closing line, then the list reader." }
+        running.append(contentsOf: [
+            event(["type": .string("message_started"), "run_id": .string("r1"), "message_id": .string("m2")]),
+        ].compactMap { $0 })
+        for line in thinking {
+            if let e = event([
+                "type": .string("reasoning_delta"), "run_id": .string("r1"), "message_id": .string("m2"),
+                "delta": .string(line + "\n"),
+            ]) { running.append(e) }
+        }
+        return running
+    }
+
     // Short mode stops after the answer, and keeps the terminal event: a preview
     // that ends mid-run shows "Streaming" and a Cancel button, which reads as a
     // hang and is not a thing anyone is looking for in a screenshot.

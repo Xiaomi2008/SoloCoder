@@ -720,7 +720,7 @@ struct Detail: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             BrowserPanelSlot(panel: model.browserPanel)
         }
-        .background(Theme.surface)
+        .background(Theme.canvas)
     }
 }
 
@@ -783,7 +783,7 @@ struct Header: View {
         }
         // Opaque, and above a hairline: the timeline scrolls under the header,
         // and a transparent header shows the answer's tops through the title.
-        .background(Theme.surface)
+        .background(Theme.canvas)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.hairline).frame(height: 1) }
     }
 
@@ -850,7 +850,7 @@ struct TranscriptColumn: View {
                 // The column, centred: the window is wider than a paragraph.
                 .frame(maxWidth: .infinity, alignment: .center)
             }
-            .background(Theme.surface)
+            .background(Theme.canvas)
             .overlay(alignment: .bottomTrailing) {
                 if !pinned, let last = model.transcript.turns.last {
                     Button {
@@ -890,19 +890,20 @@ struct TranscriptColumn: View {
     }
 }
 
-/// One prompt, the work, and the answers.
+/// One prompt, the steps that worked on it, and the answer it ended on.
 struct TurnView: View {
     let turn: Turn
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if let user = turn.user, case .user(let text) = user.kind {
                 UserBubble(text: text, images: user.images)
             }
-            if !turn.activity.isEmpty {
-                ActivitySection(turn: turn)
+            let steps = turn.steps
+            if !steps.isEmpty {
+                StepsSection(turn: turn, steps: steps)
             }
-            ForEach(turn.answers) { line in
+            ForEach(turn.result) { line in
                 AnswerLine(line: line).equatable()
             }
         }
@@ -912,49 +913,158 @@ struct TurnView: View {
 
 extension TurnView: Equatable {}
 
-/// The process, collapsed: "Worked for 2m 50s ›".
+/// The process, as a timeline: "Worked for 2m 50s · 12 steps ›".
 ///
 /// Open while the turn is running — a run that shows nothing for two minutes
 /// reads as a hang — and collapsed once it finishes, because the result is what
 /// the person came for and the process is what they scroll past on the way to
 /// the next prompt. The default is `turn.running`, and a click overrides it for
 /// good: `expanded ?? turn.running`.
-struct ActivitySection: View {
+///
+/// The steps are in arrival order, prose between tool calls included, each on a
+/// rail with an icon for what kind of step it was: the shape of a run (read,
+/// read, search, edit, run tests) is legible before a single label is read.
+struct StepsSection: View {
     let turn: Turn
+    let steps: [TranscriptLine]
 
     @State private var expanded: Bool?
 
     private var open: Bool { expanded ?? turn.running }
 
     var body: some View {
-        DisclosureGroup(isExpanded: Binding(
-            get: { open },
-            set: { expanded = $0 }
-        )) {
-            // The durations are read once for the turn and handed to each row as
-            // a value: a row that carried the dictionary would compare it in its
-            // `.equatable()` on every publish.
-            VStack(alignment: .leading, spacing: 8) {
-                let durations = turn.durations
-                ForEach(turn.activity) { line in
-                    LineView(line: line, reasoningDuration: durations[line.id]).equatable()
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { expanded = !open }
+            } label: {
+                HStack(spacing: 7) {
+                    if turn.running {
+                        ProgressView().controlSize(.mini).tint(Theme.accent)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.faint)
+                    }
+                    Text(turn.activityLabel)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(turn.running ? Color.primary : Theme.muted)
+                    Text(stepCount)
+                        .font(.caption)
+                        .foregroundStyle(Theme.faint)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.faint)
+                        .rotationEffect(.degrees(open ? 90 : 0))
                 }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
-            .padding(.top, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } label: {
-            HStack(spacing: 6) {
-                if turn.running { ProgressView().controlSize(.mini) }
-                Text(turn.activityLabel)
-                    .font(.callout)
-                    .foregroundStyle(Theme.muted)
+            .buttonStyle(.plain)
+
+            if open {
+                // The durations are read once for the turn and handed to each row
+                // as a value: a row that carried the dictionary would compare it
+                // in its `.equatable()` on every publish.
+                let durations = turn.durations
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(shownSteps) { line in
+                        StepRow(line: line, reasoningDuration: durations[line.id]).equatable()
+                    }
+                }
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+                .background(alignment: .topLeading) {
+                    // The rail: one hairline behind the markers, from the first
+                    // to the last.
+                    Rectangle()
+                        .fill(Theme.edge)
+                        .frame(width: 1)
+                        .padding(.top, 18)
+                        .padding(.bottom, 14)
+                        .padding(.leading, StepRow.markerSize / 2)
+                }
+                .transition(.opacity)
             }
-            .contentShape(Rectangle())
         }
-        .tint(Theme.muted)
-        .padding(.leading, 2)
+    }
+
+    /// The steps, less the empty "thinking…" placeholder while a thinking
+    /// line is already streaming: two spinners saying the same thing.
+    private var shownSteps: [TranscriptLine] {
+        let thinking = steps.contains { if case .reasoning = $0.kind { return $0.streaming } else { return false } }
+        guard thinking else { return steps }
+        return steps.filter { if case .assistant(let text) = $0.kind { return !(text.isEmpty && $0.streaming) } else { return true } }
+    }
+
+    private var stepCount: String {
+        let tools = steps.filter { if case .tool = $0.kind { return true } else { return false } }.count
+        switch tools {
+        case 0: return ""
+        case 1: return "· 1 tool call"
+        default: return "· \(tools) tool calls"
+        }
     }
 }
+
+/// One step on the rail: a marker for what kind of step, then the step.
+struct StepRow: View {
+    let line: TranscriptLine
+    let reasoningDuration: TimeInterval?
+
+    static let markerSize: CGFloat = 20
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            marker
+                .frame(width: Self.markerSize, height: Self.markerSize)
+                .background(Theme.canvas, in: Circle())
+                .overlay(Circle().strokeBorder(markerEdge, lineWidth: 1))
+            LineView(line: line, reasoningDuration: reasoningDuration)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // The first line of every row sits on the marker's centre.
+                .padding(.top, 1)
+        }
+    }
+
+    @ViewBuilder private var marker: some View {
+        switch line.kind {
+        case .tool(let row):
+            switch row.state {
+            case .running: ProgressView().controlSize(.mini).tint(Theme.accent).scaleEffect(0.8)
+            case .done: symbol(ToolDisplay.symbol(tool: row.name), Theme.muted)
+            case .failed: symbol("xmark", Theme.danger, weight: .bold)
+            }
+        case .reasoning:
+            symbol("brain", line.streaming ? Theme.accent : Theme.accent.opacity(0.7))
+        case .assistant:
+            if line.streaming && line.isResult == false {
+                symbol("ellipsis", Theme.accent)
+            } else {
+                symbol("text.bubble", Theme.muted)
+            }
+        case .messageFailed: symbol("exclamationmark", Theme.danger, weight: .bold)
+        case .permission(let outcome):
+            symbol(outcome.granted ? "hand.raised" : "hand.raised.slash", outcome.granted ? Theme.success : Theme.danger)
+        case .compaction: symbol("arrow.down.right.and.arrow.up.left", Theme.muted)
+        case .note: symbol("info", Theme.faint)
+        case .user: symbol("person", Theme.muted)
+        }
+    }
+
+    private var markerEdge: Color {
+        if case .tool(let row) = line.kind, case .failed = row.state { return Theme.danger.opacity(0.5) }
+        if case .reasoning = line.kind { return Theme.accent.opacity(0.35) }
+        return Theme.edge
+    }
+
+    private func symbol(_ name: String, _ color: Color, weight: Font.Weight = .medium) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 9.5, weight: weight))
+            .foregroundStyle(color)
+    }
+}
+
+extension StepRow: Equatable {}
 
 /// The prompt, as the user's own words: on the right, on a surface, in a bubble.
 struct UserBubble: View {
@@ -977,7 +1087,8 @@ struct UserBubble: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: 560, alignment: .trailing)
-                .background(Theme.fillRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                .hairline(Theme.radius, color: Theme.accent.opacity(0.18))
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -1246,43 +1357,74 @@ struct ReasoningLine: View {
     @ViewBuilder
     private var reasoningText: some View {
         if streaming {
+            // The live tail, in a short window anchored to its bottom: the
+            // newest line is always the one in view, and the top fades out so
+            // the thinking reads as passing by, not as a wall above the answer.
             Text(shown)
                 .font(.callout)
                 .foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 2)
+                // Its full height, then clipped from the top: a `Text` offered
+                // less height truncates its *end*, which is the newest line.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxHeight: Self.liveHeight, alignment: .bottom)
+                .clipped()
+                .mask(
+                    LinearGradient(
+                        stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.35)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
         } else {
             Text(text)
                 .font(.callout)
                 .foregroundStyle(Theme.muted)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 2)
         }
     }
+
+    /// About five lines of callout: enough to watch the model work, too little
+    /// to push the answer off the screen.
+    private static let liveHeight: CGFloat = 92
 
     var body: some View {
-        DisclosureGroup(isExpanded: Binding(
-            get: { open },
-            set: { expanded = $0 }
-        )) {
-            reasoningText
-        } label: {
-            HStack(spacing: 6) {
-                if streaming { ProgressView().controlSize(.mini) }
-                Text(label).font(.callout).foregroundStyle(Theme.muted)
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { expanded = !open }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(label)
+                        .font(.callout)
+                        .foregroundStyle(streaming ? Theme.accent : Theme.muted)
+                    if !streaming {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Theme.faint)
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                    }
+                }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            if open {
+                reasoningText
+                    .padding(.leading, 10)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Theme.accent.opacity(0.3))
+                            .frame(width: 2)
+                    }
+            }
         }
-        .tint(Theme.muted)
     }
 
-    /// "Reasoned for 12s", "Reasoning…" while it goes, and "Reasoned" for a
+    /// "Thought for 12s", "Thinking…" while it goes, and "Thought" for a
     /// history whose lines all arrived at one instant.
     private var label: String {
-        if streaming { return "Reasoning…" }
-        guard let text = DurationFormat.short(duration) else { return "Reasoned" }
-        return "Reasoned for \(text)"
+        if streaming { return "Thinking…" }
+        guard let text = DurationFormat.short(duration) else { return "Thought" }
+        return "Thought for \(text)"
     }
 }
 
@@ -1312,7 +1454,6 @@ struct CompactionLine: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "arrow.up.left.and.arrow.down.right")
             if case .done = row.state, let outcome = row.outcome {
                 Text("context compacted — \(outcome)")
             } else {
@@ -1355,20 +1496,70 @@ struct ToolLine: View {
     private var running: Bool { row.state == .running }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("arguments")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.muted)
-                ArgumentSections(sections: ToolDisplay.sections(tool: row.name, arguments: row.arguments))
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    label
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.faint)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .opacity(expanded ? 1 : 0.6)
+                    Spacer(minLength: 8)
+                    elapsed
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
-                // The output. The row used to store only a 240-character
-                // one-liner, so expanding it showed the arguments and never what
-                // the tool returned — the half the user opens the row for.
-                if case .done(let text) = row.state, !text.isEmpty {
-                    Text("result")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.muted)
+            if expanded {
+                details
+            }
+            if case .failed(let error) = row.state, !expanded {
+                // A failure is worth its first line without a click.
+                Text(error.split(whereSeparator: \.isNewline).first.map(String.init) ?? error)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Theme.danger)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    /// "Read" in the primary weight, "Parser.swift" after it: the verb says
+    /// what happened, the object is what to scan for.
+    private var label: Text {
+        let summary = ToolDisplay.summary(tool: row.name, arguments: row.arguments, running: running)
+        let parts = summary.split(separator: " ", maxSplits: 1).map(String.init)
+        let verb = Text(parts.first ?? summary)
+            .font(.callout.weight(.medium))
+            .foregroundColor(failed ? Theme.danger : .primary)
+        guard parts.count > 1 else { return verb }
+        return verb + Text(" " + parts[1]).font(.callout).foregroundColor(Theme.muted)
+    }
+
+    private var failed: Bool {
+        if case .failed = row.state { return true }
+        return false
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ArgumentSections(sections: ToolDisplay.sections(tool: row.name, arguments: row.arguments))
+
+            // The output. The row used to store only a 240-character
+            // one-liner, so expanding it showed the arguments and never what
+            // the tool returned — the half the user opens the row for.
+            if case .done(let text) = row.state, !text.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Result").font(.caption2.weight(.semibold)).foregroundStyle(Theme.faint)
+                        Spacer()
+                        CopyButton(text: text, label: "this result")
+                    }
                     ScrollView(.vertical, showsIndicators: true) {
                         Text(text)
                             .font(.system(.caption, design: .monospaced))
@@ -1377,38 +1568,19 @@ struct ToolLine: View {
                     }
                     .frame(maxHeight: 240)
                 }
-
-                if case .failed(let error) = row.state {
-                    Text(error)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(Theme.danger)
-                        .textSelection(.enabled)
-                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
-        } label: {
-            HStack(spacing: 7) {
-                glyph
-                Text(ToolDisplay.summary(tool: row.name, arguments: row.arguments, running: running))
-                    .font(.callout)
-                    .foregroundStyle(running ? Color.primary : Theme.muted)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 8)
-                elapsed
-            }
-            .contentShape(Rectangle())
-        }
-        .tint(Theme.muted)
-    }
 
-    @ViewBuilder private var glyph: some View {
-        switch row.state {
-        case .running: ProgressView().controlSize(.mini)
-        case .done: Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.success)
-        case .failed: Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.danger)
+            if case .failed(let error) = row.state {
+                Text(error)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Theme.danger)
+                    .textSelection(.enabled)
+            }
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+        .hairline(Theme.radiusSmall)
     }
 
     /// The call's own clock, ticking once a second while it runs.
@@ -1581,8 +1753,10 @@ struct ComposerCard: View {
         }
         .padding(12)
         .frame(maxWidth: Theme.columnWidth)
-        .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .background(Theme.canvas, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .hairline(Theme.radius, color: Theme.edge)
+        // Lifted off the canvas it now shares a colour with.
+        .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
         .padding(.horizontal, 14)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .center)
