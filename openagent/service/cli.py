@@ -10,27 +10,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import signal
 import sys
 from pathlib import Path
 from typing import Any
 
-from openagent.core.display import bold, cyan, dim, green, red, yellow
-from openagent.runtime.events import (
-    ContextCompactionCompleted,
-    ContextCompactionStarted,
-    MessageCompleted,
-    MessageDelta,
-    MessageFailed,
-    PermissionResolved,
-    RunCancelled,
-    RunCompleted,
-    RunFailed,
-    RunStarted,
-    ToolCallCompleted,
-    ToolCallFailed,
-    ToolCallStarted,
-)
+from openagent.cli import blocks, style
+from openagent.cli.input import ESC, Input, Interrupted, Keys, ask_menu
+from openagent.cli.render import Renderer, answer
+from openagent.cli.style import bold, cyan, dim, red, yellow
+from openagent.runtime.events import RunCancelled, RunCompleted, RunFailed
 from openagent.service.client import ServiceClient, ServiceClosed
 from openagent.service.protocol import PROTOCOL_VERSION, RpcError
 from openagent.service.server import ServiceSettings, serve
@@ -151,65 +140,23 @@ async def handle_serve(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------- tui
 
 
-def _render(event: Any) -> None:
-    """One event, one block of terminal output. No control of the cursor."""
-    if isinstance(event, RunStarted):
-        print(dim(f"· run {event.run_id}"))
-    elif isinstance(event, MessageDelta):
-        print(event.delta, end="", flush=True)
-    elif isinstance(event, MessageCompleted):
-        if event.output_text.strip():
-            print()
-    elif isinstance(event, MessageFailed):
-        print(red(f"  ✗ {event.error}"))
-    elif isinstance(event, ToolCallStarted):
-        args = ", ".join(f"{k}={_short(v)}" for k, v in event.arguments.items())
-        print(f"  {bold('➜')} {cyan(event.tool_name)}({dim(args)})")
-    elif isinstance(event, ToolCallCompleted):
-        print(f"    {green('⎿')} {dim(_short(event.result, 300))}")
-    elif isinstance(event, ToolCallFailed):
-        print(f"    {red('⎿')} {red(_short(event.error, 300))}")
-    elif isinstance(event, PermissionResolved):
-        mark = green("allowed") if event.granted else red("denied")
-        print(dim(f"  · permission {mark} ({event.scope})"))
-    elif isinstance(event, ContextCompactionStarted):
-        print(dim("  · compacting context…"))
-    elif isinstance(event, ContextCompactionCompleted):
-        print(dim("  · context compacted"))
-    elif isinstance(event, RunCompleted):
-        reason = event.result.stop_reason
-        if reason != "end_turn":
-            print(yellow(f"· run stopped: {reason}"))
-    elif isinstance(event, RunFailed):
-        print(red(f"· run failed: {event.error}"))
-    elif isinstance(event, RunCancelled):
-        print(yellow(f"· run cancelled: {event.reason}"))
+class _Terminal:
+    """What one TUI connection draws with and reads from."""
+
+    def __init__(self, live: bool, working_dir: str, input_: Input) -> None:
+        self.out = Renderer(live, working_dir)
+        self.input = input_
+        self.keys: Keys | None = None
+
+    async def ask(self, event: Any) -> tuple[bool, str]:
+        """Ask a human. The question itself is drawn when the event is rendered."""
+        if self.keys is not None:
+            return await ask_menu(self.keys)
+        print(f"{yellow('allow')} [y/n/a]? ", end="", flush=True)
+        return answer(await self.input.answer_line())
 
 
-def _short(value: Any, limit: int = 80) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    text = text.replace("\n", " ⏎ ")
-    return text if len(text) <= limit else f"{text[:limit]}… ({len(text)} chars)"
-
-
-async def _ask(event: Any) -> tuple[bool, str]:
-    """Ask a human. Runs in a thread: ``input`` blocks the event loop otherwise."""
-    print(f"\n{yellow('⚠')} {bold(event.tool_name)} wants to run:")
-    for key, value in event.arguments.items():
-        print(f"    {key}: {dim(_short(value, 400))}")
-    print(f"    {dim(event.reason)}")
-    answer = await asyncio.to_thread(
-        input, f"{yellow('allow')} [y/n/a(lways for session)]? "
-    )
-    answer = answer.strip().lower()
-    if answer in ("y", "yes"):
-        return True, "once"
-    if answer in ("a", "always", "session"):
-        return True, "session"
-    return False, "once"
-
-
-async def _run_once(client: ServiceClient, args: argparse.Namespace, prompt: str) -> int:
+async def _run_once(client: ServiceClient, args: argparse.Namespace, prompt: str, term: _Terminal) -> int:
     from openagent.service.scope import validate_working_dir
 
     working_dir = args.working_dir or str(Path.cwd())
@@ -229,19 +176,54 @@ async def _run_once(client: ServiceClient, args: argparse.Namespace, prompt: str
     )
     print(dim(f"· model {started['model']} · session {started['session_id']}"))
 
-    async for event in client.events():
-        _render(event)
-        if isinstance(event, RunCompleted):
-            return 0
-        if isinstance(event, (RunFailed, RunCancelled)):
-            return 1
-    return 1
+    out = term.out
+    run_id = started["run_id"]
+    tasks: set[asyncio.Task[Any]] = set()
+
+    def interrupt() -> None:
+        task = asyncio.create_task(client.cancel(run_id))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    loop = asyncio.get_running_loop()
+    term.keys = Keys(lambda key: interrupt() if key == ESC else None) if out.live else None
+    keys = term.keys
+    loop.add_signal_handler(signal.SIGINT, lambda: keys.handler(ESC) if keys else interrupt())
+
+    async def tick() -> None:
+        while True:
+            await asyncio.sleep(0.08)
+            out.tick()
+
+    ticker = asyncio.create_task(tick()) if out.live else None
+    try:
+        async for event in client.events():
+            out.event(event)
+            if isinstance(event, RunCompleted):
+                return 0
+            if isinstance(event, (RunFailed, RunCancelled)):
+                return 1
+        return 1
+    finally:
+        if ticker is not None:
+            ticker.cancel()
+        loop.remove_signal_handler(signal.SIGINT)
+        if keys is not None:
+            keys.stop()
+        term.keys = None
 
 
 async def handle_tui(args: argparse.Namespace) -> int:
+    from openagent.core.config import ConfigManager
+
+    live = style.live_terminal() and not args.prompt
+    history = None
+    if style.interactive_input() and not args.prompt:
+        history = ConfigManager.get_config_path().parent / "cli_history_py"
+    term = _Terminal(live, str(Path(args.working_dir or Path.cwd()).resolve()), Input(history))
     try:
         client = await ServiceClient.connect(
-            args.socket, client="openagent-tui", permission_handler=_ask
+            args.socket, client="openagent-tui", permission_handler=term.ask
         )
     except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
         print(
@@ -252,20 +234,33 @@ async def handle_tui(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        print(f"{bold('openagent')} · {cyan(str(client.info.get('server')))} · protocol {client.info.get('protocol_version')}")
+        server = str(client.info.get("server"))
+        protocol = client.info.get("protocol_version")
+        if live:
+            rows = [("server", server), ("protocol", str(protocol))]
+            for row in blocks.header_box("openagent", rows, style.width()):
+                print(row)
+        else:
+            print(f"{bold('openagent')} · {cyan(server)} · protocol {protocol}")
         if args.prompt:
-            return await _run_once(client, args, args.prompt)
+            return await _run_once(client, args, args.prompt, term)
 
         print(dim("type a prompt; Ctrl-D to quit\n"))
+        prompt = "❯ " if term.input.is_editor else "you › "
         while True:
             try:
-                line = await asyncio.to_thread(input, f"{green('you')} › ")
-            except (EOFError, KeyboardInterrupt):
+                line = await term.input.read(prompt)
+            except Interrupted:
+                continue
+            if line is None:
                 print()
                 return 0
             if not line.strip():
                 continue
-            status = await _run_once(client, args, line)
+            status = await _run_once(client, args, line, term)
+            usage = term.out.usage
+            if usage and usage[1]:
+                print(f"\n{dim(f'  context {blocks.percent(usage[0], usage[1])}%')}\n")
             if status == 2:
                 return 2
     except RpcError as exc:

@@ -286,7 +286,7 @@ OpenAgent supports multiple LLM providers, making it easy to switch between clou
 
 ```
 SoloCoder/
-├── cli_coder.py              # Main CLI entry point with interactive session
+├── cli_coder.py              # Main CLI entry point
 ├── server.py                 # Streamlit web UI entry point
 ├── openagent/                # Agent framework package
 │   ├── __init__.py          # Public API exports

@@ -30,71 +30,25 @@ def should_use_colors() -> bool:
     return sys.stdout.isatty()
 
 
-# Use color functions that respect the terminal capability
-if should_use_colors():
+# One palette for everything the CLI prints.
+from openagent.cli.style import bold, cyan, dim, green, paint, red, yellow  # noqa: E402
 
-    def bold(text: str) -> str:
-        return f"{Colors.BOLD}{text}{Colors.RESET}"
 
-    def dim(text: str) -> str:
-        return f"{Colors.DIM}{text}{Colors.RESET}"
+def blue(text: str) -> str:
+    return paint("94", text)
 
-    def blue(text: str) -> str:
-        return f"{Colors.BLUE}{text}{Colors.RESET}"
 
-    def green(text: str) -> str:
-        return f"{Colors.GREEN}{text}{Colors.RESET}"
+def magenta(text: str) -> str:
+    return paint("95", text)
 
-    def yellow(text: str) -> str:
-        return f"{Colors.YELLOW}{text}{Colors.RESET}"
 
-    def red(text: str) -> str:
-        return f"{Colors.RED}{text}{Colors.RESET}"
+def white(text: str) -> str:
+    return paint("97", text)
 
-    def cyan(text: str) -> str:
-        return f"{Colors.CYAN}{text}{Colors.RESET}"
 
-    def magenta(text: str) -> str:
-        return f"{Colors.MAGENTA}{text}{Colors.RESET}"
-
-    def white(text: str) -> str:
-        return f"{Colors.WHITE}{text}{Colors.RESET}"
-
-    def user_input(text: str) -> str:
-        """Style text as user input (bright green)."""
-        return f"{Colors.USER_INPUT}{text}{Colors.RESET}"
-else:
-    # Fallback to plain text when colors are not available
-    def bold(text: str) -> str:
-        return text
-
-    def dim(text: str) -> str:
-        return text
-
-    def blue(text: str) -> str:
-        return text
-
-    def green(text: str) -> str:
-        return text
-
-    def yellow(text: str) -> str:
-        return text
-
-    def red(text: str) -> str:
-        return text
-
-    def cyan(text: str) -> str:
-        return text
-
-    def magenta(text: str) -> str:
-        return text
-
-    def white(text: str) -> str:
-        return text
-
-    def user_input(text: str) -> str:
-        """Style text as user input (bright green)."""
-        return text
+def user_input(text: str) -> str:
+    """Style text as user input."""
+    return green(text)
 
 
 def code(text: str, language: str = "python") -> str:

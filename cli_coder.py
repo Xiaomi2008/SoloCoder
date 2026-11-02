@@ -197,6 +197,26 @@ Type 'quit' or 'exit' to stop the agent.
     )
 
     parser.add_argument(
+        "-p",
+        "--prompt",
+        default=None,
+        help="Run this prompt and exit, instead of a session",
+    )
+
+    parser.add_argument(
+        "--permission-mode",
+        choices=("ask", "allow_readonly", "allow_all"),
+        default="ask",
+        help="ask (default) prompts per risky tool; allow_readonly refuses them; allow_all runs them",
+    )
+
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="Resume a stored session id",
+    )
+
+    parser.add_argument(
         "--log-level",
         default="warning",
         choices=["debug", "info", "warning", "error", "critical"],
@@ -240,181 +260,6 @@ def detect_provider(model: str, base_url: str | None = None) -> tuple[str, str]:
     return ("OpenAI", "OpenAIProvider")
 
 
-def truncate_output(text: str, max_lines: int = 30) -> tuple[str, bool]:
-    """Truncate output if it exceeds max_lines, returning truncated text and has_more flag.
-
-    Args:
-        text: The output text to potentially truncate
-        max_lines: Maximum number of lines to display
-
-    Returns:
-        Tuple of (display_text, has_more) where has_more indicates if output was truncated
-    """
-    lines = text.split("\n")
-    if len(lines) <= max_lines:
-        return text, False
-
-    # Show truncated output with indicator
-    truncated = "\n".join(lines[:max_lines])
-    return truncated, True
-
-
-class ProgressSpinner:
-    """Animated progress spinner using ANSI codes."""
-
-    SPINNERS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-    @staticmethod
-    def print_animated(text: str, duration: float = 2.0, fps: int = 10) -> None:
-        """Display animated spinner with text."""
-        frames = ProgressSpinner.SPINNERS
-        num_frames = len(frames)
-        interval = duration / num_frames
-        frame_idx = 0
-
-        try:
-            # Clear line and position cursor
-            print(f"\r\x1b[2K\x1b[1G", end="", flush=True)
-
-            start_time = time.time()
-            while time.time() - start_time < duration:
-                frame = frames[frame_idx % num_frames]
-                print(f"\r\x1b[2K\x1b[1G{cyan(frame)} {dim(text)}", end="", flush=True)
-                time.sleep(interval)
-                frame_idx += 1
-
-            # Clear at the end
-            print(f"\x1b[2K\x1b[1G", end="", flush=True)
-        except KeyboardInterrupt:
-            print(f"\x1b[2K\x1b[1G", end="", flush=True)
-
-
-def display_tool_progress_start(task_desc: str) -> None:
-    """Start displaying tool execution progress."""
-    progress_print(f"{cyan('●')} {bold(task_desc)}...")
-
-
-def display_tool_progress_end() -> None:
-    """Clear and finalize tool progress display."""
-    progress_clear(f"{green('✓')} {bold('Complete')}")
-
-
-def progress_print(text: str) -> None:
-    """Print progress line."""
-    print(text, flush=True)
-
-
-def progress_clear(text: str = "") -> None:
-    """Clear current line."""
-    print(f"\x1b[2K\x1b[1G{text}", end="", flush=True)
-
-
-def display_error_box(message: str) -> None:
-    """Display error in a styled red box."""
-    border = "━" * 60
-    warning = f"⚠️ {message}"
-    print(f"\n{red(border)}")
-    print(f"{red('❌')} {red(warning)}")
-    print(f"{red(border)}")
-    print()
-
-
-def colorize_code_syntax(code: str, language: str = "python") -> str:
-    """Add basic syntax highlighting colors to code."""
-    if not code:
-        return code
-
-    lines = code.split("\n")
-    highlighted_lines = []
-
-    patterns = [
-        # Strings
-        (r'["\'].*?["\']', lambda m: cyan(m.group())),
-        # Comments
-        (r"#.*$", lambda m: dim(m.group())),
-        # Keywords
-        (
-            r"\b(def|class|import|from|return|if|else|elif|for|while|try|except|finally|with|async|await|yield|lambda|pass|break|continue|and|or|not|in|is|True|False)\b",
-            lambda m: bold(red(m.group())),
-        ),
-        # Functions
-        (r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", lambda m: blue(m.group())),
-        # Decorators
-        (r"@\w+", lambda m: yellow(m.group())),
-        # Numbers
-        (r"\b\d+\.\d+\b|\b\d+\b", lambda m: magenta(m.group())),
-    ]
-
-    for line in lines:
-        highlighted_line = line
-        for pattern, color_func in patterns:
-            highlighted_line = re.sub(pattern, color_func, highlighted_line)
-        highlighted_lines.append(highlighted_line)
-
-    return "\n".join(highlighted_lines)
-
-
-def display_file_tree_with_icons(result: str) -> None:
-    """Display file listing with icons based on file types."""
-    lines = result.strip().split("\n")
-    icons = {
-        ".py": "🐍",
-        ".js": "🟨",
-        ".ts": "🔵",
-        ".tsx": "🔵",
-        ".json": "📋",
-        ".md": "📝",
-        ".txt": "📄",
-        ".yaml": "⚙️",
-        ".yml": "⚙️",
-        ".toml": "⚙️",
-        ".html": "🌐",
-        ".css": "🎨",
-        ".scss": "🎨",
-        ".sh": "🚀",
-        ".env": "🔐",
-        ".ipynb": "📘",
-        ".c": "🔧",
-        ".cpp": "🔧",
-        ".h": "🔧",
-        ".go": "🐹",
-        ".rs": "🦀",
-        ".rb": "💎",
-    }
-
-    output_lines = []
-    for line in lines:
-        if not line:
-            continue
-        if line.startswith("total ") and line.count(":") == 0:
-            output_lines.append(dim(line))
-            continue
-
-        parts = line.rsplit(" ", 1)
-        if len(parts) != 2:
-            output_lines.append("  " + line)
-            continue
-
-        _, filename = parts
-        filename = filename.strip()
-        ext = os.path.splitext(filename)[1].lower()
-        icon = "📁" if filename.endswith("/") else icons.get(ext, "📄")
-        output_lines.append(f"  {cyan(icon)} {line}")
-
-    display_truncated_output("\n".join(output_lines))
-
-
-def display_truncated_output(text: str) -> None:
-    """Display output with automatic truncation for long results."""
-    display_text, has_more = truncate_output(text)
-    print(display_text)
-    if has_more:
-        print(yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"))
-        print(yellow("…"))
-        print(yellow("[Showing 30 of many lines. Use !<command> for direct execution]"))
-        print(yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"))
-
-
 def get_api_key_env_var(provider_name: str) -> str:
     """Get the environment variable name for a provider's API key."""
     env_vars = {
@@ -426,378 +271,64 @@ def get_api_key_env_var(provider_name: str) -> str:
     return env_vars.get(provider_name, "")
 
 
-def display_tool_call(name: str, arguments: dict) -> None:
-    """Display a tool call in Claude Code style."""
-    icon = "●"
-    print(f"\n{cyan(icon)} {bold(name)}")
-    if arguments:
-        for key, value in arguments.items():
-            print(f"  {dim(key)}: {value}")
-
-
-def display_tool_result(is_error: bool, content: str) -> None:
-    """Display a tool result with appropriate styling (Claude Code style)."""
-    icon = "⎿"
-    color = red if is_error else green
-    truncated = truncate_text(content, 500)
-    print(
-        f"\n{color(icon)} {dim(content[:100])}..."
-        if len(content) > 100
-        else f"\n{color(icon)} {truncated}"
-    )
-
-
-def display_tool_result_full(is_error: bool, content: str) -> None:
-    """Display a full tool result with appropriate styling."""
-    icon = "❌" if is_error else "✅"
-    color = red if is_error else green
-    print(f"\n{color(icon)} {bold('Result:')}\n")
-    print(content)
-
-
-def display_context_status_bar(coder, turn_counter: int = 0) -> None:
-    """Display a status bar showing context token usage.
-
-    Args:
-        coder: The CoderAgent instance
-        turn_counter: Current turn number for session tracking
-    """
-    try:
-        current_tokens = coder.session.token_count
-        max_tokens = getattr(coder, "loop_defaults", {}).get("max_context_tokens", 128000)
-        threshold = getattr(coder, "loop_defaults", {}).get("compact_threshold", 0.8)
-        threshold_tokens = int(max_tokens * threshold)
-
-        # Calculate percentage and color
-        percentage = (current_tokens / max_tokens) * 100 if max_tokens > 0 else 0
-
-        # Determine color based on usage level
-        if percentage >= 90:
-            bar_color = red
-        elif percentage >= 80:
-            bar_color = yellow
-        elif percentage >= threshold * 100:
-            bar_color = cyan
-        else:
-            bar_color = green
-
-        # Create progress bar (50 characters wide)
-        bar_width = 50
-        filled_chars = (
-            int(bar_width * current_tokens / max_tokens) if max_tokens > 0 else 0
-        )
-        bar = "█" * filled_chars + "░" * (bar_width - filled_chars)
-
-        # Format the status line
-        usage_text = f"{current_tokens:,} / {max_tokens:,}"
-        threshold_text = (
-            f"(threshold: {threshold_tokens:,})"
-            if percentage >= threshold * 100
-            else ""
-        )
-
-        # Build the status bar display
-        status_line = f"\n{dim('─' * 80)}\n"
-        status_line += f"{bar_color(f'{usage_text}')} {dim(threshold_text)}\n"
-        status_line += f"{bar_color(bar)}\n"
-
-        # Add compacted indicator if needed
-        if percentage >= threshold * 100:
-            status_line += f"\n{yellow('⚠️ Context approaching limit. Consider using /compact to save tokens.')}\n"
-
-        print(status_line)
-
-    except Exception as e:
-        # Don't crash the CLI if token counting fails
-        pass
+def build_provider_for(model: str, base_url: str | None) -> Any:
+    """A provider for a bare model name, as ``/model`` asks for one."""
+    provider_name, class_name = detect_provider(model, base_url)
+    if class_name == "AnthropicProvider":
+        from openagent.provider.anthropic import AnthropicProvider as ProviderClass
+    elif class_name == "GoogleProvider":
+        from openagent.provider.google import GoogleProvider as ProviderClass
+    elif class_name == "OllamaProvider":
+        from openagent.provider.ollama import OllamaProvider as ProviderClass
+    else:
+        from openagent.provider.openai import OpenAIProvider as ProviderClass
+    env_var = get_api_key_env_var(provider_name)
+    kwargs: dict[str, Any] = {"model": model, "api_key": os.environ.get(env_var) if env_var else None}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return ProviderClass(**kwargs)
 
 
 async def run_interactive_session(
-    coder, initial_image: str | None = None
-) -> None:
-    """Run the interactive chat session with Claude Code style display.
+    coder,
+    initial_image: str | None = None,
+    *,
+    model_name: str | None = None,
+    prompt: str | None = None,
+    permission_mode: str = "ask",
+    session_id: str | None = None,
+    compact_threshold: float = 0.8,
+    disable_compaction: bool = False,
+) -> int:
+    """Run the chat session, or one prompt when ``prompt`` is given."""
+    from openagent.cli import style
+    from openagent.cli.chat import Chat
+    from openagent.cli.input import Input
+    from openagent.core.config import ConfigManager
 
-    Args:
-        coder: CoderAgent instance
-        initial_image: Optional base64-encoded image to analyze on startup
-    """
-    print(f"\n{bold('Coder Agent')} - Chat-based coding assistant")
-    print(dim("-" * 40))
-    print(f"{dim('Working directory:')} {coder.working_dir}")
-    print(f"{dim('Max turns per request:')} {coder.max_turns}")
-    print("\nType 'quit' or 'exit' to stop.")
-    print("Use '/' prefix for quick commands:")
-    print(dim("  /list     - List files in current directory"))
-    print(dim("  /read     - Preview file contents before editing"))
-    print(dim("  /image    - Upload an image for vision analysis"))
-    print(dim("  /todo     - Show task list"))
-    print(dim("  /model    - Change LLM model mid-session"))
-    print(dim("  /context  - Show current context token usage"))
-    print(dim("  /clear    - Clear conversation history"))
-    print(dim("  /compact  - Manually compact context to save tokens"))
-    print("\nUse '!' prefix for direct terminal commands:")
-    print(dim("  ! ls      - List files (direct bash execution)"))
-    print(dim("  ! pwd     - Print working directory"))
+    live = style.live_terminal() and prompt is None
+    history = None
+    if style.interactive_input() and prompt is None:
+        history = ConfigManager.get_config_path().parent / "cli_history_py"
 
-    # Display initial context status bar
-    display_context_status_bar(coder)
+    async def switch_model(name: str) -> str:
+        coder.provider = build_provider_for(name, getattr(coder.provider, "base_url", None))
+        return name
 
-    # Handle initial image input if provided
-    if initial_image:
-        print(f"\n{green('⎿')} Analyzing initial image...")
-        try:
-            result = await coder.run_multimodal(
-                text="Analyze this image and describe what you see.",
-                image_data=initial_image,
-            )
-            print(f"\n{green('⎿')} Analysis result:\n")
-            print(result)
-            print()
-        except Exception as e:
-            print(f"\n{red('⎿')} Error analyzing initial image: {e}")
-
-    try:
-        turn_counter = 0
-        command_history = []
-
-        import readline
-
-        if sys.platform != "win32":
-            readline.set_history_length(500)
-
-        while True:
-            # Display minimal prompt (Claude Code style)
-            print("> ", end="", flush=True)
-            typed_input = input().strip()
-
-            if not typed_input:
-                continue
-
-            # Handle quick commands with "/" prefix
-            if typed_input.startswith("/"):
-                parts = typed_input.split(maxsplit=1)
-                cmd = parts[0].lower()
-                arg = parts[1] if len(parts) > 1 else ""
-
-                if cmd in ("/list", "/ls"):
-                    from openagent.tools import bash
-
-                    result = await coder.bash_manager.execute_command(
-                        (await coder.bash_manager.start_session()).split("-")[0],
-                        f"ls -la {arg}" if arg else "ls -la",
-                    )
-                    display_file_tree(result)
-                    continue
-
-                elif cmd == "/read":
-                    """Preview file contents using the read tool."""
-                    if not arg:
-                        print(f"\n{green('⎿')} Usage: /read <filepath>")
-                        continue
-
-                    from openagent.tools import read
-
-                    try:
-                        result = read(arg)  # read() is synchronous, no await needed
-                        display_code_block(f"File: {arg}", result)
-                    except Exception as e:
-                        print(f"\n{red('⎿')} Error reading file: {e}")
-                    continue
-
-                elif cmd == "/todo":
-                    from openagent.tools import todo_list
-
-                    result = todo_list()
-                    print(f"\n{green('⎿')} {result}")
-                    continue
-
-                elif cmd == "/image":
-                    """Upload an image for vision analysis (Qwen3.5 multimodal)."""
-                    import base64
-
-                    from openagent.tools.computer_use import screenshot
-
-                    if not arg:
-                        # Take a screenshot and analyze
-                        print(f"\n{green('⎿')} Taking screenshot...")
-                        img_base64 = await screenshot(return_base64=True)
-
-                        if img_base64:
-                            # Run multimodal analysis
-                            try:
-                                result = await coder.run_multimodal(
-                                    image_data=img_base64,
-                                    text="Analyze this screenshot and describe what you see.",
-                                )
-                                print(f"\n{green('⎿')} {result}")
-                            except Exception as e:
-                                print(f"\n{red('⎿')} Error analyzing image: {e}")
-                        continue
-
-                    # Load image from file
-                    try:
-                        img_bytes = Path(arg).read_bytes()
-                        img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-
-                        # Run multimodal analysis
-                        try:
-                            result = await coder.run_multimodal(
-                                image_data=img_base64,
-                                text=arg or "Analyze this image.",
-                            )
-                            print(f"\n{green('⎿')} {result}")
-                        except Exception as e:
-                            print(f"\n{red('⎿')} Error analyzing image: {e}")
-                    except Exception as e:
-                        print(f"\n{red('⎿')} Error loading image: {e}")
-                    continue
-
-                elif cmd == "/model":
-                    """Change LLM model mid-session."""
-                    if not arg:
-                        provider = coder.provider
-                        print(f"\n{green('⎿')} Current model: {provider.model}")
-                        print(f"{green('⎿')} Provider: {type(provider).__name__}")
-                        continue
-
-                    new_model = arg.strip()
-                    base_url = getattr(coder.provider, "base_url", None)
-
-                    _, provider_class_name = detect_provider(new_model, base_url)
-
-                    class_mapping = {
-                        "OpenAIProvider": ("OpenAI", "openai"),
-                        "AnthropicProvider": ("Anthropic", "anthropic"),
-                        "GoogleProvider": ("Google", "google"),
-                        "OllamaProvider": ("Ollama", "ollama"),
-                    }
-
-                    if provider_class_name not in class_mapping:
-                        print(
-                            f"\n{red('⎿')} Unknown provider type for model: {new_model}"
-                        )
-                        continue
-
-                    provider_name, module_name = class_mapping[provider_class_name]
-
-                    try:
-                        ProviderClass: type[Any] | None = None
-
-                        if module_name == "openai":
-                            from openagent.provider.openai import OpenAIProvider
-
-                            ProviderClass = OpenAIProvider
-                        elif module_name == "anthropic":
-                            from openagent.provider.anthropic import AnthropicProvider
-
-                            ProviderClass = AnthropicProvider
-                        elif module_name == "google":
-                            from openagent.provider.google import GoogleProvider
-
-                            ProviderClass = GoogleProvider
-                        elif module_name == "ollama":
-                            from openagent.provider.ollama import OllamaProvider
-
-                            ProviderClass = OllamaProvider
-
-                        if ProviderClass is None:
-                            raise RuntimeError(
-                                f"Could not load provider class for module: {module_name}"
-                            )
-
-                        api_key_env = get_api_key_env_var(provider_name)
-                        api_key = os.environ.get(api_key_env) if api_key_env else None
-
-                        new_provider_kwargs = {"model": new_model, "api_key": api_key}
-                        if base_url:
-                            new_provider_kwargs["base_url"] = base_url
-
-                        coder.provider = ProviderClass(**new_provider_kwargs)
-                        print(
-                            f"\n{green('⎿')} Switched to {provider_name} model: {new_model}"
-                        )
-                    except Exception as e:
-                        print(f"\n{red('⎿')} Error switching model: {e}")
-                    continue
-
-                elif cmd == "/context":
-                    """Show current context token usage."""
-                    try:
-                        display_context_status_bar(coder)
-                    except Exception as e:
-                        print(f"\n{red('⎿')} Error displaying context status: {e}")
-                    continue
-
-                elif cmd == "/compact":
-                    """Manually compact conversation context."""
-                    try:
-                        max_tokens = getattr(coder, "loop_defaults", {}).get("max_context_tokens", 128000)
-                        threshold = getattr(coder, "loop_defaults", {}).get("compact_threshold", 0.8)
-
-                        summary = await coder.session.compact_context(
-                            provider=coder.provider,
-                            keep_recent=5,
-                            summary_type="detailed",
-                        )
-                        print(f"\n{green('⎿')} Context compacted!")
-                        print(dim("Summary preview:"))
-                        print(
-                            dim(
-                                summary[:300] + "..." if len(summary) > 300 else summary
-                            )
-                        )
-                    except Exception as e:
-                        print(f"\n{red('⎿')} Error during compaction: {e}")
-                    continue
-
-                elif cmd in ("/clear", "/reset"):
-                    coder.session.clear()
-                    turn_counter = 0
-                    print(f"\n{green('⎿')} Conversation history cleared.")
-                    continue
-
-                elif cmd in ("/quit", "/exit"):
-                    print("Goodbye!")
-                    break
-
-                else:
-                    print(
-                        f"{red('⎿')} Unknown command: {cmd}. Use /list, /read, /todo, /model, or /clear"
-                    )
-                    continue
-
-            if typed_input.startswith("!"):
-                cmd = typed_input[1:].strip()
-                if not cmd:
-                    print(f"\n{green('⎿')} Usage: ! <command>")
-                    continue
-
-                from openagent.tools import bash
-
-                try:
-                    result = await coder.bash_manager.execute_command(
-                        (await coder.bash_manager.start_session()).split("-")[0], cmd
-                    )
-                    display_truncated_output(result)
-                except Exception as e:
-                    display_error_box(str(e))
-                continue
-
-            # Handle quit/exit commands
-            if typed_input.lower() in ("quit", "exit"):
-                print("Goodbye!")
-                break
-
-            # Run the agent and increment turn counter
-            result = await coder.run(typed_input)
-            turn_counter += 1
-            display_truncated_output(result)
-
-            # Update context status bar after each interaction
-            display_context_status_bar(coder, turn_counter)
-
-    except KeyboardInterrupt:
-        print("\n\nGoodbye!")
+    chat = Chat(
+        coder,
+        live=live,
+        input_=Input(history),
+        model_name=model_name or getattr(coder.provider, "model", "model"),
+        permission_mode=permission_mode,
+        session_id=session_id,
+        switch_model=switch_model,
+        compact_threshold=compact_threshold,
+        disable_compaction=disable_compaction,
+    )
+    if prompt is not None:
+        return await chat.once(prompt, initial_image)
+    return await chat.loop(initial_image)
 
 
 async def main():
@@ -871,7 +402,7 @@ async def main():
 
             api_key = os.environ.get(env_var)
             if api_key:
-                print(f"Using {provider_name} provider (model: {args.model})")
+                pass
 
     # Build provider kwargs
     provider_kwargs: dict[str, Any] = {
@@ -904,7 +435,6 @@ async def main():
             ref = registry.ref(endpoint, registry_model, base_url=args.base_url)
         provider = await registry.build_async(ref)
         max_context_tokens = max_context_tokens or ref.caps.context_window
-        print(f"Using {endpoint} (model: {registry_model}, context {ref.caps.context_window:,})")
     else:
         # Create provider with optional API key override
         provider = ProviderClass(**provider_kwargs)
@@ -921,7 +451,7 @@ async def main():
 
     # Run interactive session
     if args.debug_llm:
-        print(f"{yellow('Debug logging enabled:')} OpenAgent + provider logs at DEBUG")
+        print(yellow("Debug logging enabled: OpenAgent + provider logs at DEBUG"))
 
     # Handle initial image input if provided
     initial_image = None
@@ -930,11 +460,35 @@ async def main():
             img_bytes = Path(args.image).read_bytes()
             import base64
             initial_image = base64.b64encode(img_bytes).decode("utf-8")
-            print(f"\n{green('⎿')} Loading image from: {args.image}")
         except Exception as e:
             print(f"\n{red('⎿')} Error loading image: {e}")
 
-    await run_interactive_session(coder, initial_image=initial_image)
+    # The conversation to continue, before the header shows anything.
+    from openagent.cli import style
+    from openagent.service import sessions
+
+    session_id = None
+    if args.session:
+        session_id = sessions.check_session_id(args.session)
+        stored = sessions.load_or_start(session_id)
+        if len(stored) or stored.system_prompt:
+            coder.session = stored
+    if args.prompt is not None or not style.live_terminal():
+        window = max_context_tokens or 128000
+        print(f"Using {args.model} (context {window})")
+
+    raise SystemExit(
+        await run_interactive_session(
+            coder,
+            initial_image=initial_image,
+            model_name=args.model,
+            prompt=args.prompt,
+            permission_mode=args.permission_mode,
+            session_id=session_id,
+            compact_threshold=args.compact_threshold,
+            disable_compaction=args.disable_compaction,
+        )
+    )
 
 
 async def handle_config_command(args: argparse.Namespace) -> None:

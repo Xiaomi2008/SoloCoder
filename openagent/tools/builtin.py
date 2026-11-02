@@ -191,7 +191,7 @@ def edit(
             rel_path = str(file_path)
 
         diff_generator = difflib.unified_diff(
-            old_lines, new_lines, fromfile=rel_path, tofile=rel_path, lineterm=""
+            old_lines, new_lines, fromfile=rel_path, tofile=rel_path
         )
         diff_output = "".join(diff_generator)
 
