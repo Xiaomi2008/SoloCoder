@@ -353,6 +353,14 @@ class Agent:
             )
         return provider_kwargs
 
+    def _finish_after_tools(self) -> bool:
+        """Application hook: stop after settled tool results when work is complete.
+
+        Ordinary agents still request a final response. Specialized tool-only
+        agents may use host-owned completion state instead of closing prose.
+        """
+        return False
+
     async def _loop(self, **kwargs: Any) -> str:
         tool_defs = (
             self.tool_registry.definitions if len(self.tool_registry) > 0 else None
@@ -515,6 +523,9 @@ class Agent:
                         display_tool_result_claude_style(result.is_error, content)
 
             self.session.add_tool_results(list(results))
+            if self._finish_after_tools():
+                self._logger.run_end(completed_turns)
+                return ""
             screenshot_followup_added = self._add_tool_result_followup_messages(
                 list(results)
             )
