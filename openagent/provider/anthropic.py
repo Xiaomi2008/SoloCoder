@@ -18,6 +18,7 @@ from openagent.core.types import (
 from openagent.provider.base import BaseProvider
 from openagent.provider.converter import MessageConverterMixin
 from openagent.providers import (
+    CallClock,
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,
@@ -25,6 +26,7 @@ from openagent.providers import (
     ProviderStreamEvent,
     ProviderTextDelta,
     ProviderToolCall,
+    ProviderUsage,
 )
 
 
@@ -242,17 +244,29 @@ class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
         message_id = f"msg_{uuid.uuid4().hex[:24]}"
         # Tool-use blocks being assembled, by content-block index.
         pending: dict[int, dict[str, Any]] = {}
+        clock = CallClock()
+        input_tokens = cached_tokens = output_tokens = None
         async with self._client.messages.stream(**api_kwargs) as response:
             async for event in response:
                 kind = getattr(event, "type", None)
                 if kind == "message_start":
                     message_id = getattr(event.message, "id", None) or message_id
+                    start_usage = getattr(event.message, "usage", None)
+                    if start_usage is not None:
+                        # Anthropic counts cached prompt tokens apart from input_tokens.
+                        cached_tokens = getattr(start_usage, "cache_read_input_tokens", None) or 0
+                        input_tokens = (
+                            (getattr(start_usage, "input_tokens", None) or 0)
+                            + cached_tokens
+                            + (getattr(start_usage, "cache_creation_input_tokens", None) or 0)
+                        )
                     yield ProviderMessageStarted(message_id=message_id)
                 elif kind == "content_block_start":
                     block = event.content_block
                     if getattr(block, "type", None) == "tool_use":
                         pending[event.index] = {"id": block.id, "name": block.name, "json": []}
                 elif kind == "content_block_delta":
+                    clock.token()
                     delta = event.delta
                     delta_kind = getattr(delta, "type", None)
                     if delta_kind == "text_delta" and delta.text:
@@ -275,7 +289,20 @@ class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
                     yield ProviderToolCall(
                         message_id=message_id, id=call["id"], name=call["name"], arguments=arguments
                     )
+                elif kind == "message_delta":
+                    output_tokens = getattr(getattr(event, "usage", None), "output_tokens", None)
                 elif kind == "message_stop":
+                    # Thinking streams in full, so the clock sees every token;
+                    # prefill is left out because the network dominates it.
+                    stats = clock.usage(
+                        message_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cached_tokens=cached_tokens,
+                        measure_prefill=False,
+                    )
+                    if stats is not None:
+                        yield stats
                     yield ProviderMessageCompleted(message_id=message_id)
                 # The SDK also yields its own "text" / "input_json" helper
                 # events; they repeat the deltas above and are skipped.

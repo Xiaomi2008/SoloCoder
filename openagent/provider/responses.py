@@ -32,6 +32,7 @@ from openagent.core.types import (
 from openagent.provider.base import BaseProvider
 from openagent.provider.converter import MessageConverterMixin
 from openagent.providers.events import (
+    CallClock,
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,
@@ -39,6 +40,7 @@ from openagent.providers.events import (
     ProviderStreamEvent,
     ProviderTextDelta,
     ProviderToolCall,
+    ProviderUsage,
 )
 
 
@@ -272,8 +274,10 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
         fallback_message_id = f"msg_{uuid.uuid4().hex[:24]}"
         message_id: str | None = None
         started = False
+        usage: Any = None
 
         try:
+            clock = CallClock()
             stream = await self._client.responses.create(**api_kwargs)
             async for event in stream:
                 if message_id is None:
@@ -285,6 +289,13 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
                     yield ProviderMessageStarted(message_id=message_id)
 
                 event_type = getattr(event, "type", None)
+                if event_type in (
+                    "response.output_text.delta",
+                    "response.reasoning_summary_text.delta",
+                    "response.reasoning_text.delta",
+                    "response.output_item.added",
+                ):
+                    clock.token()
 
                 if event_type == "response.output_text.delta":
                     delta = getattr(event, "delta", "")
@@ -326,6 +337,7 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
                     completed = getattr(event, "response", None)
                     if getattr(completed, "id", None):
                         message_id = completed.id
+                    usage = getattr(completed, "usage", None)
         except Exception as exc:
             message_id = message_id or fallback_message_id
             if not started:
@@ -338,6 +350,25 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
             message_id = fallback_message_id
             yield ProviderMessageStarted(message_id=message_id)
 
+        if usage is not None:
+            details = getattr(usage, "input_tokens_details", None)
+            # Counts only: the reasoning is hidden and the service is remote,
+            # so a clock here would measure the network, not the model.
+            stats = clock.usage(
+                message_id,
+                input_tokens=getattr(usage, "input_tokens", None),
+                output_tokens=getattr(usage, "output_tokens", None),
+                cached_tokens=getattr(details, "cached_tokens", None),
+                measure_prefill=False,
+            )
+            if stats is not None:
+                yield ProviderUsage(
+                    message_id=stats.message_id,
+                    input_tokens=stats.input_tokens,
+                    output_tokens=stats.output_tokens,
+                    cached_tokens=stats.cached_tokens,
+                    time_to_first_token=stats.time_to_first_token,
+                )
         yield ProviderMessageCompleted(message_id=message_id)
 
     # close() comes from BaseProvider: the client is an AsyncOpenAI instance.

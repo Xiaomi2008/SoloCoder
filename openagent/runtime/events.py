@@ -191,6 +191,29 @@ class ContextUsage:
 
 
 @dataclass
+class MessageStats:
+    """How fast the model read the prompt and wrote one message.
+
+    Sent just before ``message_completed`` when the provider reports token
+    counts. ``prefill_tps`` is prompt tokens read per second and
+    ``decode_tps`` tokens written per second, reasoning included; either is
+    None when the server gives nothing to compute it from. From llama.cpp
+    they are the server's own measurements; otherwise they are timed by the
+    client, so prefill includes the network. Not part of the session.
+    """
+
+    run_id: str
+    message_id: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    prefill_tps: float | None = None
+    decode_tps: float | None = None
+    time_to_first_token: float | None = None
+    type: Literal["message_stats"] = "message_stats"
+
+
+@dataclass
 class BrowserFrame:
     """What the agent's browser shows, for a client's live view of it.
 
@@ -227,6 +250,7 @@ RuntimeEvent = (
     | PermissionRequested
     | PermissionResolved
     | ContextUsage
+    | MessageStats
     | BrowserFrame
 )
 
@@ -238,6 +262,7 @@ __all__ = [
     "ContextCompactionFailed",
     "ContextCompactionStarted",
     "ContextUsage",
+    "MessageStats",
     "MessageCompleted",
     "MessageDelta",
     "MessageFailed",

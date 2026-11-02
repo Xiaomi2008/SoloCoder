@@ -211,6 +211,11 @@ private func script() -> [AgentEvent] {
         ])
     }
     add([
+        "type": .string("message_stats"), "run_id": .string("r1"), "message_id": .string("m2"),
+        "input_tokens": .int(12170), "output_tokens": .int(412), "cached_tokens": .int(11800),
+        "prefill_tps": .double(812.5), "decode_tps": .double(41.2), "time_to_first_token": .double(0.46),
+    ])
+    add([
         "type": .string("message_completed"), "run_id": .string("r1"), "message_id": .string("m2"),
         "output_text": .string("Both fixes are in; **235 checks pass**."),
     ])
@@ -275,6 +280,7 @@ private func script() -> [AgentEvent] {
 /// A process launched from a shell starts `.prohibited`: no Dock tile, no menu
 /// bar, a window behind everything. Same line the app needs.
 final class PreviewDelegate: NSObject, NSApplicationDelegate {
+    var workingPill: WorkingPill?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -361,6 +367,8 @@ struct UIPreviewApp: App {
             RootView(prompt: draftSeed)
                 .environmentObject(model)
                 .frame(minWidth: 780, idealWidth: 1240, minHeight: 560, idealHeight: 820)
+                // Hide the preview mid-run (`UI_PREVIEW_RUNNING=1`) to see the pill.
+                .task { if delegate.workingPill == nil { delegate.workingPill = WorkingPill(model: model) } }
         }
         .commands {
             CommandGroup(replacing: .newItem) {
