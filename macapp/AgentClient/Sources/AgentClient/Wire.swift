@@ -35,7 +35,7 @@ public enum Wire {
         "permission_requested", "permission_resolved",
         "context_compaction_started", "context_compaction_completed", "context_compaction_failed",
         "run_completed", "run_failed", "run_cancelled",
-        "context_usage", "browser_frame",
+        "context_usage", "message_stats", "browser_frame",
     ]
 }
 

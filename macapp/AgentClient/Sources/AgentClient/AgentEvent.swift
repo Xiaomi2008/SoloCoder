@@ -33,6 +33,7 @@ public enum AgentEvent: Sendable, Equatable {
     case runFailed(RunFailed)
     case runCancelled(RunCancelled)
     case contextUsage(ContextUsage)
+    case messageStats(MessageStats)
     case browserFrame(BrowserFrame)
     case unknown(type: String, params: JSONValue)
 
@@ -56,6 +57,7 @@ public enum AgentEvent: Sendable, Equatable {
         case .runFailed: "run_failed"
         case .runCancelled: "run_cancelled"
         case .contextUsage: "context_usage"
+        case .messageStats: "message_stats"
         case .browserFrame: "browser_frame"
         case .unknown(let type, _): type
         }
@@ -83,6 +85,7 @@ public enum AgentEvent: Sendable, Equatable {
         case .runFailed(let e): e.runId
         case .runCancelled(let e): e.runId
         case .contextUsage(let e): e.runId
+        case .messageStats(let e): e.runId
         case .browserFrame(let e): e.runId
         case .unknown: nil
         }
@@ -124,6 +127,7 @@ public enum AgentEvent: Sendable, Equatable {
         case "run_failed": .runFailed(try decoder.decode(RunFailed.self, from: data))
         case "run_cancelled": .runCancelled(try decoder.decode(RunCancelled.self, from: data))
         case "context_usage": .contextUsage(try decoder.decode(ContextUsage.self, from: data))
+        case "message_stats": .messageStats(try decoder.decode(MessageStats.self, from: data))
         case "browser_frame": .browserFrame(try decoder.decode(BrowserFrame.self, from: data))
         default:
             .unknown(type: envelope.type, params: try decoder.decode(JSONValue.self, from: data))
@@ -283,6 +287,20 @@ public struct ContextUsage: Decodable, Sendable, Equatable {
     public let usedTokens: Int
     public let contextWindow: Int?
     public let compactAt: Int?
+}
+
+/// How fast the model read the prompt and wrote one message. Rates are per
+/// second and nil when the server gave nothing to compute them from; from
+/// llama.cpp they are the server's own, otherwise timed by the service.
+public struct MessageStats: Decodable, Sendable, Equatable {
+    public let runId: String
+    public let messageId: String
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let cachedTokens: Int?
+    public let prefillTps: Double?
+    public let decodeTps: Double?
+    public let timeToFirstToken: Double?
 }
 
 /// What the agent's browser shows: a screencast frame, sent only while the

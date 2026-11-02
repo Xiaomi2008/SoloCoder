@@ -1723,6 +1723,7 @@ struct ComposerCard: View {
                 ThinkingMenu()
                 ModeMenu()
                 ContextMeter()
+                SpeedMeter()
                 Button {
                     addClipboardImage()
                 } label: {
@@ -2082,6 +2083,68 @@ struct ContextMeter: View {
         case ..<10_000: return String(format: "%.1fk", Double(tokens) / 1000)
         case ..<1_000_000: return "\(tokens / 1000)k"
         default: return String(format: "%.1fM", Double(tokens) / 1_000_000)
+        }
+    }
+}
+
+/// "⚡ pp 812 · tg 41 tok/s": the latest model call's prefill and generation
+/// speeds, with token counts on hover. Hidden until a provider reports them;
+/// a rate the server gave nothing for is left out.
+struct SpeedMeter: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if let stats = model.lastStats, let label = Self.label(stats) {
+            HStack(spacing: 4) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.faint)
+                Text(label)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .help(Self.help(stats))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Speed: \(Self.help(stats))")
+        }
+    }
+
+    /// "pp 812 · tg 41 tok/s" (prefill · generation), "tg 41 tok/s", or "12.1k in · 412 out".
+    static func label(_ stats: MessageStats) -> String? {
+        switch (stats.prefillTps, stats.decodeTps) {
+        case let (prefill?, decode?): return "pp \(rate(prefill)) · tg \(rate(decode)) tok/s"
+        case let (nil, decode?): return "tg \(rate(decode)) tok/s"
+        case let (prefill?, nil): return "pp \(rate(prefill)) tok/s"
+        case (nil, nil):
+            guard let input = stats.inputTokens, let output = stats.outputTokens else { return nil }
+            return "\(ContextMeter.short(input)) in · \(ContextMeter.short(output)) out"
+        }
+    }
+
+    static func help(_ stats: MessageStats) -> String {
+        var lines = ["Last model call"]
+        if let prefill = stats.prefillTps { lines.append("Prefill (pp): \(rate(prefill)) tokens/s") }
+        if let decode = stats.decodeTps { lines.append("Generation (tg): \(rate(decode)) tokens/s") }
+        if let input = stats.inputTokens {
+            var text = "Prompt: \(input.formatted()) tokens"
+            if let cached = stats.cachedTokens, cached > 0 { text += " (\(cached.formatted()) cached)" }
+            lines.append(text)
+        }
+        if let output = stats.outputTokens { lines.append("Output: \(output.formatted()) tokens") }
+        if let ttft = stats.timeToFirstToken {
+            lines.append(String(format: "First token after %.2fs", ttft))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 41, 8.5, 812, 1.2k.
+    static func rate(_ value: Double) -> String {
+        switch value {
+        case ..<10: return String(format: "%.1f", value)
+        case ..<1000: return String(format: "%.0f", value)
+        default: return String(format: "%.1fk", value / 1000)
         }
     }
 }

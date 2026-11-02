@@ -279,6 +279,34 @@
       }
     },
     {
+      "type": "message_stats",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "input_tokens": 12170,
+        "output_tokens": 412,
+        "cached_tokens": 11800,
+        "prefill_tps": 812.5,
+        "decode_tps": 41.25,
+        "time_to_first_token": 0.46,
+        "type": "message_stats"
+      }
+    },
+    {
+      "type": "message_stats",
+      "params": {
+        "run_id": "run_sample",
+        "message_id": "msg_sample",
+        "input_tokens": null,
+        "output_tokens": null,
+        "cached_tokens": null,
+        "prefill_tps": null,
+        "decode_tps": null,
+        "time_to_first_token": null,
+        "type": "message_stats"
+      }
+    },
+    {
       "type": "browser_frame",
       "params": {
         "run_id": "run_sample",

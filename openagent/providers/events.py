@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
@@ -61,10 +62,78 @@ class ProviderError(ProviderStreamEvent):
     type: ClassVar[Literal["provider_error"]] = "provider_error"
 
 
+@dataclass(frozen=True)
+class ProviderUsage(ProviderStreamEvent):
+    """Token counts for one call and how fast it went, sent before it completes.
+
+    ``prefill_tps`` is prompt tokens read per second, ``decode_tps`` tokens
+    written per second (reasoning included). A server that measures them
+    (llama.cpp's ``timings``) is used as is; otherwise they come from the
+    client's clock, so prefill includes network and queueing time. Any field
+    may be None when the server reports nothing to compute it from.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    prefill_tps: float | None = None
+    decode_tps: float | None = None
+    time_to_first_token: float | None = None
+    type: ClassVar[Literal["provider_usage"]] = "provider_usage"
+
+
+class CallClock:
+    """Times one model call: when it was sent and when the first token came."""
+
+    def __init__(self) -> None:
+        self.sent = time.monotonic()
+        self.first: float | None = None
+
+    def token(self) -> None:
+        if self.first is None:
+            self.first = time.monotonic()
+
+    def usage(
+        self,
+        message_id: str,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cached_tokens: int | None = None,
+        prefill_tps: float | None = None,
+        decode_tps: float | None = None,
+        measure_prefill: bool = True,
+    ) -> ProviderUsage | None:
+        """The usage event, with speeds the server did not send measured here.
+
+        None when there is nothing to show: no token counts and no speeds.
+        """
+        if input_tokens is None and output_tokens is None and decode_tps is None:
+            return None
+        ttft = self.first - self.sent if self.first is not None else None
+        uncached = (input_tokens or 0) - (cached_tokens or 0)
+        if prefill_tps is None and measure_prefill and uncached > 0 and ttft and ttft > 0:
+            prefill_tps = uncached / ttft
+        if decode_tps is None and self.first is not None and output_tokens and output_tokens > 1:
+            elapsed = time.monotonic() - self.first
+            if elapsed > 0.05:
+                decode_tps = (output_tokens - 1) / elapsed
+        return ProviderUsage(
+            message_id=message_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            prefill_tps=prefill_tps,
+            decode_tps=decode_tps,
+            time_to_first_token=ttft,
+        )
+
+
 ProviderTerminalEvent = ProviderMessageCompleted | ProviderError
 
 
 __all__ = [
+    "CallClock",
     "ProviderError",
     "ProviderMessageCompleted",
     "ProviderMessageStarted",
@@ -73,4 +142,5 @@ __all__ = [
     "ProviderTerminalEvent",
     "ProviderTextDelta",
     "ProviderToolCall",
+    "ProviderUsage",
 ]

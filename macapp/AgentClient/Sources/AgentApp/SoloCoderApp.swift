@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// cursor position and undo intact. The rule is `ClipboardImage`'s, and only
     /// the composer's ⌘V is taken: a paste in Settings or the search box is theirs.
     private var pasteMonitor: Any?
+    /// Says the run is still going while computer use has the app hidden.
+    var workingPill: WorkingPill?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if SelfTest.requested() {
@@ -125,7 +127,11 @@ struct SoloCoderApp: App {
                 // Under `--self-test` the view's model must stay idle: the
                 // self-test spawns its own sidecar, and both would use this
                 // process's one socket path.
-                .task { if !SelfTest.requested() { model.start() } }
+                .task {
+                    guard !SelfTest.requested() else { return }
+                    if delegate.workingPill == nil { delegate.workingPill = WorkingPill(model: model) }
+                    model.start()
+                }
         }
         .defaultSize(width: 900, height: 620)
         .commands {

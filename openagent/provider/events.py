@@ -1,4 +1,5 @@
 from openagent.providers.events import (
+    CallClock,
     ProviderError,
     ProviderMessageCompleted,
     ProviderMessageStarted,

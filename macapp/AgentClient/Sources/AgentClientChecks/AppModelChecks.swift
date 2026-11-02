@@ -426,8 +426,25 @@ private func contextMeterChecks(_ checks: Checks) async throws {
     checks.equal(model.contextUsed, 900, "an unknown window still reports the tokens")
     checks.equal(model.contextWindow, nil, "…and no window")
 
+    let lines = model.transcript.lines.count
+    continuation.yield(
+        try ev(#"{"type":"message_stats","run_id":"r1","message_id":"m1","input_tokens":1200,"output_tokens":80,"cached_tokens":1000,"prefill_tps":812.5,"decode_tps":41.25,"time_to_first_token":0.46}"#)
+    )
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    checks.equal(model.lastStats?.prefillTps, 812.5, "message_stats fills the speed readout")
+    checks.equal(model.lastStats?.decodeTps, 41.25, "…with the generation speed")
+    checks.equal(model.lastStats?.cachedTokens, 1000, "…and the cached prompt tokens")
+    checks.equal(model.transcript.lines.count, lines, "stats add no line to the conversation")
+    checks.equal(model.transcriptPublishes, publishes, "stats do not republish the transcript")
+
+    continuation.yield(try ev(#"{"type":"message_stats","run_id":"r1","message_id":"m2"}"#))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    checks.equal(model.lastStats?.messageId, "m2", "a stats event with no numbers still decodes")
+    checks.equal(model.lastStats?.decodeTps, nil, "…and has no rates")
+
     model.newRun()
     checks.equal(model.contextUsed, nil, "a new conversation empties the meter")
+    checks.equal(model.lastStats, nil, "…and the speed readout")
     model.quiesce()
 }
 
