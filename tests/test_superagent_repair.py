@@ -23,6 +23,9 @@ def assistant(text):
     '<|tool▁call▁begin|>{"name": "write"}<|tool▁call▁end|>',
     '<\\DSML\\ invoke name="write">\n<\\DSML\\ parameter name="path">x',
     '<\uff5cDSML\uff5c invoke name="write"\uff1e',
+    # Observed live 2026-11-02 after the DSML fix: a different text format.
+    '<tool_call>\n<function=bash>\n<parameter=command>\ncat index.html\n'
+    '</parameter>\n</function>\n</tool_call>\n',
 ])
 def test_repairs_xml_tool_text(text):
     agent = Agent([assistant(text)])
