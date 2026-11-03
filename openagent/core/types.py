@@ -34,6 +34,8 @@ class ToolUseBlock:
     arguments: dict[str, Any]
     id: str = field(default_factory=lambda: f"call_{uuid.uuid4().hex[:24]}")
     type: Literal["tool_use"] = "tool_use"
+    # Why the arguments could not be read, for a call that must not run.
+    invalid: str | None = None
 
 
 @dataclass

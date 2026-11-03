@@ -292,3 +292,100 @@ class TestOpenAIProviderRetry:
         ))
         assert result.text == "OK"
         assert call_count == 3
+
+
+# ============================================================================
+# Tool calls whose arguments never became JSON
+# ============================================================================
+
+
+def _tool_chunk(arguments, *, id="call_1", name="write", finish_reason=None):
+    function = MagicMock(arguments=arguments)
+    function.name = name
+    delta = MagicMock(
+        content=None,
+        reasoning_content=None,
+        reasoning=None,
+        tool_calls=[MagicMock(index=0, id=id, function=function)],
+    )
+    return MagicMock(choices=[MagicMock(delta=delta, finish_reason=finish_reason)])
+
+
+def _finish_chunk(finish_reason):
+    delta = MagicMock(content=None, reasoning_content=None, reasoning=None, tool_calls=None)
+    return MagicMock(choices=[MagicMock(delta=delta, finish_reason=finish_reason)])
+
+
+def _stream_tool_calls(chunks):
+    import asyncio
+
+    from openagent.provider.openai import OpenAIProvider
+    from openagent.providers import ProviderToolCall
+
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider.model = "gpt-4o"
+    provider.base_url = None
+
+    async def async_iter():
+        for chunk in chunks:
+            yield chunk
+
+    provider._client = MagicMock()
+    provider._client.chat.completions.create = AsyncMock(return_value=async_iter())
+
+    async def run():
+        return [
+            event
+            async for event in provider.stream(messages=[Message(role="user", content="hi")])
+            if isinstance(event, ProviderToolCall)
+        ]
+
+    return asyncio.run(run())
+
+
+class TestOpenAIUnparsedToolCalls:
+    def test_stream_reports_a_call_cut_at_the_token_limit(self):
+        calls = _stream_tool_calls(
+            [_tool_chunk('{"path": "index.html", "content": "<ht'), _finish_chunk("length")]
+        )
+        assert len(calls) == 1
+        assert calls[0].id == "call_1"
+        assert calls[0].name == "write"
+        assert calls[0].arguments == {}
+        assert "token limit" in calls[0].invalid
+
+    def test_stream_reports_a_call_cut_before_any_arguments(self):
+        calls = _stream_tool_calls([_tool_chunk(None), _finish_chunk("length")])
+        assert len(calls) == 1
+        assert "token limit" in calls[0].invalid
+
+    def test_stream_reports_malformed_arguments_as_something_else(self):
+        calls = _stream_tool_calls([_tool_chunk('{"path": '), _finish_chunk("tool_calls")])
+        assert len(calls) == 1
+        assert calls[0].invalid is not None
+        assert "token limit" not in calls[0].invalid
+
+    def test_stream_whole_call_is_valid_and_sent_once(self):
+        calls = _stream_tool_calls([_tool_chunk('{"path": "a"}'), _finish_chunk("tool_calls")])
+        assert [(c.name, c.arguments, c.invalid) for c in calls] == [("write", {"path": "a"}, None)]
+
+    def test_stream_call_without_arguments_is_a_call_with_none(self):
+        calls = _stream_tool_calls([_tool_chunk(None, name="wait"), _finish_chunk("tool_calls")])
+        assert [(c.name, c.arguments, c.invalid) for c in calls] == [("wait", {}, None)]
+
+    def test_chat_reports_a_call_cut_at_the_token_limit(self):
+        from openagent.provider.openai import OpenAIConverterMixin
+
+        tool_call = MagicMock(id="call_1")
+        tool_call.function.name = "write"
+        tool_call.function.arguments = '{"path": "index.html", "content": "<ht'
+        response = MagicMock()
+        response.choices[0].finish_reason = "length"
+        response.choices[0].message.content = "Writing it."
+        response.choices[0].message.tool_calls = [tool_call]
+
+        message = OpenAIConverterMixin().convert_response(response)
+
+        block = next(b for b in message.content if isinstance(b, ToolUseBlock))
+        assert block.arguments == {}
+        assert "token limit" in block.invalid

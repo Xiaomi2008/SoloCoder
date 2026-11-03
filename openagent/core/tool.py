@@ -307,6 +307,13 @@ class ToolRegistry:
         tool_call: ToolUseBlock,
         context: Any | None = None,
     ) -> ToolResultBlock:
+        if tool_call.invalid is not None:
+            return ToolResultBlock(
+                tool_use_id=tool_call.id,
+                tool_name=tool_call.name,
+                content=f"Error: tool '{tool_call.name}' was not run: {tool_call.invalid}",
+                is_error=True,
+            )
         entry = self.resolve(tool_call.name)
         if entry is None:
             return ToolResultBlock(

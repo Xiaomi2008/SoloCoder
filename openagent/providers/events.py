@@ -53,6 +53,8 @@ class ProviderToolCall(ProviderStreamEvent):
     id: str
     name: str
     arguments: dict[str, Any]
+    # Why the arguments could not be read, for a call that must not run.
+    invalid: str | None = None
     type: ClassVar[Literal["provider_tool_call"]] = "provider_tool_call"
 
 

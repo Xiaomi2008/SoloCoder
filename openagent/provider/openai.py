@@ -163,23 +163,24 @@ class OpenAIConverterMixin(MessageConverterMixin):
 
         if message.tool_calls:
             for tc in message.tool_calls:
-                try:
-                    arguments = json.loads(tc.function.arguments)
-                except Exception as exc:
+                arguments, invalid = _read_tool_arguments(
+                    tc.function.arguments, getattr(choice, "finish_reason", None)
+                )
+                if invalid is not None:
                     self._log_response_issue(
                         "invalid_tool_arguments",
                         response,
                         tool_name=getattr(tc.function, "name", None),
                         arguments=getattr(tc.function, "arguments", None),
-                        error=str(exc),
+                        error=invalid,
                     )
-                    raise
 
                 blocks.append(
                     ToolUseBlock(
                         id=tc.id,
                         name=tc.function.name,
                         arguments=arguments,
+                        invalid=invalid,
                     )
                 )
 
@@ -320,6 +321,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         tool_call_buffers: dict[int, dict[str, Any]] = {}
         usage: Any = None
         timings: Any = None
+        finish_reason: str | None = None
 
         try:
             clock = CallClock()
@@ -346,6 +348,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
                     yield ProviderMessageStarted(message_id=message_id)
 
                 if chunk.choices:
+                    finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
                     first = chunk.choices[0].delta
                     if first is not None and (
                         first.content or getattr(first, "tool_calls", None) or self._reasoning_of(first)
@@ -408,6 +411,19 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
                                 name=buffer["name"],
                                 arguments=arguments,
                             )
+
+            # Calls the stream ended without completing: a cut file write has to
+            # reach the model as a failure, or it looks like the turn just ended.
+            for buffer in tool_call_buffers.values():
+                if not buffer["emitted"] and buffer["id"] and buffer["name"]:
+                    arguments, invalid = _read_tool_arguments(buffer["arguments"], finish_reason)
+                    yield ProviderToolCall(
+                        message_id=message_id or fallback_message_id,
+                        id=buffer["id"],
+                        name=buffer["name"],
+                        arguments=arguments,
+                        invalid=invalid,
+                    )
         except Exception as exc:
             message_id = message_id or fallback_message_id
             if not started:
@@ -424,6 +440,22 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         if stats is not None:
             yield stats
         yield ProviderMessageCompleted(message_id=message_id)
+
+
+def _read_tool_arguments(raw: str | None, finish_reason: str | None) -> tuple[dict[str, Any], str | None]:
+    """A tool call's arguments, or ``{}`` and why they could not be read."""
+    if not raw and finish_reason != "length":
+        return {}, None
+    try:
+        return json.loads(raw), None
+    except (TypeError, ValueError):
+        if finish_reason == "length":
+            return {}, (
+                "it was cut off at the output token limit, so its arguments are incomplete. "
+                "Make the call smaller: for a large file, write a first part, then add the rest "
+                "with edits. Writing the same file again replaces it."
+            )
+        return {}, "its arguments were not valid JSON."
 
 
 def _usage_event(clock: CallClock, message_id: str, usage: Any, timings: Any) -> ProviderUsage | None:

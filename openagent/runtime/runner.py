@@ -348,7 +348,10 @@ class AgentRunner:
                     elif isinstance(chunk, ProviderToolCall):
                         tool_calls.append(
                             ToolUseBlock(
-                                name=chunk.name, arguments=chunk.arguments, id=chunk.id
+                                name=chunk.name,
+                                arguments=chunk.arguments,
+                                id=chunk.id,
+                                invalid=chunk.invalid,
                             )
                         )
                     elif isinstance(chunk, ProviderUsage):
@@ -435,8 +438,10 @@ class AgentRunner:
                     return
 
                 decisions: list[PermissionDecision | None] = []
-                async for event in self._gate_tool_call(run_id, call, decisions):
-                    yield event
+                # A call that cannot run has nothing for the user to approve.
+                if call.invalid is None:
+                    async for event in self._gate_tool_call(run_id, call, decisions):
+                        yield event
                 decision = decisions[0] if decisions else None
 
                 if decision is not None and not decision.granted:

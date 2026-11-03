@@ -87,6 +87,7 @@ class BaseProvider(ABC):
                     id=block.id,
                     name=block.name,
                     arguments=block.arguments,
+                    invalid=block.invalid,
                 )
 
         yield ProviderMessageCompleted(message_id=message_id)

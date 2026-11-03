@@ -46,6 +46,7 @@ from openagent.runtime.permissions import (
     tool_risk,
 )
 from openagent.runtime.runner import MAX_TURNS_MESSAGE, AgentRunner
+from openagent.providers import ProviderTextDelta, ProviderToolCall
 from tests.support.streaming_provider import (
     HangingProvider,
     ScriptedStreamProvider,
@@ -201,6 +202,45 @@ async def test_session_scope_is_injected_and_anchors_relative_paths(tmp_path):
 
 
 # ------------------------------------------------------------------- failures
+
+
+async def test_a_cut_tool_call_is_not_run_and_the_model_is_told():
+    ran: list[str] = []
+
+    @tool
+    def write(path: str, content: str) -> str:
+        """Write a file."""
+        ran.append(path)
+        return "ok"
+
+    asked: list[PermissionRequest] = []
+
+    async def approve(request: PermissionRequest) -> PermissionDecision:
+        asked.append(request)
+        return PermissionDecision(granted=True, scope="once")
+
+    cut = ProviderToolCall(
+        message_id="m", id="call_cut", name="write", arguments={}, invalid="cut off at the token limit"
+    )
+    provider = ScriptedStreamProvider(
+        [[ProviderTextDelta(message_id="m", delta="Writing it."), cut], text_turn("done")]
+    )
+    runner = AgentRunner(
+        provider,
+        tools=[write],
+        permission_gate=RiskGate(approve, ask_risks=frozenset({"unknown", "write", "edit"})),
+    )
+
+    events = await collect(runner)
+
+    assert ran == [] and asked == []
+    failed = next(e for e in events if isinstance(e, ToolCallFailed))
+    assert failed.tool_call_id == "call_cut"
+    assert "token limit" in failed.error and "not run" in failed.error
+    # The run went on: the model saw the error, and its next turn was the answer.
+    result = provider.calls[1]["messages"][-1].content[0]
+    assert result.tool_use_id == "call_cut" and result.is_error and "token limit" in result.content
+    assert events[-1].result.output_text == "done"
 
 
 async def test_tool_failure_emits_tool_call_failed_and_keeps_running():
