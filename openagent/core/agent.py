@@ -217,6 +217,8 @@ class Agent:
         self.provider = provider
         self.session = Session(system_prompt=system_prompt)
         self.max_turns = max_turns
+        #: Turns of the current run, which a compaction's rewrite cannot change.
+        self.completed_turns = 0
         self.tool_registry = ToolRegistry()
         self._logger = AgentLogger(agent_id)
         # The directory relative tool paths mean. Sub-agents inherit it.
@@ -371,12 +373,17 @@ class Agent:
         """
         return False
 
+    def _compaction_options(self, settings: LoopSettings, tool_defs: Any) -> dict[str, Any]:
+        """Application hook: how this agent's history is compacted."""
+        return {}
+
     async def _loop(self, **kwargs: Any) -> str:
         tool_defs = (
             self.tool_registry.definitions if len(self.tool_registry) > 0 else None
         )
         response: Message | None = None
         completed_turns = 0
+        self.completed_turns = 0
         awaiting_final_response = False
         #: One turn past the limit, for the final text after the last tool
         #: batch — and only once. Granting it every time the flag is set made a
@@ -400,7 +407,9 @@ class Agent:
             self._logger.turn_start(turn_number, self.max_turns)
 
             # Check if context compaction is needed before sending request (unless disabled)
-            summary = await maybe_compact_context(self.session, self.provider, settings)
+            summary = await maybe_compact_context(
+                self.session, self.provider, settings, **self._compaction_options(settings, tool_defs)
+            )
             if summary:
                 self._logger.info("Context approaching limit, compacting...")
                 self._logger.info(f"Compacted context: {summary[:100]}...")
@@ -474,6 +483,7 @@ class Agent:
             if awaiting_final_response and completed_turns >= self.max_turns:
                 grace_used = True
             completed_turns += 1
+            self.completed_turns = completed_turns
             awaiting_final_response = False
 
             has_tools = response.has_tool_calls

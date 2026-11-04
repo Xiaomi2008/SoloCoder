@@ -62,6 +62,26 @@ It mitigates risk, not kernel vulnerabilities. Use trusted local Docker settings
 Cancellation kills the container as well as the Docker client. A hard host crash
 cannot guarantee cleanup: inspect orphan containers/processes before resuming.
 
+## Running what a Worker built
+
+`--page-check` gives Workers `page_open`, `page_run`, `page_eval` and
+`page_screenshot`: a headless Chromium, one per Worker, that can open files from
+the ticket directory and nothing else. It is offline, requests outside the
+directory are refused, it takes no focus and needs no macOS permissions. Needs
+`pip install 'openagent[browser]'` and `playwright install chromium`. What the
+Worker observes is its own claim: it is not part of the completion gate. The model
+needs image input to use `page_screenshot`.
+
+`--desktop-app NAME` (repeatable) gives Workers the agent-desktop tools for the named
+apps only, for building something with real controls. **It drives the real desktop**
+and can take focus from you; other apps, the clipboard and window lists are not
+offered, and a ref must come from the Worker's own snapshot. Requires
+`npm install -g agent-desktop` and Accessibility permission for the launching app.
+Canvas games expose nothing to it: use `--page-check` for those.
+
+`--worker-turns N` (default 12) raises the model turns per assignment; building and
+then testing something needs more than the default.
+
 ## Independent completion gate
 
 Workers calling `report(ready)` request verification; they do not complete work.

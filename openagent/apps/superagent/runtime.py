@@ -26,7 +26,8 @@ class SuperAgentRuntime:
                  *, assignment_timeout: float = 600, router_timeout: float = 120,
                  store=None, execution=None, verify_commands=(), worktrees=None,
                  max_concurrent: int = 1, heartbeat_timeout: float = 120,
-                 auto_retries: int = 0, retry_backoff: float = 30.0) -> None:
+                 auto_retries: int = 0, retry_backoff: float = 30.0,
+                 worker_options: dict | None = None) -> None:
         if min(assignment_timeout, router_timeout, heartbeat_timeout) <= 0:
             raise ValueError('Deadlines must be positive')
         if max_concurrent < 1 or auto_retries < 0 or retry_backoff < 0:
@@ -47,6 +48,7 @@ class SuperAgentRuntime:
         self.execution = execution or Execution()
         self.verify_commands = tuple(verify_commands)
         self.worktrees = worktrees
+        self.worker_options = dict(worker_options or {})
         board.automatic_retry_limit = auto_retries
         board.retry_backoff = retry_backoff
         # Verification cannot safely run while a Worker mutates the directory.
@@ -61,7 +63,8 @@ class SuperAgentRuntime:
             self._workers[ticket_id] = (
                 self._worker_factory(ticket_id) if self._worker_factory else
                 SuperAgentWorker(self.router.provider, self.board, ticket_id,
-                                 execution=self.execution, heartbeat_timeout=self.heartbeat_timeout))
+                                 execution=self.execution, heartbeat_timeout=self.heartbeat_timeout,
+                                 **self.worker_options))
         return self._workers[ticket_id]
 
     async def run_pending(self):

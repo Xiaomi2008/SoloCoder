@@ -14,7 +14,7 @@ from . import sessions
 from openagent.core.agent import Agent
 from openagent.core.tool import tool
 
-from .domain import Board, Notice, ReportKind, Thread, Trigger, compute_stage
+from .domain import MAX_REPLY_WORDS, Board, Notice, ReportKind, Thread, Trigger, compute_stage
 
 ORCHESTRATOR_PROMPT = """\
 You are the orchestrator of a super-agent deployment.
@@ -116,6 +116,11 @@ class RouterAgent(Agent):
         return self.completion_check is not None and self.completion_check()
 
 
+#: Rewrites asked of a long reply before the Board's cut delivers it anyway: a
+#: clipped message is better than a person hearing nothing.
+MAX_REWRITES = 2
+
+
 class SuperAgentRouter:
     """The orchestrator's tools, and the one Agent session that holds them."""
 
@@ -123,6 +128,7 @@ class SuperAgentRouter:
         self.provider = provider
         self.board = board
         self._relay_pending: list[Notice] | None = None
+        self._rewrites = 0
         self._agent = RouterAgent(
             provider=provider,
             system_prompt=ORCHESTRATOR_PROMPT,
@@ -201,6 +207,16 @@ class SuperAgentRouter:
                     expected = board.tickets[ticket_id].attention
                     if not expected or question.strip() != expected:
                         return "Error: copy the ticket's exact pending question."
+            # Asked in the prompt and the argument, and a model still wrote 136
+            # words. The Board cuts at the limit, so the end goes unread, and a
+            # report's end is where it says what was not tested. Sent back, the
+            # model chooses what to drop.
+            count = len(text.split())
+            if count > MAX_REPLY_WORDS and self._rewrites < MAX_REWRITES:
+                self._rewrites += 1
+                return (f"Error: not delivered. That is {count} words and the limit is {MAX_REPLY_WORDS}. "
+                        "Rewrite it shorter, keeping anything the report says was not tested or failed.")
+            self._rewrites = 0
             result = board.reply(
                 purpose=purpose, text=text, ticket_id=ticket_id, question=question
             )
@@ -245,7 +261,10 @@ class SuperAgentRouter:
             f"{lines}\n\n"
             "Relay each one with reply, purpose=result for a ready ticket, "
             "purpose=attention for a question (copy the question exactly), "
-            "purpose=notice otherwise."
+            "purpose=notice otherwise. State only what these lines say: a line that "
+            "lists the ticket directory is what the host saw, so never say a file is "
+            "missing when it is listed there. Keep each reply under 100 words by "
+            "dropping detail, never what the report says failed or was not tested."
         )
         self._relay_pending = list(notices)
         self._agent.completion_check = lambda: not self._relay_pending

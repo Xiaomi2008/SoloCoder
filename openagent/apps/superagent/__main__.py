@@ -67,6 +67,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--verify-command", action="append", default=[],
                         help="operator-controlled completion check; repeat for multiple checks")
     parser.add_argument("--repo", help="repository root for new ticket worktrees")
+    parser.add_argument("--worker-turns", type=int, default=12,
+                        help="model turns one Worker assignment may take (default: 12)")
+    parser.add_argument("--page-check", action="store_true",
+                        help="let Workers run pages from their ticket directory in an offline headless browser")
+    parser.add_argument("--desktop-app", action="append", default=[], metavar="NAME",
+                        help="let Workers control this one desktop app through agent-desktop; repeatable. "
+                             "This drives the real desktop and can take focus from you")
     parser.add_argument("--service", action="store_true",
                         help="headless mode: poll workspace/service/inbox for JSON events")
     parser.add_argument("--poll-interval", type=float, default=2.0)
@@ -145,7 +152,9 @@ async def _build(args: argparse.Namespace) -> SuperAgentRuntime:
                              heartbeat_timeout=args.heartbeat_timeout,
                              auto_retries=args.auto_retries,
                              retry_backoff=args.retry_backoff,
-                             verify_commands=args.verify_command, worktrees=worktrees)
+                             verify_commands=args.verify_command, worktrees=worktrees,
+                             worker_options={'max_turns': args.worker_turns, 'page_check': args.page_check,
+                                             'desktop_apps': tuple(args.desktop_app)})
 
 
 async def _repl(args: argparse.Namespace) -> None:

@@ -92,3 +92,25 @@ async def test_attention_requires_exact_question(tmp_path):
     await SuperAgentRouter(provider, board).relay(list(board.notices))
     assert provider.calls == 2
     assert board.replies[0].question == 'Which color?'
+
+
+async def test_a_long_reply_is_sent_back_to_be_rewritten(tmp_path):
+    board, ids = reports(tmp_path)
+    provider = ScriptedProvider([
+        call('reply', purpose='result', ticket_id=ids[0], text='word ' * 136),
+        call('reply', purpose='result', ticket_id=ids[0], text='One done; flag not tested'),
+        call('reply', purpose='result', ticket_id=ids[1], text='Two done'),
+    ])
+    await SuperAgentRouter(provider, board).relay(list(board.notices))
+    assert [r.text for r in board.replies] == ['One done; flag not tested', 'Two done']
+
+
+async def test_a_reply_that_stays_long_is_still_delivered_cut(tmp_path):
+    board, ids = reports(tmp_path)
+    long = call('reply', purpose='result', ticket_id=ids[0], text='word ' * 136)
+    provider = ScriptedProvider([long, long, long,
+                                 call('reply', purpose='result', ticket_id=ids[1], text='Two done')])
+    await SuperAgentRouter(provider, board).relay(list(board.notices))
+    assert provider.calls == 4
+    assert len(board.replies[0].text.split()) == 101
+    assert board.replies[1].text == 'Two done'

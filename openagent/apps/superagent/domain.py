@@ -279,6 +279,23 @@ def compute_stage(ticket: Ticket) -> Stage:
     return Stage("working", "Working")
 
 
+#: A reply is a message to a person; the whole report stays on the ticket.
+MAX_REPLY_WORDS = 100
+
+
+def _directory_facts(directory: str) -> str:
+    """The files a notice can state as fact, so the orchestrator need not guess."""
+    try:
+        entries = sorted(e for e in Path(directory).iterdir() if not e.name.startswith("."))
+        shown = [f"{e.name} ({e.stat().st_size} bytes)" if e.is_file() else f"{e.name}/" for e in entries[:8]]
+    except OSError:
+        return "host could not read the ticket directory"
+    if not entries:
+        return "host sees an empty ticket directory"
+    more = f" and {len(entries) - 8} more" if len(entries) > 8 else ""
+    return f"host sees in the ticket directory: {', '.join(shown)}{more}"
+
+
 class Board:
     """The host's state: threads, tickets, decisions and what a person saw.
 
@@ -793,6 +810,7 @@ class Board:
             self._end(ticket, "dropped")
         if report_kind in (ReportKind.READY, ReportKind.BLOCKED, ReportKind.FAILED, ReportKind.DROPPED) or report.question:
             text = f"{ticket.id} '{ticket.title}' reported {report_kind.value}: {report.summary}"
+            text += f" | {_directory_facts(ticket.directory)}"
             if report.question:
                 text += f" | question: {report.question}"
             if report.pr:
@@ -845,9 +863,9 @@ class Board:
         if not text:
             return "Error: reply needs text."
         words = text.split()
-        truncated = len(words) > 100
+        truncated = len(words) > MAX_REPLY_WORDS
         if truncated:
-            text = " ".join(words[:100]) + " ..."
+            text = " ".join(words[:MAX_REPLY_WORDS]) + " ..."
         if purpose == "attention" and not question.strip():
             return "Error: attention needs the exact question the ticket asked."
         if purpose == "ack" and ticket_id:
