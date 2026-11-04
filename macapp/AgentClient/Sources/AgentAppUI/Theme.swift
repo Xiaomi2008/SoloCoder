@@ -91,10 +91,20 @@ enum Theme {
     /// time, so a window that moves to an external display in dark mode repaints
     /// without any of these views knowing.
     private static func dynamic(_ light: NSColor, _ dark: NSColor) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
-        })
+        Color(nsColor: dynamicColor(light, dark))
     }
+
+    private static func dynamicColor(_ light: NSColor, _ dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        }
+    }
+
+    // The same tokens for the answer's text view, which draws its own borders and
+    // fills and takes `NSColor`.
+    static var hairlineColor: NSColor { dynamicColor(.black.withAlphaComponent(0.07), .white.withAlphaComponent(0.07)) }
+    static var edgeColor: NSColor { dynamicColor(.black.withAlphaComponent(0.12), .white.withAlphaComponent(0.12)) }
+    static var fillColor: NSColor { dynamicColor(.black.withAlphaComponent(0.04), .white.withAlphaComponent(0.04)) }
 }
 
 /// A hairline border that does not change the view's size.

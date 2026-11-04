@@ -24,7 +24,7 @@ struct MarkdownView: View {
     let text: String
 
     var body: some View {
-        BlocksView(blocks: Markdown.blocks(text)).textSelection(.enabled)
+        AnswerText(blocks: Markdown.blocks(text))
     }
 }
 

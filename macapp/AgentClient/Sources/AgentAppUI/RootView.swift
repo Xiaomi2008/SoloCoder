@@ -1246,7 +1246,7 @@ struct AssistantLine: View {
                     Text("… \(shown.hiddenSummary) above are not shown")
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
-                BlocksView(blocks: shown.shown)
+                AnswerText(blocks: shown.shown)
                 if shown.cutChars > 0 {
                     Text("… \(shown.cutChars) characters of this answer are not shown")
                         .font(.caption).foregroundStyle(Theme.muted)
@@ -1262,6 +1262,7 @@ struct AssistantLine: View {
                         .foregroundStyle(Theme.accent)
                 }
             }
+            .textSelection(.enabled)
             .overlay(alignment: .topTrailing) { copy }
         }
     }
@@ -1467,6 +1468,7 @@ struct CompactionLine: View {
         }
         .font(.caption)
         .foregroundStyle(Theme.muted)
+        .textSelection(.enabled)
     }
 }
 
@@ -1477,6 +1479,7 @@ struct NoteLine: View {
         Text(text)
             .font(.caption)
             .foregroundStyle(Theme.faint)
+            .textSelection(.enabled)
     }
 }
 
@@ -1525,6 +1528,7 @@ struct ToolLine: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(Theme.danger)
                     .lineLimit(2)
+                    .textSelection(.enabled)
             }
         }
     }
