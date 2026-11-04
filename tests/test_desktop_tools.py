@@ -121,3 +121,107 @@ def test_every_tool_has_a_schema():
     for fn in build_desktop_tools():
         registry.register(fn)
     assert all(entry.description for entry in registry.definitions)
+
+
+def _scripted(monkeypatch, windows, snapshot=None):
+    """``_call`` by command: several windows refuse a snapshot that names none."""
+    sent = []
+
+    async def call(*args):
+        sent.append(list(args))
+        if args[0] == "list-windows":
+            return {"ok": True, "data": windows}
+        if args[0] == "snapshot" and "--window-id" not in args and snapshot is None:
+            return {"ok": False, "error": {"code": "AMBIGUOUS_TARGET", "message": "More than one window"}}
+        return {"ok": True, "data": snapshot or {"snapshot_id": "s9"}}
+
+    monkeypatch.setattr(desktop, "_call", call)
+    return sent
+
+
+TWO = [{"id": "w-1", "title": "Back", "visible": True}, {"id": "w-2", "title": "Front", "is_focused": True}]
+
+
+async def test_a_snapshot_of_several_windows_takes_the_front_one_and_names_the_rest(monkeypatch):
+    sent = _scripted(monkeypatch, TWO)
+    data = json.loads(await by_name(build_desktop_tools())["desktop_snapshot"]("Finder"))
+    assert sent[-1][-2:] == ["--window-id", "w-2"]
+    assert data["other_windows"] == [{"id": "w-1", "title": "Back"}]
+
+
+async def test_refs_from_a_chosen_window_are_issued(monkeypatch):
+    _scripted(monkeypatch, TWO)
+    tools = by_name(build_desktop_tools(["Finder"]))
+    await tools["desktop_snapshot"]("Finder")
+    assert "did not come from" not in await tools["desktop_click"]("@s9:e1")
+
+
+async def test_a_named_window_is_used(monkeypatch):
+    sent = _scripted(monkeypatch, TWO)
+    await by_name(build_desktop_tools())["desktop_snapshot"]("Finder", window="w-1")
+    assert sent[-1][-2:] == ["--window-id", "w-1"]
+
+
+async def test_a_window_of_another_app_is_refused(monkeypatch):
+    sent = _scripted(monkeypatch, TWO)
+    out = await by_name(build_desktop_tools(["Finder"]))["desktop_snapshot"]("Finder", window="w-999")
+    assert "not a window of Finder" in out
+    assert not any("w-999" in args for args in sent)
+
+
+async def test_a_minimized_window_is_not_chosen(monkeypatch):
+    sent = _scripted(monkeypatch, [{"id": "w-1", "minimized": True}, {"id": "w-2", "visible": True}])
+    await by_name(build_desktop_tools())["desktop_snapshot"]("Finder")
+    assert sent[-1][-2:] == ["--window-id", "w-2"]
+
+
+LSAPPINFO = """ 1) "loginwindow" ASN:0x0-0x2002:
+    pid = 509 type="UIElement" flavor=3
+ 2) "Finder" ASN:0x0-0x3003:
+    pid = 785 type="Foreground" flavor=3
+ 3) "Google Chrome" ASN:0x0-0x4004:
+    pid = 900 type="Foreground" flavor=3
+ 4) "Google Chrome" ASN:0x0-0x5005:
+    pid = 901 type="Foreground" flavor=3
+"""
+
+
+async def _fake_lsappinfo(tmp_path, monkeypatch, text):
+    binary = tmp_path / "lsappinfo"
+    binary.write_text(f"#!/bin/sh\ncat <<'END'\n{text}END\n")
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+
+async def test_listing_apps_falls_back_when_the_inventory_never_settles(fake_cli, tmp_path, monkeypatch):
+    fake_cli.reply({"ok": False, "error": {"code": "TIMEOUT", "message": "did not stabilize"}})
+    await _fake_lsappinfo(tmp_path, monkeypatch, LSAPPINFO)
+    out = await by_name(build_desktop_tools())["desktop_list_apps"]()
+    assert json.loads(out) == ["Finder", "Google Chrome"]
+
+
+async def test_listing_apps_reports_the_error_when_nothing_can_list_them(fake_cli, tmp_path, monkeypatch):
+    fake_cli.reply({"ok": False, "error": {"code": "TIMEOUT", "message": "did not stabilize"}})
+    await _fake_lsappinfo(tmp_path, monkeypatch, "")
+    assert (await by_name(build_desktop_tools())["desktop_list_apps"]()).startswith("Error: TIMEOUT")
+
+
+async def test_listing_apps_prefers_agent_desktop_when_it_answers(fake_cli):
+    fake_cli.reply({"ok": True, "data": [{"name": "Finder", "pid": 785}]})
+    assert json.loads(await by_name(build_desktop_tools())["desktop_list_apps"]())[0]["pid"] == 785
+
+
+async def test_other_windows_survive_a_tree_too_long_to_return(monkeypatch):
+    sent = []
+
+    async def call(*args):
+        sent.append(list(args))
+        if args[0] == "list-windows":
+            return {"ok": True, "data": TWO}
+        if "--window-id" not in args:
+            return {"ok": False, "error": {"code": "AMBIGUOUS_TARGET"}}
+        return {"ok": True, "data": {"snapshot_id": "s9", "tree": "x" * 30_000}}
+
+    monkeypatch.setattr(desktop, "_call", call)
+    out = await by_name(build_desktop_tools())["desktop_snapshot"]("Finder")
+    assert "[Cut" in out and '"other_windows":[{"id":"w-1"' in out

@@ -18,8 +18,8 @@ this is for apps that have real controls.
 ``build_desktop_tools`` is the only way in. Given ``allowed_apps`` it returns tools
 that refuse every other app and every ref they did not issue: the operator's list
 is the authority for a worker that nobody is watching. There is deliberately no
-clipboard tool, and no window listing, whose titles would show a worker what else
-is open on the machine.
+clipboard tool, and no window listing across apps, whose titles would show a worker
+what else is open on the machine.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -56,6 +57,34 @@ def last_screenshot() -> tuple[str, str] | None:
 def _binary() -> str | None:
     search = os.pathsep.join([os.environ.get("PATH", ""), *_EXTRA_BIN_DIRS])
     return shutil.which("agent-desktop", path=search)
+
+
+async def _running_apps() -> list[str]:
+    """The apps with a Dock tile, by way of macOS's own ``lsappinfo``."""
+    if shutil.which("lsappinfo") is None:
+        return []
+    process = await asyncio.create_subprocess_exec(
+        "lsappinfo", "list", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), COMMAND_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        return []
+    entries = re.split(r'\n(?=\s*\d+\) ")', stdout.decode(errors="replace"))
+    names = {
+        match.group(1)
+        for entry in entries
+        if 'type="Foreground"' in entry and (match := re.search(r'\d+\) "([^"]+)"', entry))
+    }
+    return sorted(names)
+
+
+def _choose_window(windows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The one a person is looking at, else one that can be drawn."""
+    shown = [w for w in windows if w.get("visible", True) and not w.get("minimized")] or windows
+    return next((w for w in shown if w.get("is_focused")), shown[0])
 
 
 def _describe_error(envelope: dict[str, Any]) -> str:
@@ -126,6 +155,20 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
         snapshot_id = ref.lstrip("@").split(":", 1)[0]
         return None if snapshot_id in issued else f"Error: {ref} did not come from desktop_snapshot; take one first."
 
+    async def find_window(app: str, wanted: str = "") -> tuple[dict[str, Any], list[dict[str, Any]]] | str:
+        """The window to use and the app's others, or an error to return."""
+        listing = await _call("list-windows", "--app", app)
+        if not listing.get("ok"):
+            return _describe_error(listing)
+        windows = [w for w in listing.get("data") or [] if isinstance(w, dict) and w.get("id")]
+        if not windows:
+            return f"Error: {app} has no window to capture."
+        # Checked here because a scoped tool must not reach another app's window.
+        target = next((w for w in windows if w["id"] == wanted), None) if wanted else _choose_window(windows)
+        if target is None:
+            return f"Error: {wanted} is not a window of {app}. Its windows: " + ", ".join(w["id"] for w in windows)
+        return target, [w for w in windows if w is not target]
+
     async def act(*args: str) -> str:
         envelope = await _call(*args)
         if not envelope.get("ok"):
@@ -147,24 +190,39 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
         return _describe_error(envelope) if not envelope.get("ok") else f"{app} is running."
 
     @tool
-    async def desktop_snapshot(app: str, interactive_only: bool = True) -> str:
+    async def desktop_snapshot(app: str, interactive_only: bool = True, window: str = "") -> str:
         """Read an app's window as an accessibility tree whose controls carry refs.
 
         Refs look like @s8f3k2p9:e8 and stop working when the app's UI changes, so
         take a new snapshot after acting. Custom-drawn content such as a game or a
-        canvas has no elements here; use desktop_screenshot for that.
+        canvas has no elements here; use desktop_screenshot for that. For an app with
+        several windows the result names the others under other_windows.
 
         Args:
             app: The app's name.
             interactive_only: Only controls you can act on; False includes all text.
+            window: A window id from other_windows; empty chooses the front one.
         """
         if (refused := refusal(app)) is not None:
             return refused
         args = ["snapshot", "--app", app, "--compact"] + (["-i"] if interactive_only else [])
-        envelope = await _call(*args)
+        others: list[dict[str, Any]] = []
+        envelope: dict[str, Any] = {}
+        if not window:
+            envelope = await _call(*args)
+        # An app with several windows is refused until one is named.
+        if window or (envelope.get("error") or {}).get("code") == "AMBIGUOUS_TARGET":
+            found = await find_window(app, window)
+            if isinstance(found, str):
+                return found
+            target, others = found
+            envelope = await _call(*args, "--window-id", str(target["id"]))
         if not envelope.get("ok"):
             return _describe_error(envelope)
         data = envelope.get("data") or {}
+        if others:
+            # First, because a long tree is cut at the end.
+            data = {"other_windows": [{"id": w["id"], "title": w.get("title", "")} for w in others], **data}
         if data.get("snapshot_id"):
             issued.add(str(data["snapshot_id"]))
         text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -226,12 +284,10 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
             path = Path(directory) / "window.png"
             # --app alone waits on every window on the system and times out when
             # any other app is churning; naming the window as well does not.
-            windows = await _call("list-windows", "--app", app)
-            if not windows.get("ok"):
-                return _describe_error(windows)
-            target = next((w for w in windows.get("data") or [] if isinstance(w, dict) and w.get("id")), None)
-            if target is None:
-                return f"Error: {app} has no window to capture."
+            found = await find_window(app)
+            if isinstance(found, str):
+                return found
+            target, _ = found
             envelope = await _call("screenshot", "--app", app, "--window-id", str(target["id"]), str(path))
             if not envelope.get("ok"):
                 return _describe_error(envelope)
@@ -254,10 +310,13 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
         @tool
         async def desktop_list_apps() -> str:
             """List the running apps, with the names the other desktop tools take."""
-            envelope = await _call("list-apps")
-            if not envelope.get("ok"):
+            # One stale process makes list-apps retry until any deadline, so keep
+            # the deadline short and ask macOS directly.
+            envelope = await _call("list-apps", "--timeout-ms", "2000")
+            data = envelope.get("data") if envelope.get("ok") else await _running_apps()
+            if not data:
                 return _describe_error(envelope)
-            return json.dumps(envelope.get("data"), ensure_ascii=False, separators=(",", ":"))[:MAX_OUTPUT_CHARS]
+            return json.dumps(data, ensure_ascii=False, separators=(",", ":"))[:MAX_OUTPUT_CHARS]
 
         tools.append(desktop_list_apps)
     return tools
