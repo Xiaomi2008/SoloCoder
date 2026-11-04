@@ -255,3 +255,50 @@ async def test_a_compacted_session_survives_a_restart(tmp_path):
     fresh = SuperAgentWorker(object(), worker.board, worker.ticket_id, max_turns=6)
     assert fresh._agent.session.messages[0].text == worker._agent.session.messages[0].text
     assert len(fresh._agent.session.messages) == len(worker._agent.session.messages)
+
+
+class _Reports:
+    """Files the given reports in turn, then would keep filing the last forever."""
+
+    def __init__(self, *reports):
+        self.reports = list(reports)
+        self.turns = 0
+
+    async def chat(self, messages, tools=None, system_prompt=None, **kwargs):
+        arguments = self.reports[min(self.turns, len(self.reports) - 1)]
+        self.turns += 1
+        return Message(role="assistant", content=[ToolUseBlock(name="report", arguments=arguments)])
+
+
+@pytest.mark.parametrize("final", [
+    {"kind": "ready", "summary": "Done."},
+    {"kind": "blocked", "summary": "Stuck."},
+    {"kind": "failed", "summary": "Broke."},
+    {"kind": "waiting", "summary": "Nothing to do."},
+    {"kind": "progress", "summary": "Half way.", "question": "Which level?"},
+])
+async def test_a_report_that_ends_the_turn_ends_the_assignment(tmp_path, final):
+    worker = _worker(tmp_path, max_turns=6)
+    worker._agent.provider = model = _Reports(final)
+    ticket = worker.board.tickets[worker.ticket_id]
+    await worker.run(ticket.inputs)
+    assert model.turns == 1 and len(ticket.reports) == 1
+
+
+async def test_a_progress_report_does_not_end_the_assignment(tmp_path):
+    worker = _worker(tmp_path, max_turns=6)
+    worker._agent.provider = model = _Reports({"kind": "progress", "summary": "Half way."},
+                                              {"kind": "ready", "summary": "Done."})
+    ticket = worker.board.tickets[worker.ticket_id]
+    await worker.run(ticket.inputs)
+    assert model.turns == 2 and [r.kind.value for r in ticket.reports] == ["progress", "ready"]
+
+
+async def test_an_earlier_attempts_report_does_not_end_this_one(tmp_path):
+    worker = _worker(tmp_path, max_turns=6)
+    ticket = worker.board.tickets[worker.ticket_id]
+    worker.board.report(worker.ticket_id, "blocked", "From the last attempt.")
+    worker._agent.provider = model = _Reports({"kind": "progress", "summary": "Going."},
+                                              {"kind": "ready", "summary": "Done."})
+    await worker.run(ticket.inputs)
+    assert model.turns == 2

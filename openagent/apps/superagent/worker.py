@@ -21,7 +21,7 @@ from .page_check import PageCheck
 from .execution import Execution
 from . import sessions
 
-from .domain import Board, Input, Ticket, compute_stage
+from .domain import Board, Input, ReportKind, Ticket, compute_stage
 
 WORKER_PROMPT = """\
 You are a worker. Own the technical work in your ticket directory: read the
@@ -134,14 +134,15 @@ def is_assignment(message) -> bool:
 def turn_warning(turns_left: int) -> str:
     """What a Worker is told near its limit, so that it stops in time to report."""
     return (
-        f"You have {max(turns_left, 0)} turns left in this assignment. Stop testing and call report unless "
-        "you already have: ready only if the work is verified, otherwise blocked, saying what works, what "
-        "does not and what you did not test. A person sees nothing of this work without a report."
+        f"You have {max(turns_left, 0)} turns left in this assignment. Stop testing and finish with report: "
+        "ready only if the work is verified, otherwise blocked, saying what works, what does not and what "
+        "you did not test. A person sees nothing of this work without a report."
     )
 
 
 class TicketAgent(Agent):
     page: PageCheck | None = None
+    completion_check = None
 
     @property
     def turns_left(self) -> int:
@@ -176,10 +177,10 @@ class TicketAgent(Agent):
         return added
 
     def _finish_after_tools(self) -> bool:
-        # The Worker never "finishes" on its own: a ticket is done only when the
-        # host verification gate accepts a report(ready). Ending early would
-        # silently drop work, so keep the loop going until the turn limit.
-        return False
+        # A report that ends the turn ends it here: asked to go on, a model that
+        # has nothing left to do files another report. A tool result alone never
+        # finishes, and a ready report only asks the host to verify.
+        return self.completion_check is not None and self.completion_check()
 
     def _repair_textual_tool_call(self) -> bool:
         return repair_textual_tool_calls(self)
@@ -317,6 +318,8 @@ class SuperAgentWorker:
         ticket = self.board.tickets[self.ticket_id]
         before = len(ticket.reports)
         limit = self._agent.max_turns
+        self._agent.completion_check = lambda: any(
+            report.kind is not ReportKind.PROGRESS or report.question for report in ticket.reports[before:])
         try:
             result = await self._agent.run(
                 f"{format_turn(ticket, inputs)}\nYou have {limit} turns for this assignment; save the last for report.")

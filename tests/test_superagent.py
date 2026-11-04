@@ -258,7 +258,6 @@ async def test_the_loop_accepts_works_and_reports(tmp_path):
         ),
         # worker: do the work and report it ready
         call("report", kind="ready", summary="Added --verbose; tests pass."),
-        said("Reported ready."),
         # router: relay the result to the person
         call("reply", purpose="result", text="The --verbose flag is in."),
     ])
@@ -277,8 +276,8 @@ async def test_the_loop_accepts_works_and_reports(tmp_path):
     # result reply is bound to the sole pending report when its id is omitted.
     assert [r.purpose for r in replies] == ["ack", "result"]
     assert replies[0].ticket_id == ticket.id
-    # Router stops after each completed tool batch; worker still closes normally.
-    assert provider.calls == 4
+    # Router and worker both stop on the tool batch that settles their work.
+    assert provider.calls == 3
     assert ticket.directory.startswith(str(tmp_path))
     assert (tmp_path / "work" / "verbose-flag").is_dir()
 
