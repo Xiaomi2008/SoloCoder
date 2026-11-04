@@ -134,7 +134,7 @@ public final class Sidecar {
     /// runtime setting: changing it requires a new service, which the app does
     /// by restarting its connection.
     public func start(
-        computerUse: Bool = false, browserUse: Bool = false, browserProfile: Bool = false, browserChrome: Bool = false
+        computerUse: Bool = false, desktopUse: Bool = false, browserUse: Bool = false, browserProfile: Bool = false, browserChrome: Bool = false
     ) async throws {
         if running { return }
         guard let launch = Self.resolveLaunch() else { throw Failure.noService }
@@ -158,6 +158,9 @@ public final class Sidecar {
         arguments += [launch.script.path, "serve", "--socket", socketPath, "--quiet"]
         if computerUse {
             arguments.append("--computer-use")
+        }
+        if desktopUse {
+            arguments.append("--desktop-use")
         }
         if browserUse {
             arguments.append("--browser-use")

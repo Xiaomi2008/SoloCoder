@@ -106,6 +106,7 @@ class ServiceSettings:
     max_turns: int = DEFAULT_MAX_TURNS
     computer_use: bool = False
     browser_use: bool = False
+    desktop_use: bool = False
     #: Where the agent's browser keeps its profile, so sign-ins persist. None
     #: is a fresh, signed-out profile every launch.
     browser_profile: str | None = None
@@ -1056,6 +1057,7 @@ class AgentService:
             notebooks=not local,
             browser_use=self.settings.browser_use,
             git=not local,
+            desktop_use=self.settings.desktop_use,
         )
 
     async def _tool_list(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:

@@ -40,11 +40,14 @@ def build_solocoder_tools(
     notebooks: bool = True,
     browser_use: bool = False,
     git: bool = True,
+    desktop_use: bool = False,
 ) -> list[Callable[..., Any]]:
     """Build the default SoloCoder tool set.
 
     Args:
         computer_use: Include computer use tools (screenshot, click, etc.) for GUI automation.
+        desktop_use: Include the agent-desktop tools (desktop_snapshot, desktop_click, etc.),
+            which drive other apps through their accessibility trees.
         browser_use: Include the browser tools (browser_navigate, browser_click, etc.), which drive
             the agent's own Chromium window.
         notebooks: Include notebook_edit. Every tool schema is prompt the model reads before the first
@@ -109,6 +112,11 @@ def build_solocoder_tools(
         from openagent.tools.browser import browser_tools
 
         tools.extend(browser_tools)
+
+    if desktop_use:
+        from openagent.tools.desktop import desktop_tools
+
+        tools.extend(desktop_tools)
 
     # Offered only with a keyset: a tool that can only fail is prompt the
     # model reads for nothing.

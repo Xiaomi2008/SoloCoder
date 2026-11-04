@@ -137,6 +137,16 @@ public final class AppModel: ObservableObject {
             Task { await restartService() }
         }
     }
+    /// Whether the service exposes the agent-desktop tools (`desktop_snapshot`,
+    /// `desktop_click`, ...), which drive other apps through their accessibility
+    /// trees. A launch flag, like `computerUse`.
+    @Published public var desktopUse = false {
+        didSet {
+            UserDefaults.standard.set(desktopUse, forKey: Self.desktopUseKey)
+            guard desktopUse != oldValue, client != nil else { return }
+            Task { await restartService(changed: "desktop apps", on: desktopUse) }
+        }
+    }
     /// Whether the service exposes the browser tools (`browser_navigate`,
     /// `browser_click`, ...), which drive the agent's own Chromium window — a
     /// separate profile, not the user's browser. A launch flag, like
@@ -201,6 +211,7 @@ public final class AppModel: ObservableObject {
     private static let modeKey = "openagent.permissionMode"
     private static let effortKey = "openagent.reasoningEffort"
     private static let computerUseKey = "openagent.computerUse"
+    private static let desktopUseKey = "openagent.desktopUse"
     private static let browserUseKey = "openagent.browserUse"
     private static let browserProfileKey = "openagent.browserRemembersSignIns"
     private static let browserChromeKey = "openagent.browserUsesChrome"
@@ -262,6 +273,7 @@ public final class AppModel: ObservableObject {
         permissionMode = Self.restorableMode(stored.string(forKey: Self.modeKey))
         reasoningEffort = Self.restorableEffort(stored.string(forKey: Self.effortKey))
         computerUse = stored.bool(forKey: Self.computerUseKey)
+        desktopUse = stored.bool(forKey: Self.desktopUseKey)
         browserUse = stored.bool(forKey: Self.browserUseKey)
         browserRemembersSignIns = stored.bool(forKey: Self.browserProfileKey)
         browserUsesChrome = stored.bool(forKey: Self.browserChromeKey)
@@ -329,7 +341,7 @@ public final class AppModel: ObservableObject {
     private func connectService() async {
         do {
             try await sidecar.start(
-                computerUse: computerUse, browserUse: browserUse,
+                computerUse: computerUse, desktopUse: desktopUse, browserUse: browserUse,
                 browserProfile: browserUse && browserRemembersSignIns,
                 browserChrome: browserUse && browserUsesChrome
             )

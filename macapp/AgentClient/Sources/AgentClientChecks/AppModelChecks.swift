@@ -605,6 +605,17 @@ func appChecks(_ checks: Checks) async {
         checks.expect(browserNames.contains("browser_click"), "--browser-use exposes browser_click")
         await browserClient.close()
         probe.stop()
+
+        try await probe.start(desktopUse: true)
+        let desktopClient = AgentServiceClient(
+            endpoint: ServiceEndpoint(socketPath: probe.socketPath, clientName: "desktop-use-check")
+        )
+        _ = try await desktopClient.connect()
+        let desktopNames = try await desktopClient.tools().map(\.name)
+        checks.expect(desktopNames.contains("desktop_snapshot"), "--desktop-use exposes desktop_snapshot")
+        checks.expect(desktopNames.contains("desktop_click"), "--desktop-use exposes desktop_click")
+        await desktopClient.close()
+        probe.stop()
     } catch {
         checks.expect(false, "computer-use launch flag check ran: \(error)")
     }

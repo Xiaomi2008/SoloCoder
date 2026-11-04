@@ -128,6 +128,22 @@ public struct SettingsView: View {
                     }
                 }
 
+                SettingsSection(title: "Desktop apps") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Let the agent use other apps", isOn: $model.desktopUse)
+                            .disabled(model.busy)
+                        Text(
+                            "Off by default. Adds desktop_snapshot, desktop_click, desktop_type, "
+                                + "desktop_press, desktop_launch, desktop_screenshot and desktop_list_apps, "
+                                + "which work through each app's accessibility tree. Requires agent-desktop "
+                                + "(npm install -g agent-desktop) and the same macOS permissions as computer "
+                                + "use. Changing it restarts the service; stop a run first."
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(Theme.faint)
+                    }
+                }
+
                 SettingsSection(title: "Browser use") {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Let the agent use its own browser", isOn: $model.browserUse)

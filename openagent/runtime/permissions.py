@@ -63,6 +63,14 @@ TOOL_RISK: dict[str, Risk] = {
     "move_mouse": "gui",
     "scroll": "gui",
     "wait": "read",
+    # Other apps, through agent-desktop. Reads match "screenshot" above.
+    "desktop_list_apps": "read",
+    "desktop_snapshot": "read",
+    "desktop_screenshot": "read",
+    "desktop_launch": "gui",
+    "desktop_click": "gui",
+    "desktop_type": "gui",
+    "desktop_press": "gui",
     # The agent's own browser. Reading and navigating are network; acting on a
     # page (clicks, typing, form submits) can send, buy, or delete.
     "browser_navigate": "network",

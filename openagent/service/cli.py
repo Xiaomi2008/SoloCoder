@@ -68,6 +68,11 @@ def add_subcommands(subparsers: Any) -> None:
         help="expose the macOS GUI tools (screenshot, click, ...) to the model",
     )
     sp.add_argument(
+        "--desktop-use",
+        action="store_true",
+        help="expose the agent-desktop tools (desktop_snapshot, desktop_click, ...), which drive other apps",
+    )
+    sp.add_argument(
         "--browser-use",
         action="store_true",
         help="expose the browser tools (browser_navigate, browser_click, ...): the model's own Chromium window",
@@ -119,6 +124,7 @@ async def handle_serve(args: argparse.Namespace) -> int:
         max_turns=args.max_turns,
         computer_use=args.computer_use,
         browser_use=args.browser_use,
+        desktop_use=args.desktop_use,
         browser_profile=args.browser_profile,
         browser_channel=args.browser_channel,
     )

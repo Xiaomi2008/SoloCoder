@@ -170,10 +170,14 @@ KEEP_RECENT_SCREENSHOTS = 3
 OLD_SCREENSHOT_TEXT = "[An earlier screenshot, removed to save context.]"
 
 
+DESKTOP_SCREENSHOT_FOLLOWUP_TEXT = "Latest screenshot of the app's window, from desktop_screenshot."
+
 BROWSER_SCREENSHOT_FOLLOWUP_TEXT = (
     "Latest screenshot of the agent's browser page. "
     "Act on elements by their [n] ref from browser_snapshot, not by coordinates."
 )
+
+PAGE_SCREENSHOT_FOLLOWUP_TEXT = "Latest screenshot of the page you opened with page_open."
 
 
 def add_screenshot_followup(
@@ -209,6 +213,16 @@ def add_screenshot_followup(
             if page_image:
                 session.add_user_multimodal(
                     text=BROWSER_SCREENSHOT_FOLLOWUP_TEXT, image_data=page_image, image_mime_type=mime_type
+                )
+                added = True
+            continue
+        if name == "desktop_screenshot":
+            from openagent.tools.desktop import last_screenshot
+
+            window = last_screenshot()
+            if window:
+                session.add_user_multimodal(
+                    text=DESKTOP_SCREENSHOT_FOLLOWUP_TEXT, image_data=window[0], image_mime_type=window[1]
                 )
                 added = True
             continue
@@ -272,7 +286,14 @@ def drop_old_screenshots(session: Session, keep: int | None = None) -> int:
         and any(isinstance(b, ImageBlock) for b in m.content)
         and any(
             isinstance(b, TextBlock)
-            and b.text.startswith((SCREENSHOT_FOLLOWUP_TEXT, BROWSER_SCREENSHOT_FOLLOWUP_TEXT))
+            and b.text.startswith(
+                (
+                    SCREENSHOT_FOLLOWUP_TEXT,
+                    BROWSER_SCREENSHOT_FOLLOWUP_TEXT,
+                    DESKTOP_SCREENSHOT_FOLLOWUP_TEXT,
+                    PAGE_SCREENSHOT_FOLLOWUP_TEXT,
+                )
+            )
             for b in m.content
         )
     ]
