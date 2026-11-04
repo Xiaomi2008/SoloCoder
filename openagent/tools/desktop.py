@@ -162,7 +162,7 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
             return _describe_error(listing)
         windows = [w for w in listing.get("data") or [] if isinstance(w, dict) and w.get("id")]
         if not windows:
-            return f"Error: {app} has no window to capture."
+            return f"Error: {app} has no window."
         # Checked here because a scoped tool must not reach another app's window.
         target = next((w for w in windows if w["id"] == wanted), None) if wanted else _choose_window(windows)
         if target is None:
@@ -195,8 +195,8 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
 
         Refs look like @s8f3k2p9:e8 and stop working when the app's UI changes, so
         take a new snapshot after acting. Custom-drawn content such as a game or a
-        canvas has no elements here; use desktop_screenshot for that. For an app with
-        several windows the result names the others under other_windows.
+        canvas has no elements here; use desktop_screenshot for that. When the app
+        has other windows, the result names them under other_windows.
 
         Args:
             app: The app's name.
@@ -220,6 +220,12 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
         if not envelope.get("ok"):
             return _describe_error(envelope)
         data = envelope.get("data") or {}
+        if not window and not others:
+            # A focused window satisfies the snapshot, with no word of the rest.
+            listing = await _call("list-windows", "--app", app)
+            current = (data.get("window") or {}).get("id")
+            windows = listing.get("data") if listing.get("ok") else []
+            others = [w for w in windows or [] if isinstance(w, dict) and w.get("id") and w["id"] != current]
         if others:
             # First, because a long tree is cut at the end.
             data = {"other_windows": [{"id": w["id"], "title": w.get("title", "")} for w in others], **data}
@@ -268,7 +274,15 @@ def build_desktop_tools(allowed_apps: Iterable[str] | None = None) -> list[Calla
         """
         if (refused := refusal(app)) is not None:
             return refused
-        return await act("press", combo, "--app", app, *(["--headed"] if bring_forward else []))
+        if not bring_forward:
+            return await act("press", combo, "--app", app)
+        # Measured on Calculator: headed, --app alone waits on every window on the
+        # system and times out. In the background it is the other way round, and
+        # naming the window sends nothing because its focus cannot be confirmed.
+        found = await find_window(app)
+        if isinstance(found, str):
+            return found
+        return await act("press", combo, "--app", app, "--window-id", str(found[0]["id"]), "--headed")
 
     @tool
     async def desktop_screenshot(app: str) -> str:

@@ -47,7 +47,7 @@ def by_name(tools):
 async def test_snapshot_asks_for_the_app_and_returns_the_tree(fake_cli):
     tools = by_name(build_desktop_tools())
     out = await tools["desktop_snapshot"]("Calculator")
-    assert fake_cli.sent() == [["snapshot", "--app", "Calculator", "--compact", "-i"]]
+    assert fake_cli.sent()[0] == ["snapshot", "--app", "Calculator", "--compact", "-i"]
     assert json.loads(out)["snapshot_id"] == "s1"
 
 
@@ -99,13 +99,11 @@ def test_scoped_tools_offer_no_way_to_see_what_else_is_open():
     assert "desktop_list_apps" not in by_name(build_desktop_tools(["Calculator"]))
 
 
-async def test_press_brings_the_app_forward_only_when_asked(fake_cli):
+async def test_press_stays_in_the_background_by_app_name(fake_cli):
     tools = by_name(build_desktop_tools())
     fake_cli.reply({"ok": True, "data": {}})
     await tools["desktop_press"]("return", "Calculator")
-    await tools["desktop_press"]("return", "Calculator", bring_forward=True)
-    assert fake_cli.sent() == [["press", "return", "--app", "Calculator"],
-                               ["press", "return", "--app", "Calculator", "--headed"]]
+    assert fake_cli.sent() == [["press", "return", "--app", "Calculator"]]
 
 
 def test_tools_are_off_unless_asked_for_and_their_actions_need_permission():
@@ -225,3 +223,32 @@ async def test_other_windows_survive_a_tree_too_long_to_return(monkeypatch):
     monkeypatch.setattr(desktop, "_call", call)
     out = await by_name(build_desktop_tools())["desktop_snapshot"]("Finder")
     assert "[Cut" in out and '"other_windows":[{"id":"w-1"' in out
+
+
+async def test_press_brought_forward_names_the_window(monkeypatch):
+    sent = _scripted(monkeypatch, TWO)
+    await by_name(build_desktop_tools())["desktop_press"]("return", "Finder", bring_forward=True)
+    assert sent[-1] == ["press", "return", "--app", "Finder", "--window-id", "w-2", "--headed"]
+
+
+async def test_press_brought_forward_with_no_window_sends_nothing(monkeypatch):
+    sent = _scripted(monkeypatch, [])
+    out = await by_name(build_desktop_tools())["desktop_press"]("return", "Finder", bring_forward=True)
+    assert out == "Error: Finder has no window."
+    assert not any(args[0] == "press" for args in sent)
+
+
+async def test_a_snapshot_a_focused_window_satisfies_still_names_the_rest(monkeypatch):
+    _scripted(monkeypatch, TWO, snapshot={"snapshot_id": "s9", "window": {"id": "w-2", "title": "Front"}})
+    data = json.loads(await by_name(build_desktop_tools())["desktop_snapshot"]("Finder"))
+    assert data["other_windows"] == [{"id": "w-1", "title": "Back"}]
+
+
+async def test_a_single_window_app_has_no_other_windows(monkeypatch):
+    _scripted(monkeypatch, TWO[1:], snapshot={"snapshot_id": "s9", "window": {"id": "w-2"}})
+    assert "other_windows" not in json.loads(await by_name(build_desktop_tools())["desktop_snapshot"]("Finder"))
+
+
+async def test_a_failed_window_listing_does_not_lose_the_snapshot(fake_cli):
+    out = await by_name(build_desktop_tools())["desktop_snapshot"]("Calculator")
+    assert json.loads(out)["snapshot_id"] == "s1"
