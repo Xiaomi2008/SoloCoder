@@ -277,6 +277,50 @@ private func script() -> [AgentEvent] {
     return trimmed
 }
 
+/// Forty rounds of thinking, a tool call and its output, then an answer.
+private func liveScript() -> [AgentEvent] {
+    var fields: [[String: JSONValue]] = [["type": .string("run_started"), "run_id": .string("r1")]]
+    for round in 1...40 {
+        let message = JSONValue.string("m\(round)")
+        fields.append(["type": .string("message_started"), "run_id": .string("r1"), "message_id": message])
+        for word in "Checking whether the fence reader keeps the closing line in round \(round).".split(separator: " ") {
+            fields.append([
+                "type": .string("reasoning_delta"), "run_id": .string("r1"), "message_id": message,
+                "delta": .string(word + " "),
+            ])
+        }
+        for word in "Round \(round): the closing fence is dropped when the reader sees a nested block, so the next check reads the list reader.".split(separator: " ") {
+            fields.append([
+                "type": .string("message_delta"), "run_id": .string("r1"), "message_id": message,
+                "delta": .string(word + " "),
+            ])
+        }
+        fields.append(["type": .string("message_completed"), "run_id": .string("r1"), "message_id": message])
+        let call = JSONValue.string("t\(round)")
+        fields.append([
+            "type": .string("tool_call_started"), "run_id": .string("r1"), "message_id": message,
+            "tool_call_id": call, "tool_name": .string("bash"),
+            "arguments": object(["command": .string("swift run agent-checks --filter fence\(round)")]),
+        ])
+        fields.append([
+            "type": .string("tool_call_completed"), "run_id": .string("r1"), "message_id": message,
+            "tool_call_id": call, "tool_name": .string("bash"), "result": .string(toolOutput),
+        ])
+    }
+    fields.append([
+        "type": .string("message_completed"), "run_id": .string("r1"), "message_id": .string("m41"),
+        "output_text": .string(answer),
+    ])
+    fields.append([
+        "type": .string("run_completed"), "run_id": .string("r1"), "final_message_id": .string("m41"),
+        "result": object([
+            "run_id": .string("r1"), "final_message_id": .string("m41"),
+            "output_text": .string("done"), "stop_reason": .string("end_turn"),
+        ]),
+    ])
+    return fields.compactMap(event)
+}
+
 /// A process launched from a shell starts `.prohibited`: no Dock tile, no menu
 /// bar, a window behind everything. Same line the app needs.
 final class PreviewDelegate: NSObject, NSApplicationDelegate {
@@ -335,7 +379,20 @@ struct UIPreviewApp: App {
                 updatedAt: now - 4_000_000, messageCount: 0, error: "not valid JSON"
             ),
         ]
-        if ProcessInfo.processInfo.environment["UI_PREVIEW_EMPTY"] == nil {
+        if let pace = ProcessInfo.processInfo.environment["UI_PREVIEW_STREAM"] {
+            // `UI_PREVIEW_STREAM=<ms between events>`: a long run arriving in
+            // real time, so following the stream can be watched.
+            model.transcript.addUserMessage("Find and fix the bug in the fence parser.")
+            model.ingest(AsyncStream { continuation in
+                Task {
+                    for event in liveScript() {
+                        continuation.yield(event)
+                        try? await Task.sleep(for: .milliseconds(Int(pace) ?? 120))
+                    }
+                    continuation.finish()
+                }
+            })
+        } else if ProcessInfo.processInfo.environment["UI_PREVIEW_EMPTY"] == nil {
             model.transcript.addUserMessage("Find and fix the bug in the fence parser.")
             model.ingest(AsyncStream { continuation in
                 for event in script() { continuation.yield(event) }
