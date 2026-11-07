@@ -10,7 +10,7 @@ import asyncio
 import time
 from typing import Callable
 
-from .domain import Board, Input, ReportKind
+from .domain import Board, HumanReply, Input, ReportKind
 from .execution import Execution
 from .router import SuperAgentRouter
 from .worker import SuperAgentWorker
@@ -27,7 +27,8 @@ class SuperAgentRuntime:
                  store=None, execution=None, verify_commands=(), worktrees=None,
                  max_concurrent: int = 1, heartbeat_timeout: float = 120,
                  auto_retries: int = 0, retry_backoff: float = 30.0,
-                 worker_options: dict | None = None) -> None:
+                 worker_options: dict | None = None,
+                 on_reply: Callable[[HumanReply], None] | None = None) -> None:
         if min(assignment_timeout, router_timeout, heartbeat_timeout) <= 0:
             raise ValueError('Deadlines must be positive')
         if max_concurrent < 1 or auto_retries < 0 or retry_backoff < 0:
@@ -53,6 +54,16 @@ class SuperAgentRuntime:
         board.retry_backoff = retry_backoff
         # Verification cannot safely run while a Worker mutates the directory.
         self._verify_lock = asyncio.Lock()
+        # With `on_reply`, a reply goes out when the report that made it is
+        # relayed, not when the last running worker finishes: one worker's
+        # question no longer waits out another worker's 30-minute deadline.
+        # Without it, replies are returned by `run_pending` as before.
+        self.on_reply = on_reply
+        self._intake = asyncio.Event()
+
+    def intake(self) -> None:
+        """New triggers are on the board: route them now, even mid-run."""
+        self._intake.set()
 
     def checkpoint(self):
         if self.store is not None:
@@ -71,6 +82,7 @@ class SuperAgentRuntime:
         async with self._lock:
             try:
                 while True:
+                    self._intake.clear()  # what it asked for is routed next
                     await self._assess_pending()
                     await self._run_launches()
                     await self._verify_pending()
@@ -80,6 +92,9 @@ class SuperAgentRuntime:
                                for t in self.board.tickets.values()
                                if not t.stopped and not t.ended):
                         break
+                if self.on_reply is not None:
+                    await self._deliver()
+                    return []
                 await self._relay_notices()
                 return self.board.take_replies()
             finally:
@@ -141,7 +156,7 @@ class SuperAgentRuntime:
                 self.checkpoint()
 
     async def _run_launches(self):
-        pending: set[asyncio.Task] = set()
+        pending: dict[asyncio.Task, str] = {}
         while True:
             # Fill free slots from due launches. If all active work is sleeping
             # in backoff, wait for the earliest retry instead of busy-spinning.
@@ -149,9 +164,11 @@ class SuperAgentRuntime:
                 ticket_id = self.board.launch_due(time.time())
                 if ticket_id is None:
                     break
-                task = asyncio.create_task(self._assignment(ticket_id))
-                pending.add(task)
-                task.add_done_callback(pending.discard)
+                if ticket_id in pending.values():
+                    # Input that reached a running ticket: its assignment
+                    # queues it again when it ends, so it is not lost here.
+                    continue
+                pending[asyncio.create_task(self._assignment(ticket_id))] = ticket_id
             if not pending:
                 # A just-failed assignment may have scheduled a retry after the
                 # slot-filling pass. Wait for it; returning now would strand it
@@ -162,11 +179,33 @@ class SuperAgentRuntime:
                     await asyncio.sleep(min(5.0, max(.01, min(retries) - time.time())))
                     continue
                 return
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
+            intake = asyncio.create_task(self._intake.wait())
+            try:
+                done, _ = await asyncio.wait({*pending, intake}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                intake.cancel()
+            for task in done - {intake}:
+                del pending[task]
                 if (error := task.exception()) and not isinstance(error, asyncio.CancelledError):
                     self.board.log(f'assignment task error: {type(error).__name__}: {error}')
+            if self._intake.is_set():
+                # Only this coroutine talks to the Router, so routing here
+                # cannot overlap a relay; the workers keep running meanwhile.
+                self._intake.clear()
+                await self._assess_pending()
+            await self._deliver()
         # Loop exits when pending is empty and no due launch remains.
+
+    async def _deliver(self):
+        """Relay what the workers reported and hand the replies out now."""
+        if self.on_reply is None:
+            return
+        await self._relay_notices()
+        for reply in self.board.take_replies():
+            try:
+                self.on_reply(reply)
+            except Exception as error:
+                self.board.log(f'reply delivery failed: {type(error).__name__}: {error}')
 
     async def _assignment(self, ticket_id: str):
         ticket = self.board.tickets[ticket_id]
