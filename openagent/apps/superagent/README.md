@@ -276,7 +276,7 @@ Atomic versioned state snapshots and session checkpoints; single-writer POSIX
 workspace lock; interrupted assignments blocked for explicit retry; unknown tool
 outcomes never blindly replayed. Router stops after its routing/relay obligations
 are fulfilled rather than requesting closing prose. Shell defaults to 30 seconds
-(maximum 120); `--assignment-timeout 600` and `--router-timeout 120` bound model
+(maximum 120); `--assignment-timeout 1800` and `--router-timeout 120` bound model
 turns. Missing reports are blocked. These are wall-clock deadlines, not heartbeats.
 
 State contains task text/tool results: protect the workspace. No exactly-once

@@ -23,7 +23,7 @@ class WatchdogTimeout(TimeoutError):
 class SuperAgentRuntime:
     def __init__(self, board: Board, router: SuperAgentRouter,
                  worker_factory: Callable[[str], SuperAgentWorker] | None = None,
-                 *, assignment_timeout: float = 600, router_timeout: float = 120,
+                 *, assignment_timeout: float = 1800, router_timeout: float = 120,
                  store=None, execution=None, verify_commands=(), worktrees=None,
                  max_concurrent: int = 1, heartbeat_timeout: float = 120,
                  auto_retries: int = 0, retry_backoff: float = 30.0,

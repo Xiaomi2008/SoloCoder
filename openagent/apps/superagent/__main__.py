@@ -48,8 +48,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--provider", default="lmstudio",
                         help="registered provider name, e.g. lmstudio, openai_oauth, taopc")
-    parser.add_argument("--assignment-timeout", type=float, default=600,
-                        help="worker wall-clock deadline in seconds (default: 600)")
+    parser.add_argument("--assignment-timeout", type=float, default=1800,
+                        help="worker wall-clock deadline in seconds (default: 1800)")
     parser.add_argument("--router-timeout", type=float, default=120,
                         help="router wall-clock deadline in seconds (default: 120)")
     parser.add_argument("--max-concurrent", type=int, default=1,
