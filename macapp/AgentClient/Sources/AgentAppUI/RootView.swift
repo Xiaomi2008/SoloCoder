@@ -720,6 +720,7 @@ struct Detail: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             BrowserPanelSlot(panel: model.browserPanel)
         }
+        .background(ZoomInAlias())
         .background(Theme.canvas)
     }
 }
@@ -831,6 +832,7 @@ struct Header: View {
 struct TranscriptColumn: View {
     @EnvironmentObject var model: AppModel
     @State private var pinned = true
+    @AppStorage(Zoom.key) private var zoom = 1.0
 
     private static let bottom = "transcript-bottom"
 
@@ -870,7 +872,13 @@ struct TranscriptColumn: View {
                     }
                 }
                 .padding(.vertical, 18)
-                .frame(maxWidth: Theme.columnWidth)
+                // Text that names no font of its own — a paragraph of the
+                // answer — is body text, at the zoom.
+                .zoomFont(.body)
+                .environment(\.zoom, zoom)
+                // The column widens with its text, so a zoomed line keeps its
+                // length in characters until the window runs out.
+                .frame(maxWidth: Theme.columnWidth * zoom)
                 // The column, centred: the window is wider than a paragraph.
                 .frame(maxWidth: .infinity, alignment: .center)
                 Color.clear.frame(height: 1).id(Self.bottom)
@@ -884,7 +892,7 @@ struct TranscriptColumn: View {
                         proxy.scrollTo(Self.bottom, anchor: .bottom)
                     } label: {
                         Image(systemName: "arrow.down")
-                            .font(.system(size: 12, weight: .semibold))
+                            .zoomFont(.system(size: 12, weight: .semibold))
                             .frame(width: 28, height: 28)
                     }
                     .buttonStyle(.plain)
@@ -1005,17 +1013,17 @@ struct StepsSection: View {
                         ProgressView().controlSize(.mini).tint(Theme.accent)
                     } else {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 12))
+                            .zoomFont(.system(size: 12))
                             .foregroundStyle(Theme.faint)
                     }
                     Text(turn.activityLabel)
-                        .font(.callout.weight(.medium))
+                        .zoomFont(.callout.weight(.medium))
                         .foregroundStyle(turn.running ? Color.primary : Theme.muted)
                     Text(stepCount)
-                        .font(.caption)
+                        .zoomFont(.caption)
                         .foregroundStyle(Theme.faint)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .zoomFont(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.faint)
                         .rotationEffect(.degrees(open ? 90 : 0))
                 }
@@ -1122,7 +1130,7 @@ struct StepRow: View {
 
     private func symbol(_ name: String, _ color: Color, weight: Font.Weight = .medium) -> some View {
         Image(systemName: name)
-            .font(.system(size: 9.5, weight: weight))
+            .zoomFont(.system(size: 9.5, weight: weight))
             .foregroundStyle(color)
     }
 }
@@ -1145,7 +1153,7 @@ struct UserBubble: View {
                 .frame(maxWidth: 560, alignment: .trailing)
             }
             Text(text)
-                .font(.body)
+                .zoomFont(.body)
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -1277,12 +1285,12 @@ struct AssistantLine: View {
             VStack(alignment: .leading, spacing: 8) {
                 if !shown.hiddenSummary.isEmpty {
                     Text("… \(shown.hiddenSummary) above are not shown")
-                        .font(.caption).foregroundStyle(Theme.muted)
+                        .zoomFont(.caption).foregroundStyle(Theme.muted)
                 }
                 BlocksView(blocks: shown.shown)
                 if shown.cutChars > 0 {
                     Text("… \(shown.cutChars) characters of this answer are not shown")
-                        .font(.caption).foregroundStyle(Theme.muted)
+                        .zoomFont(.caption).foregroundStyle(Theme.muted)
                 }
                 if !shown.tail.isEmpty {
                     Text(shown.tail)
@@ -1297,7 +1305,7 @@ struct AssistantLine: View {
                 MarkdownView(text: text)
                 if expanded {
                     Button("Show less") { expanded = false }
-                        .font(.caption)
+                        .zoomFont(.caption)
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.muted)
                 }
@@ -1307,12 +1315,12 @@ struct AssistantLine: View {
             VStack(alignment: .leading, spacing: 8) {
                 if !shown.hiddenSummary.isEmpty {
                     Text("… \(shown.hiddenSummary) above are not shown")
-                        .font(.caption).foregroundStyle(Theme.muted)
+                        .zoomFont(.caption).foregroundStyle(Theme.muted)
                 }
                 AnswerText(blocks: shown.shown)
                 if shown.cutChars > 0 {
                     Text("… \(shown.cutChars) characters of this answer are not shown")
-                        .font(.caption).foregroundStyle(Theme.muted)
+                        .zoomFont(.caption).foregroundStyle(Theme.muted)
                 }
                 if !shown.tail.isEmpty {
                     Text(shown.tail)
@@ -1320,7 +1328,7 @@ struct AssistantLine: View {
                 }
                 if !shown.revealLabel.isEmpty {
                     Button(shown.revealLabel) { expanded = true }
-                        .font(.caption)
+                        .zoomFont(.caption)
                         .buttonStyle(.plain)
                         .foregroundStyle(Theme.accent)
                 }
@@ -1425,7 +1433,7 @@ struct ReasoningLine: View {
             // newest line is always the one in view, and the top fades out so
             // the thinking reads as passing by, not as a wall above the answer.
             Text(shown)
-                .font(.callout)
+                .zoomFont(.callout)
                 .foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // Its full height, then clipped from the top: a `Text` offered
@@ -1441,7 +1449,7 @@ struct ReasoningLine: View {
                 )
         } else {
             Text(text)
-                .font(.callout)
+                .zoomFont(.callout)
                 .foregroundStyle(Theme.muted)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1459,11 +1467,11 @@ struct ReasoningLine: View {
             } label: {
                 HStack(spacing: 5) {
                     Text(label)
-                        .font(.callout)
+                        .zoomFont(.callout)
                         .foregroundStyle(streaming ? Theme.accent : Theme.muted)
                     if !streaming {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
+                            .zoomFont(.system(size: 9, weight: .semibold))
                             .foregroundStyle(Theme.faint)
                             .rotationEffect(.degrees(open ? 90 : 0))
                     }
@@ -1498,10 +1506,10 @@ struct FailedLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.caption)
+                .zoomFont(.caption)
                 .foregroundStyle(Theme.danger)
             Text(error)
-                .font(.callout)
+                .zoomFont(.callout)
                 .foregroundStyle(Theme.danger)
                 .textSelection(.enabled)
         }
@@ -1529,7 +1537,7 @@ struct CompactionLine: View {
             case .failed(let error): Text("failed: \(error)").foregroundStyle(Theme.danger)
             }
         }
-        .font(.caption)
+        .zoomFont(.caption)
         .foregroundStyle(Theme.muted)
         .textSelection(.enabled)
     }
@@ -1540,7 +1548,7 @@ struct NoteLine: View {
 
     var body: some View {
         Text(text)
-            .font(.caption)
+            .zoomFont(.caption)
             .foregroundStyle(Theme.faint)
             .textSelection(.enabled)
     }
@@ -1555,6 +1563,7 @@ struct NoteLine: View {
 /// `Running npm test`. The result is only ever in the disclosure, which is where
 /// the user opens the row to look.
 struct ToolLine: View {
+    @Environment(\.zoom) private var zoom
     let row: ToolCallRow
 
     @State private var expanded = false
@@ -1571,7 +1580,7 @@ struct ToolLine: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .zoomFont(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.faint)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                         .opacity(expanded ? 1 : 0.6)
@@ -1588,7 +1597,7 @@ struct ToolLine: View {
             if case .failed(let error) = row.state, !expanded {
                 // A failure is worth its first line without a click.
                 Text(error.split(whereSeparator: \.isNewline).first.map(String.init) ?? error)
-                    .font(.system(.caption, design: .monospaced))
+                    .zoomFont(.system(.caption, design: .monospaced))
                     .foregroundStyle(Theme.danger)
                     .lineLimit(2)
                     .textSelection(.enabled)
@@ -1602,10 +1611,10 @@ struct ToolLine: View {
         let summary = ToolDisplay.summary(tool: row.name, arguments: row.arguments, running: running)
         let parts = summary.split(separator: " ", maxSplits: 1).map(String.init)
         let verb = Text(parts.first ?? summary)
-            .font(.callout.weight(.medium))
+            .font(ZoomFont.callout.weight(.medium).font(at: zoom))
             .foregroundColor(failed ? Theme.danger : .primary)
         guard parts.count > 1 else { return verb }
-        return verb + Text(" " + parts[1]).font(.callout).foregroundColor(Theme.muted)
+        return verb + Text(" " + parts[1]).font(ZoomFont.callout.font(at: zoom)).foregroundColor(Theme.muted)
     }
 
     private var failed: Bool {
@@ -1623,13 +1632,13 @@ struct ToolLine: View {
             if case .done(let text) = row.state, !text.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("Result").font(.caption2.weight(.semibold)).foregroundStyle(Theme.faint)
+                        Text("Result").zoomFont(.caption2.weight(.semibold)).foregroundStyle(Theme.faint)
                         Spacer()
                         CopyButton(text: text, label: "this result")
                     }
                     ScrollView(.vertical, showsIndicators: true) {
                         Text(text)
-                            .font(.system(.caption, design: .monospaced))
+                            .zoomFont(.system(.caption, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
@@ -1639,7 +1648,7 @@ struct ToolLine: View {
 
             if case .failed(let error) = row.state {
                 Text(error)
-                    .font(.system(.caption, design: .monospaced))
+                    .zoomFont(.system(.caption, design: .monospaced))
                     .foregroundStyle(Theme.danger)
                     .textSelection(.enabled)
             }
@@ -1659,13 +1668,13 @@ struct ToolLine: View {
         if running {
             TimelineView(.periodic(from: row.startedAt, by: 1)) { context in
                 Text(DurationFormat.short(context.date.timeIntervalSince(row.startedAt)) ?? "…")
-                    .font(.caption)
+                    .zoomFont(.caption)
                     .foregroundStyle(Theme.faint)
                     .monospacedDigit()
             }
         } else if let text = DurationFormat.short(row.elapsed) {
             Text(text)
-                .font(.caption)
+                .zoomFont(.caption)
                 .foregroundStyle(Theme.faint)
                 .monospacedDigit()
         }
@@ -1678,20 +1687,20 @@ struct PermissionLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: outcome.granted ? "hand.raised.beam.fill" : "hand.raised.slash.fill")
-                .font(.caption)
+                .zoomFont(.caption)
                 .foregroundStyle(outcome.granted ? Theme.success : Theme.danger)
             Text(
                 ToolDisplay.summary(
                     tool: outcome.request.toolName, arguments: outcome.request.arguments, running: false
                 )
             )
-            .font(.caption)
+            .zoomFont(.caption)
             .foregroundStyle(Theme.muted)
             Text(outcome.granted ? "allowed" : "refused")
-                .font(.caption)
+                .zoomFont(.caption)
                 .foregroundStyle(Theme.muted)
-            Text("(\(outcome.scope.rawValue))").font(.caption2).foregroundStyle(Theme.faint)
-            Text(outcome.reason).font(.caption2).foregroundStyle(Theme.faint).lineLimit(2)
+            Text("(\(outcome.scope.rawValue))").zoomFont(.caption2).foregroundStyle(Theme.faint)
+            Text(outcome.reason).zoomFont(.caption2).foregroundStyle(Theme.faint).lineLimit(2)
         }
     }
 }
@@ -2391,29 +2400,29 @@ struct ArgumentSections: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if sections.isEmpty {
-                Text("(no arguments)").font(.caption).foregroundStyle(Theme.muted)
+                Text("(no arguments)").zoomFont(.caption).foregroundStyle(Theme.muted)
             }
             ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
                 VStack(alignment: .leading, spacing: 2) {
                     if !section.label.isEmpty {
                         Text(section.label)
-                            .font(.caption2)
+                            .zoomFont(.caption2)
                             .foregroundStyle(Theme.faint)
                     }
                     switch section.style {
                     case .code:
                         Text(Theme.highlighted(section.text, language: section.language))
-                            .font(.system(prominent ? .body : .caption, design: .monospaced))
+                            .zoomFont(.system(prominent ? .body : .caption, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     case .text:
                         Text(section.text)
-                            .font(prominent ? .callout : .caption)
+                            .zoomFont(prominent ? .callout : .caption)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     case .note:
                         Text(section.text)
-                            .font(.caption2)
+                            .zoomFont(.caption2)
                             .foregroundStyle(Theme.faint)
                     }
                 }

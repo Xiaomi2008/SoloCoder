@@ -150,6 +150,7 @@ struct SoloCoderApp: App {
                 }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
             }
+            ZoomCommands()
         }
 
         Settings {

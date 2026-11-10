@@ -447,6 +447,7 @@ struct UIPreviewApp: App {
                 }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
             }
+            ZoomCommands()
         }
 
         Settings {
