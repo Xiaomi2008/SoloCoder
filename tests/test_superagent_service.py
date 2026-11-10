@@ -1,6 +1,8 @@
 """Durable, idempotent service intake and notification outbox."""
 import asyncio
 import json
+import shlex
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -79,7 +81,7 @@ async def test_notifications_are_appended(tmp_path):
 async def test_hook_receives_json_on_stdin(tmp_path):
     script = tmp_path / 'hook.py'
     script.write_text('import json,sys\nprint(json.load(sys.stdin)["text"])\n')
-    command = f'/Users/taozeng/Projects/SoloCoder/.venv/bin/python {script}'
+    command = f'{shlex.quote(sys.executable)} {shlex.quote(str(script))}'
     assert run_hook(command, {'text': 'hello'}) == 'ok'
     assert run_hook('/nonexistent/hook', {}) .startswith('hook failed')
 
