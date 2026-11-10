@@ -812,17 +812,32 @@ struct Header: View {
 ///
 /// So the signal is the **last line's value** — it changes when a line is
 /// appended and when the text in it grows — and it is acted on only while the
-/// view is pinned to the bottom. `LazyVStack` gives the pin for free: the last
-/// turn's `onAppear`/`onDisappear` is exactly "the user is at the bottom" / "the
-/// user has scrolled away", with no geometry reader per row to pay for.
+/// view is pinned to the bottom.
+///
+/// **The last turn is not lazy.** It is the one that grows and shrinks: a
+/// thinking line folds once the answer starts, and a finished run folds its
+/// steps, so a turn thousands of points tall becomes a few hundred under an
+/// offset that was at its bottom. `LazyVStack` then decided nothing was on
+/// screen and drew nothing until a scroll made it look again: a blank window
+/// mid-run. The turns before it, which do not change, stay lazy, which is what
+/// keeps a long session cheap.
+///
+/// The pin is read from the scroll geometry (macOS 15): an offset that moves
+/// with the content the same size is the user scrolling, and sets the pin to
+/// "at the bottom or not"; content that changes size is the stream, followed
+/// while pinned. Before macOS 15 there is no geometry to read, and the layout
+/// stays as it was: all lazy, pinned by the last turn's `onAppear` /
+/// `onDisappear`.
 struct TranscriptColumn: View {
     @EnvironmentObject var model: AppModel
     @State private var pinned = true
 
+    private static let bottom = "transcript-bottom"
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 20) {
                     if model.transcript.turns.isEmpty {
                         ContentUnavailable(
                             title: "No run yet",
@@ -834,28 +849,39 @@ struct TranscriptColumn: View {
                             action: model.workingDir.isEmpty ? { chooseWorkingDir(model) } : nil
                         )
                     }
-                    ForEach(model.transcript.turns) { turn in
-                        // `.equatable()` is the difference between re-running
-                        // every visible turn's body on every publish and
-                        // re-running only the turns that changed.
-                        TurnView(turn: turn)
-                            .equatable()
-                            .id(turn.id)
-                            .onAppear { if isLast(turn) { pinned = true } }
-                            .onDisappear { if isLast(turn) { pinned = false } }
+                    if #available(macOS 15, *) {
+                        let turns = model.transcript.turns
+                        LazyVStack(alignment: .leading, spacing: 20) {
+                            ForEach(turns.dropLast()) { turn in
+                                turnView(turn)
+                            }
+                        }
+                        if let last = turns.last {
+                            turnView(last)
+                        }
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 20) {
+                            ForEach(model.transcript.turns) { turn in
+                                turnView(turn)
+                                    .onAppear { if isLast(turn) { pinned = true } }
+                                    .onDisappear { if isLast(turn) { pinned = false } }
+                            }
+                        }
                     }
                 }
                 .padding(.vertical, 18)
                 .frame(maxWidth: Theme.columnWidth)
                 // The column, centred: the window is wider than a paragraph.
                 .frame(maxWidth: .infinity, alignment: .center)
+                Color.clear.frame(height: 1).id(Self.bottom)
             }
+            .modifier(FollowGeometry(pinned: $pinned) { proxy.scrollTo(Self.bottom, anchor: .bottom) })
             .background(Theme.canvas)
             .overlay(alignment: .bottomTrailing) {
-                if !pinned, let last = model.transcript.turns.last {
+                if !pinned, !model.transcript.turns.isEmpty {
                     Button {
                         pinned = true
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                        proxy.scrollTo(Self.bottom, anchor: .bottom)
                     } label: {
                         Image(systemName: "arrow.down")
                             .font(.system(size: 12, weight: .semibold))
@@ -868,25 +894,62 @@ struct TranscriptColumn: View {
                     .accessibilityLabel("Scroll to bottom")
                 }
             }
-            .onChange(of: model.transcript.lines.last) { before, after in
-                guard let after, let last = model.transcript.turns.last else { return }
+            .onChange(of: model.transcript.lines.last) { _, after in
+                guard let after else { return }
                 // The user's own message is always worth scrolling to: they just
                 // typed it, and a view left scrolled up would hide it.
                 if case .user = after.kind { pinned = true }
                 guard pinned else { return }
-                if before?.id != after.id {
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) }
-                } else {
-                    // Text growth in the turn already on screen: follow it
-                    // without an animation per publish.
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
+                proxy.scrollTo(Self.bottom, anchor: .bottom)
             }
         }
     }
 
+    private func turnView(_ turn: Turn) -> some View {
+        // `.equatable()` is the difference between re-running every visible
+        // turn's body on every publish and re-running only the turns that changed.
+        TurnView(turn: turn)
+            .equatable()
+            .id(turn.id)
+    }
+
     private func isLast(_ turn: Turn) -> Bool {
         turn.id == model.transcript.turns.last?.id
+    }
+}
+
+/// Where the transcript is scrolled, and how tall it is.
+private struct ScrollState: Equatable {
+    var offset: CGFloat
+    var content: CGFloat
+    var container: CGFloat
+
+    var atBottom: Bool { offset + container >= content - 24 }
+}
+
+/// The pin, from the scroll geometry, and the stream followed while pinned.
+private struct FollowGeometry: ViewModifier {
+    @Binding var pinned: Bool
+    let toBottom: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content.onScrollGeometryChange(for: ScrollState.self) { geometry in
+                ScrollState(
+                    offset: geometry.contentOffset.y,
+                    content: geometry.contentSize.height,
+                    container: geometry.containerSize.height
+                )
+            } action: { before, after in
+                if after.content != before.content || after.container != before.container {
+                    if pinned { toBottom() }
+                } else if after.offset != before.offset {
+                    pinned = after.atBottom
+                }
+            }
+        } else {
+            content
+        }
     }
 }
 
