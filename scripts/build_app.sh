@@ -23,6 +23,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAGE="$ROOT/.build/app"
 PKG="$ROOT/macapp/AgentClient"
 APP="$STAGE/SoloCoder.app"
+# Who signs the app. macOS keys Accessibility and Screen Recording grants to the
+# signature, and an ad-hoc one is new on every build: each rebuild left the
+# switch in System Settings on for a binary that no longer exists. A
+# certificate's signature is the same from build to build, so the grants stay.
+# `SoloCoder Dev` (self-signed, in the login keychain) is used when present;
+# `SOLOCODER_SIGN_IDENTITY` names another, and ad-hoc is the fallback.
+SIGN="${SOLOCODER_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN" ]] && security find-identity -p codesigning 2>/dev/null | grep -q '"SoloCoder Dev"'; then
+    SIGN="SoloCoder Dev"
+fi
+SIGN="${SIGN:--}"
 PY_VERSION="3.14"
 # The service's own import set. `streamlit` is a core dependency of the project
 # (the legacy `server.py` web UI) and is not in this list; the `web` extra is
@@ -88,8 +99,8 @@ while [[ $# -gt 0 ]]; do
             copy_app_source
             [[ -f "$APP/Contents/MacOS/SoloCoder" ]] || { echo "no bundle to update; run without --binary first" >&2; exit 1; }
             cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
-            codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/SoloCoder" >/dev/null
-            codesign --force --sign - --entitlements "$ROOT/macapp/entitlements.plist" --timestamp=none "$APP" >/dev/null
+            codesign --force --sign "$SIGN" --timestamp=none "$APP/Contents/MacOS/SoloCoder" >/dev/null
+            codesign --force --sign "$SIGN" --entitlements "$ROOT/macapp/entitlements.plist" --timestamp=none "$APP" >/dev/null
             codesign --verify --deep --strict "$APP" && echo "==> $APP"
             exit 0 ;;
         *) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -189,8 +200,8 @@ find "$APP/Contents/Resources/sidecar/python/bin" -type f -print0 |
     while IFS= read -r -d '' item; do
         codesign --force --sign - --timestamp=none "$item" >/dev/null 2>&1 || true
     done
-codesign --force --sign - --timestamp=none "$APP/Contents/MacOS/SoloCoder"
-codesign --force --sign - --entitlements "$ENTITLEMENTS" --timestamp=none "$APP"
+codesign --force --sign "$SIGN" --timestamp=none "$APP/Contents/MacOS/SoloCoder"
+codesign --force --sign "$SIGN" --entitlements "$ENTITLEMENTS" --timestamp=none "$APP"
 codesign --verify --deep --strict --verbose=1 "$APP" 2>&1 | tail -1
 
 echo "==> $APP"
