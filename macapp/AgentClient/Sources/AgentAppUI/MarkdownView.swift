@@ -137,8 +137,8 @@ struct HeadingView: View {
         .padding(.top, 2)
     }
 
-    private func styled(_ font: Font) -> Text {
-        markdownText(text).font(font)
+    private func styled(_ font: ZoomFont) -> some View {
+        markdownText(text).zoomFont(font)
     }
 }
 
@@ -155,14 +155,14 @@ struct CodeView: View {
         VStack(alignment: .leading, spacing: 0) {
             if let language, !language.isEmpty {
                 Text(language)
-                    .font(.caption2)
+                    .zoomFont(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.top, 6)
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(Theme.highlighted(text, language: language))
-                    .font(.system(.caption, design: .monospaced))
+                    .zoomFont(.system(.caption, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -186,7 +186,7 @@ struct LabeledItemView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
             Text(label)
-                .font(.body)
+                .zoomFont(.body)
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 16, alignment: .trailing)
             markdownText(text)
@@ -257,7 +257,7 @@ struct TableView: View {
         // single-line layout while its cells wrap, and the block under the table
         // draws over its last row. Measured, not theorised: the capture shows the
         // overlap.
-        .font(.callout)
+        .zoomFont(.callout)
         .padding(.vertical, 2)
     }
 

@@ -22,6 +22,7 @@ struct AnswerText: NSViewRepresentable {
         /// What the view holds. Filling it again would clear the user's selection,
         /// and a publish from the running turn must not do that.
         var shown: [MarkdownBlock]?
+        var zoom: CGFloat = 1
         var measured: (width: CGFloat, height: CGFloat)?
     }
 
@@ -31,7 +32,7 @@ struct AnswerText: NSViewRepresentable {
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
         storage.addLayoutManager(layout)
-        let container = NSTextContainer(size: NSSize(width: Theme.columnWidth, height: .greatestFiniteMagnitude))
+        let container = NSTextContainer(size: NSSize(width: Theme.columnWidth * context.environment.zoom, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         container.widthTracksTextView = true
         layout.addTextContainer(container)
@@ -49,10 +50,12 @@ struct AnswerText: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSTextView, context: Context) {
-        guard context.coordinator.shown != blocks else { return }
+        let zoom = context.environment.zoom
+        guard context.coordinator.shown != blocks || context.coordinator.zoom != zoom else { return }
         context.coordinator.shown = blocks
+        context.coordinator.zoom = zoom
         context.coordinator.measured = nil
-        view.textStorage?.setAttributedString(AnswerTextBuilder.text(blocks))
+        view.textStorage?.setAttributedString(AnswerTextBuilder.text(blocks).zoomed(zoom))
     }
 
     /// The height the text needs at the width on offer. A row is measured on every
