@@ -28,11 +28,13 @@ def results(messages: list[Message]) -> list[ToolResultBlock]:
 
 def test_old_outputs_are_cleared_oldest_first_until_the_target():
     messages = tool_run()
-    clearing = clear_old_tool_outputs(messages, target_tokens=3000, keep_tokens=500)
+    # Above the floor (the protected tail plus every stub) under both counters:
+    # ~2,900 tokens by the 4-characters estimate, ~3,050 by tiktoken.
+    clearing = clear_old_tool_outputs(messages, target_tokens=4000, keep_tokens=500)
 
     blocks = results(clearing.messages)
     cleared = [b.content.startswith(CLEARED_PREFIX) for b in blocks]
-    assert clearing.tokens_after <= 3000 < clearing.tokens_before
+    assert clearing.tokens_after <= 4000 < clearing.tokens_before
     # Oldest first: everything cleared comes before everything kept.
     assert cleared == sorted(cleared, reverse=True)
     assert cleared[0] and not cleared[-1]
