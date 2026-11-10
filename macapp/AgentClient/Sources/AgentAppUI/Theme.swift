@@ -112,7 +112,9 @@ enum Theme {
     /// Syntax colour: the one place the screen has more than one hue, because a
     /// code block in one colour reads as a wall. The values are Xcode's default
     /// themes, the palette a Mac developer's eye is already trained on; the dark
-    /// ones are lighter for the same reason the accent's is.
+    /// ones are lighter for the same reason the accent's is. Comments are the
+    /// exception: Xcode's grey is a step from its plain text, and this text is
+    /// near-black, so a comment needs a lighter grey to read as one.
     static func codeColor(_ kind: CodeTokenKind) -> NSColor {
         switch kind {
         case .keyword: codeKeyword
@@ -130,7 +132,7 @@ enum Theme {
 
     private static let codeKeyword = dynamicColor(srgb(155, 35, 147), srgb(252, 95, 163))
     private static let codeString = dynamicColor(srgb(196, 26, 22), srgb(252, 106, 93))
-    private static let codeComment = dynamicColor(srgb(93, 108, 121), srgb(108, 121, 134))
+    private static let codeComment = dynamicColor(srgb(128, 138, 148), srgb(127, 140, 152))
     private static let codeNumber = dynamicColor(srgb(28, 0, 207), srgb(208, 191, 105))
     private static let codeType = dynamicColor(srgb(11, 79, 121), srgb(93, 216, 255))
     private static let codeCall = dynamicColor(srgb(50, 109, 116), srgb(103, 183, 164))
