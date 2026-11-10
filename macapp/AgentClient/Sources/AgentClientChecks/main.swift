@@ -512,6 +512,7 @@ do {
     try transcriptChecks(checks)
     stage = "markdown"
     markdownChecks(checks)
+    highlightChecks(checks)
     stage = "tool display"
     toolDisplayChecks(checks)
     stage = "rows"

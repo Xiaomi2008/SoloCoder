@@ -31,7 +31,7 @@ private func event(_ fields: [String: JSONValue]) -> AgentEvent? {
 private func object(_ fields: [String: JSONValue]) -> JSONValue { .object(fields) }
 
 /// The answer a coding agent writes: headings, prose with inline runs, a fenced
-/// block, both list kinds, a table, a quote, a rule.
+/// block and a shell one, both list kinds, a table, a quote, a rule.
 private let answer = """
     I read the parser and found the bug. Two things were dropping text.
 
@@ -52,6 +52,11 @@ private let answer = """
         }
         return (body.joined(separator: "\\n"), index)
     }
+    ```
+
+    ```bash
+    # rebuild and run the checks
+    swift build && swift run agent-checks | grep -c "passed"
     ```
 
     **The fix**

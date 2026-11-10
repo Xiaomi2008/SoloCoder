@@ -143,8 +143,8 @@ enum AnswerTextBuilder {
             out.append(line(inline(text, font: headingFont(level), color: .labelColor), style))
         case .paragraph(let text):
             out.append(line(inline(text, font: font(.body), color: .labelColor), paragraph(after: blockGap)))
-        case .code(_, let text):
-            appendCode(text, to: out)
+        case .code(let language, let text):
+            appendCode(text, language: language, to: out)
         case .bullets(let items):
             appendList(items.map { ("•", $0) }, to: out)
         case .numbered(let items):
@@ -166,7 +166,7 @@ enum AnswerTextBuilder {
     /// A fenced block: wrapped, not scrolled sideways, because there is one text
     /// view and it does not scroll. The wrap is only on the screen; what is copied
     /// has the block's own line breaks.
-    private static func appendCode(_ text: String, to out: NSMutableAttributedString) {
+    private static func appendCode(_ text: String, language: String?, to out: NSMutableAttributedString) {
         let code = box()
         code.setWidth(8, type: .absoluteValueType, for: .padding)
         code.setWidth(1, type: .absoluteValueType, for: .border)
@@ -176,7 +176,9 @@ enum AnswerTextBuilder {
         style.textBlocks = [code]
         style.lineBreakMode = .byCharWrapping
         let mono = NSFont.monospacedSystemFont(ofSize: font(.caption1).pointSize, weight: .regular)
+        let start = out.length
         out.append(line(NSAttributedString(string: text, attributes: [.font: mono, .foregroundColor: NSColor.labelColor]), style))
+        Theme.highlight(out, at: start, code: text, language: language)
     }
 
     /// The marker in its own column, so a wrapped item's second line starts under
