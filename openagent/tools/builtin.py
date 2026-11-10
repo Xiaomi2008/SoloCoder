@@ -722,6 +722,26 @@ async def kill_shell(
 # ============================================================================
 
 
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+
+def _tavily_search(api_key: str, query: str, max_results: int) -> list[dict]:
+    """Tavily's search endpoint, called over httpx.
+
+    Not the ``tavily-python`` client: it pulls in tiktoken, which downloads its
+    tables on first use, and the app's bundled service ships httpx already."""
+    import httpx
+
+    response = httpx.post(
+        TAVILY_SEARCH_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"query": query, "max_results": max_results, "include_images": False},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json().get("results", [])
+
+
 @tool
 def web_search(
     query: str,
@@ -753,15 +773,7 @@ def web_search(
 
                 if api_key:
                     try:
-                        from tavily import TavilyClient
-
-                        client = TavilyClient(api_key=api_key)
-                        response = client.search(
-                            query=query,
-                            max_results=num_results,
-                            include_images=False,
-                        )
-                        results = response.get("results", [])
+                        results = _tavily_search(api_key, query, num_results)
 
                         if results:
                             output = []
@@ -780,8 +792,7 @@ def web_search(
                                     )
                                 output.append("")
                             return "\n".join(output)
-                    except ImportError:
-                        error_msg = "Error: Tavily not installed. Install with: pip install tavily-python"
+                        return "No search results found."
                     except Exception as e:
                         error_msg = f"Tavily search failed: {e}"
                 else:

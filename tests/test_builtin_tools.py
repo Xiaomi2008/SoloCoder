@@ -181,11 +181,47 @@ class TestNotebookEditTool:
 class TestWebSearchTool:
     """Tests for the web_search tool."""
 
-    def test_web_search(self):
-        # This may fail if duckduckgo-search is not installed
-        result = web_search("Python programming language")  # No await!
-        # Just check it returns something (success or error message)
-        assert isinstance(result, str)
+    # Offline: a live search would spend a Tavily credit on every test run.
+    @pytest.fixture
+    def tavily(self, monkeypatch):
+        import httpx
+
+        from openagent.core.config import SecretManager
+
+        monkeypatch.setattr(SecretManager, "get_api_key", classmethod(lambda cls, provider: "tvly-test"))
+        calls = []
+
+        def post(url, headers=None, json=None, timeout=None):
+            calls.append({"url": url, "headers": headers, "json": json})
+            return httpx.Response(200, json=calls_reply[0], request=httpx.Request("POST", url))
+
+        calls_reply = [{"results": []}]
+        monkeypatch.setattr(httpx, "post", post)
+        return calls, calls_reply
+
+    def test_tavily_results_are_listed(self, tavily):
+        calls, reply = tavily
+        reply[0] = {"results": [
+            {"title": "Python", "url": "https://python.org", "content": "The language.", "score": 0.91},
+        ]}
+        result = web_search("Python programming language", num_results=3)
+        assert "1. Python" in result and "URL: https://python.org" in result and "Relevance: 0.91" in result
+        assert calls[0]["url"] == "https://api.tavily.com/search"
+        assert calls[0]["headers"] == {"Authorization": "Bearer tvly-test"}
+        assert calls[0]["json"] == {"query": "Python programming language", "max_results": 3, "include_images": False}
+
+    def test_no_tavily_results_says_so(self, tavily):
+        assert web_search("nothing at all") == "No search results found."
+
+    def test_a_rejected_key_is_reported(self, tavily, monkeypatch):
+        import httpx
+
+        def refused(url, **kwargs):
+            return httpx.Response(401, json={"detail": "bad key"}, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "post", refused)
+        result = web_search("anything")
+        assert result.startswith("Tavily search failed") and "401" in result
 
 
 class TestWebFetchTool:
