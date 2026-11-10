@@ -23,7 +23,10 @@ struct AnswerText: NSViewRepresentable {
         /// and a publish from the running turn must not do that.
         var shown: [MarkdownBlock]?
         var zoom: CGFloat = 1
-        var measured: (width: CGFloat, height: CGFloat)?
+        /// Heights by width. SwiftUI asks at more than one width in a layout pass
+        /// (the width on offer, and the ideal width when it offers none), so one
+        /// slot would measure the whole answer again on every pass.
+        var measured: [CGFloat: CGFloat] = [:]
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -54,24 +57,35 @@ struct AnswerText: NSViewRepresentable {
         guard context.coordinator.shown != blocks || context.coordinator.zoom != zoom else { return }
         context.coordinator.shown = blocks
         context.coordinator.zoom = zoom
-        context.coordinator.measured = nil
+        context.coordinator.measured = [:]
         view.textStorage?.setAttributedString(AnswerTextBuilder.text(blocks).zoomed(zoom))
     }
 
     /// The height the text needs at the width on offer. A row is measured on every
     /// layout of the transcript, and a long answer's layout is the expensive part,
     /// so the answer is kept until the width or the text changes.
+    ///
+    /// Measuring lays the text out at the width asked about, and the container is
+    /// put back to the view's own width afterwards. Left at the asked width — the
+    /// ideal-width probe's 760 pt — the text is drawn narrower, and so taller, than
+    /// the height its row was given: the end of the answer is cut off and the
+    /// transcript cannot scroll to it. At a zoom of 1 the column is 760 pt and the
+    /// two widths agreed, which is why it only showed zoomed in.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: NSTextView, context: Context) -> CGSize? {
-        var width = proposal.width ?? Theme.columnWidth
-        if !width.isFinite { width = Theme.columnWidth }
-        if let measured = context.coordinator.measured, measured.width == width {
-            return CGSize(width: width, height: measured.height)
+        let ideal = Theme.columnWidth * context.environment.zoom
+        var width = proposal.width ?? ideal
+        if !width.isFinite { width = ideal }
+        if let height = context.coordinator.measured[width] {
+            return CGSize(width: width, height: height)
         }
         guard let container = view.textContainer, let layout = view.layoutManager else { return nil }
         container.size = NSSize(width: width, height: .greatestFiniteMagnitude)
         layout.ensureLayout(for: container)
         let height = ceil(layout.usedRect(for: container).height)
-        context.coordinator.measured = (width, height)
+        if view.frame.width > 0, view.frame.width != width {
+            container.size = NSSize(width: view.frame.width, height: .greatestFiniteMagnitude)
+        }
+        context.coordinator.measured[width] = height
         return CGSize(width: width, height: height)
     }
 }
