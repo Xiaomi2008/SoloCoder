@@ -332,6 +332,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     var workingPill: WorkingPill?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // `UI_PREVIEW_DARK=1` draws the window dark without switching the system.
+        if ProcessInfo.processInfo.environment["UI_PREVIEW_DARK"] != nil {
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             NSApp.windows.first { $0.isVisible && !$0.title.isEmpty }?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
