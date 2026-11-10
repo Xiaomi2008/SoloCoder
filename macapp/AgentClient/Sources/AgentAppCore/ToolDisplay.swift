@@ -35,11 +35,15 @@ public struct ToolDisplay: Equatable, Sendable {
         public let label: String
         public let text: String
         public let style: Style
+        /// The fence tag a `.code` section is coloured as, when its tool says:
+        /// a command is shell, a file body is its path's language.
+        public let language: String?
 
-        public init(label: String, text: String, style: Style = .code) {
+        public init(label: String, text: String, style: Style = .code, language: String? = nil) {
             self.label = label
             self.text = text
             self.style = style
+            self.language = language
         }
     }
 
@@ -241,14 +245,14 @@ public struct ToolDisplay: Equatable, Sendable {
             return value.displayText
         }
 
-        func code(_ label: String, _ key: String) {
+        func code(_ label: String, _ key: String, language: String? = nil) {
             guard let text = field(key), !text.isEmpty else { return }
-            append(label: label, text: text, style: .code)
+            append(label: label, text: text, style: .code, language: language)
         }
 
-        func append(label: String, text: String, style: Section.Style) {
+        func append(label: String, text: String, style: Section.Style, language: String? = nil) {
             let (shown, note) = head(text)
-            out.append(Section(label: label, text: shown, style: style))
+            out.append(Section(label: label, text: shown, style: style, language: language))
             if let note { out.append(Section(label: "", text: note, style: .note)) }
         }
 
@@ -257,7 +261,8 @@ public struct ToolDisplay: Equatable, Sendable {
         /// the first thing under the file name.
         func body(_ key: String, label: String = "content") {
             guard let text = field(key) else { return }
-            append(label: label, text: text, style: .code)
+            let language = (fields["path"]?.displayText).flatMap(Highlight.language(forPath:))
+            append(label: label, text: text, style: .code, language: language)
         }
 
         func file() { code("file", "path") }
@@ -266,7 +271,7 @@ public struct ToolDisplay: Equatable, Sendable {
         case "bash", "bash_background":
             // The command is the whole decision. It keeps its newlines: a
             // multi-line script is the case the user most needs to read.
-            code("command", "command")
+            code("command", "command", language: "shell")
             code("in", "working_dir")
             if let timeout = field("timeout") {
                 out.append(Section(label: "", text: "timeout \(timeout)s", style: .note))
@@ -282,7 +287,7 @@ public struct ToolDisplay: Equatable, Sendable {
             // a 40-line `find` above a 40-line `replace` asks the user to spot
             // the difference between them.
             if let find = field("find"), let replace = field("replace") {
-                append(label: "change", text: diff(find: find, replace: replace), style: .code)
+                append(label: "change", text: diff(find: find, replace: replace), style: .code, language: "diff")
             } else {
                 code("find", "find")
                 code("replace", "replace")

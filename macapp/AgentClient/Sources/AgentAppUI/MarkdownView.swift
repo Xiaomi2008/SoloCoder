@@ -161,7 +161,7 @@ struct CodeView: View {
                     .padding(.top, 6)
             }
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(text)
+                Text(Theme.highlighted(text, language: language))
                     .font(.system(.caption, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)

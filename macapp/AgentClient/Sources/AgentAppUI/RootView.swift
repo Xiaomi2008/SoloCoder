@@ -2402,7 +2402,7 @@ struct ArgumentSections: View {
                     }
                     switch section.style {
                     case .code:
-                        Text(section.text)
+                        Text(Theme.highlighted(section.text, language: section.language))
                             .font(.system(prominent ? .body : .caption, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
