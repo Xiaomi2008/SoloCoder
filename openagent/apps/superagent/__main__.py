@@ -48,8 +48,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--provider", default="lmstudio",
                         help="registered provider name, e.g. lmstudio, openai_oauth, taopc")
-    parser.add_argument("--assignment-timeout", type=float, default=600,
-                        help="worker wall-clock deadline in seconds (default: 600)")
+    parser.add_argument("--assignment-timeout", type=float, default=1800,
+                        help="worker wall-clock deadline in seconds (default: 1800)")
     parser.add_argument("--router-timeout", type=float, default=120,
                         help="router wall-clock deadline in seconds (default: 120)")
     parser.add_argument("--max-concurrent", type=int, default=1,
@@ -274,6 +274,14 @@ async def _interactive(runtime: SuperAgentRuntime, args: argparse.Namespace) -> 
                     announced.add(request_id)
             await asyncio.sleep(.1)
 
+    # Replies print as each worker reports, and input typed while others
+    # work is routed then, not after the last of them finishes.
+    runtime.on_reply = ui.reply
+
+    def queued():
+        wake.set()
+        runtime.intake()
+
     runner = asyncio.create_task(scheduler())
     approvals = asyncio.create_task(approval_notices())
     ui.banner(runtime, args)
@@ -295,7 +303,7 @@ async def _interactive(runtime: SuperAgentRuntime, args: argparse.Namespace) -> 
             elif line.startswith(":approve ") or line.startswith(":reject "):
                 action, ticket_id = line.split(maxsplit=1)
                 ui.message(runtime.review_decision(ticket_id, action == ":approve"))
-                wake.set()
+                queued()
             elif line.startswith(":diff "):
                 from .worktrees import Worktrees
                 ticket = board.tickets.get(line.split(maxsplit=1)[1])
@@ -333,7 +341,7 @@ async def _interactive(runtime: SuperAgentRuntime, args: argparse.Namespace) -> 
                 ui.message(await runtime.stop(line.split(maxsplit=1)[1]))
             elif line.startswith(":retry "):
                 ui.message(runtime.retry(line.split(maxsplit=1)[1]))
-                wake.set()
+                queued()
             elif line == ":drain":
                 # Useful for piped requests: wait until current queued work finishes.
                 ui.message("Waiting for queued work…")
@@ -347,7 +355,7 @@ async def _interactive(runtime: SuperAgentRuntime, args: argparse.Namespace) -> 
                 trigger = board.submit(line, actor=args.actor, source="cli", thread_id=thread_id)
                 runtime.checkpoint()
                 ui.message(f"Queued {trigger.id} → {trigger.thread_id}  ·  :thread {trigger.thread_id} for follow-ups")
-                wake.set()
+                queued()
     finally:
         runner.cancel()
         approvals.cancel()

@@ -15,6 +15,9 @@ class ServiceRuntime:
         self.hook = hook
         self.actor = actor
         self.stopping = False
+        # A reply reaches the outbox when its worker reports, not when the
+        # last running worker finishes.
+        runtime.on_reply = self._emit_reply
 
     def checkpoint(self):
         self.runtime.checkpoint()
@@ -23,10 +26,13 @@ class ServiceRuntime:
         """One pass: intake events, run queued work, emit notifications."""
         replies = await self.runtime.run_pending()
         for reply in replies:
-            self.emit({'type': 'reply', 'purpose': reply.purpose,
-                       'ticket_id': reply.ticket_id, 'text': reply.text,
-                       'question': reply.question})
+            self._emit_reply(reply)
         return replies
+
+    def _emit_reply(self, reply):
+        self.emit({'type': 'reply', 'purpose': reply.purpose,
+                   'ticket_id': reply.ticket_id, 'text': reply.text,
+                   'question': reply.question})
 
     def emit(self, record):
         self.inbox.notify(record)

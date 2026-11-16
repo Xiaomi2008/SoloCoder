@@ -199,6 +199,14 @@ the host process, model rate limits, CPU, and any directories you let them reach
 Verification is serialized per Ticket and never starts while another assignment
 is mutating that Ticket's directory. Start with 2-3 and measure.
 
+Replies are not held for the slowest Worker. Each time a Worker ends its turn,
+its report is relayed and the reply goes out (terminal, or outbox and
+`--notify-hook`) while the others keep running. In the terminal, a message you
+type mid-run is routed then too; a Ticket that is already running gets the new
+input when its current assignment ends, never a second Worker. In `--service`
+mode the inbox is still read between runs, so an answer waits for the running
+assignments to finish.
+
 ## Continuous service intake
 
 ```bash
@@ -276,7 +284,7 @@ Atomic versioned state snapshots and session checkpoints; single-writer POSIX
 workspace lock; interrupted assignments blocked for explicit retry; unknown tool
 outcomes never blindly replayed. Router stops after its routing/relay obligations
 are fulfilled rather than requesting closing prose. Shell defaults to 30 seconds
-(maximum 120); `--assignment-timeout 600` and `--router-timeout 120` bound model
+(maximum 120); `--assignment-timeout 1800` and `--router-timeout 120` bound model
 turns. Missing reports are blocked. These are wall-clock deadlines, not heartbeats.
 
 State contains task text/tool results: protect the workspace. No exactly-once
