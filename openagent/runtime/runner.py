@@ -76,7 +76,6 @@ from openagent.runtime.loop import (
     history_budget,
     is_empty_final_response,
     is_user_prompt,
-    maybe_compact_context,
     next_id,
 )
 from openagent.runtime.permissions import (
@@ -94,6 +93,22 @@ MAX_TURNS_MESSAGE = (
 )
 
 COMPACTION_REASON = "context approaching limit"
+FULL_CONTEXT_REASON = "context window full"
+COMMAND_REASON = "requested with /compact"
+
+#: Typed as the whole message, this compacts the conversation and asks the
+#: model nothing; the command itself never enters the history.
+COMPACT_COMMAND = "/compact"
+
+
+def context_full(usage: ProviderUsage | None, context_window: int | None) -> bool:
+    """Did the server spend the whole window? Then an empty reply is no fault
+    of the model's: it had a few dozen tokens to think in, and a retry nudge
+    only takes more of them."""
+    if usage is None or not usage.input_tokens or not context_window:
+        return False
+    used = usage.input_tokens + (usage.output_tokens or 0)
+    return used >= context_window - max(512, context_window // 64)
 
 
 def _registry_from_tools(
@@ -220,23 +235,35 @@ class AgentRunner:
         # shows both describe the whole request.
         overhead = _fixed_overhead(self.session.system_prompt, tool_defs)
         budget = history_budget(self.context_window, self.max_output_tokens)
-        if budget and "max_context_tokens" not in kwargs:
-            kwargs["max_context_tokens"] = max(budget - overhead, budget // 2)
+        # Estimates are in GPT-4o tokens and the window is in the server's;
+        # the budget is converted with the scale the server's counts taught,
+        # so every comparison below stays in estimate units.
+        calibrated = bool(budget) and "max_context_tokens" not in kwargs
+        if calibrated:
+            kwargs["max_context_tokens"] = self._history_limit(budget, overhead)
         settings, provider_kwargs = LoopSettings.from_kwargs(kwargs)
         guard = EmptyResponseGuard(settings.max_empty_response_retries)
-        compact_at = (
-            overhead + int(settings.max_context_tokens * settings.compact_threshold)
-            if budget and not settings.disable_compaction
-            else None
-        )
 
-        def usage() -> ContextUsage:
+        def compact_at() -> int | None:
+            if not budget or settings.disable_compaction:
+                return None
+            point = overhead + int(settings.max_context_tokens * settings.compact_threshold)
+            return int(point * self.session.token_scale)
+
+        def usage(estimate: int | None = None) -> ContextUsage:
+            if estimate is None:
+                estimate = self.session.token_count + overhead
             return ContextUsage(
                 run_id=run_id,
-                used_tokens=self.session.token_count + overhead,
+                used_tokens=int(estimate * self.session.token_scale),
                 context_window=self.context_window,
-                compact_at=compact_at,
+                compact_at=compact_at(),
             )
+
+        if prompt is not None and prompt.strip() == COMPACT_COMMAND and not images:
+            async for event in self._compact_command(run_id, settings, tool_defs, usage):
+                yield event
+            return
 
         if prompt or images:
             self.session.add_user_multimodal(text=prompt, images=images)
@@ -252,68 +279,30 @@ class AgentRunner:
         grace_used = False
         last_message_id = ""
         screenshot_followup_added = False
+        #: Set when the server reported a full window: the next turn compacts
+        #: whatever the estimate says. Once a run, so a history the summary
+        #: cannot shrink still ends.
+        force_compaction = False
+        full_context_retried = False
 
         while turn < self.max_turns or (awaiting_final_response and not grace_used):
             if self._cancel_reason:
                 yield RunCancelled(run_id=run_id, reason=self._cancel_reason)
                 return
 
-            # Compaction is decided before its event is emitted: a
-            # `context_compaction_started` with no matching completion would
-            # leave the UI with a spinner that never clears.
-            cleared: str | None = None
-            if compaction_needed(self.session, settings):
-                yield ContextCompactionStarted(run_id=run_id, reason=COMPACTION_REASON)
-                cleared = self._clear_old_outputs(settings)
-                if cleared is not None:
-                    yield ContextCompactionCompleted(run_id=run_id, reason=cleared)
-            if compaction_needed(self.session, settings):
-                # Clearing was not enough (or the person's messages, not tool
-                # output, fill the window): summarise. From the original
-                # history — the cleared copy was discarded — so the summary
-                # sees every output it describes.
-                if cleared is not None:
-                    yield ContextCompactionStarted(run_id=run_id, reason=COMPACTION_REASON)
-                try:
-                    summary = await maybe_compact_context(
-                        self.session,
-                        self.provider,
-                        settings,
-                        keep_tokens=int(settings.max_context_tokens * COMPACTION_KEEP_FRACTION),
-                        tools=tool_defs,
-                        chat_kwargs=(
-                            {"reasoning_effort": self.reasoning_effort}
-                            if self.reasoning_effort
-                            else {}
-                        ),
-                        is_prompt=is_user_prompt,
-                    )
-                except asyncio.CancelledError:
-                    yield RunCancelled(
-                        run_id=run_id, reason=self._cancel_reason or "Run cancelled"
-                    )
-                    return
-                except Exception as exc:
-                    yield ContextCompactionFailed(
-                        run_id=run_id, reason=COMPACTION_REASON, error=str(exc)
-                    )
-                else:
-                    # Every started compaction ends with one of these two. An
-                    # empty summary, or "No messages to compact.", sent
-                    # neither, and the app showed "compacting context" until
-                    # it was restarted.
-                    if summary and not summary.startswith(("Compaction failed", "No messages")):
-                        yield ContextCompactionCompleted(
-                            run_id=run_id, reason=COMPACTION_REASON
-                        )
-                    else:
-                        yield ContextCompactionFailed(
-                            run_id=run_id,
-                            reason=COMPACTION_REASON,
-                            error=summary or "the history did not need compacting",
-                        )
+            outcome: list[str] = []
+            async for event in self._compact(
+                run_id, settings, tool_defs, outcome,
+                reason=FULL_CONTEXT_REASON if force_compaction else COMPACTION_REASON,
+                force=force_compaction,
+            ):
+                yield event
+            force_compaction = False
+            if outcome == ["cancelled"]:
+                return
 
-            yield usage()
+            sent_estimate = self.session.token_count + overhead
+            yield usage(sent_estimate)
             message_id = next_id("msg")
             last_message_id = message_id
             yield MessageStarted(run_id=run_id, message_id=message_id)
@@ -381,6 +370,25 @@ class AgentRunner:
                 blocks.append(TextBlock(text=text))
             blocks.extend(tool_calls)
             message = Message(role="assistant", content=blocks)
+
+            if stats is not None and stats.input_tokens:
+                self.session.calibrate_tokens(stats.input_tokens, sent_estimate)
+                if calibrated:
+                    settings.max_context_tokens = self._history_limit(budget, overhead)
+
+            if (
+                is_empty_final_response(message)
+                and not full_context_retried
+                and not settings.disable_compaction
+                and context_full(stats, self.context_window)
+            ):
+                yield MessageFailed(
+                    run_id=run_id,
+                    message_id=message_id,
+                    error="context window full: compacting, then trying again",
+                )
+                full_context_retried = force_compaction = True
+                continue
 
             if is_empty_final_response(message):
                 yield MessageFailed(
@@ -510,6 +518,125 @@ class AgentRunner:
         )
 
     # -------------------------------------------------------------- internals
+
+    def _history_limit(self, budget: int, overhead: int) -> int:
+        """The history's share of the budget, in estimated tokens."""
+        scaled = int(budget / self.session.token_scale)
+        return max(scaled - overhead, scaled // 2)
+
+    async def _compact(
+        self,
+        run_id: str,
+        settings: LoopSettings,
+        tool_defs: Any,
+        outcome: list[str],
+        *,
+        reason: str,
+        force: bool = False,
+        clear_first: bool = True,
+        keep_tokens: int | None = None,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Clear old tool outputs, then summarise if that was not enough.
+
+        ``force`` summarises whatever the estimate says. ``outcome`` gets
+        "cancelled" (the caller must stop; the event is already sent),
+        "compacted", "failed", or nothing when nothing was needed.
+        """
+        # Compaction is decided before its event is emitted: a
+        # `context_compaction_started` with no matching completion would
+        # leave the UI with a spinner that never clears.
+        cleared: str | None = None
+        if clear_first and (force or compaction_needed(self.session, settings)):
+            yield ContextCompactionStarted(run_id=run_id, reason=reason)
+            cleared = self._clear_old_outputs(settings)
+            if cleared is not None:
+                yield ContextCompactionCompleted(run_id=run_id, reason=cleared)
+                outcome.append("compacted")
+        if (force and cleared is None) or compaction_needed(self.session, settings):
+            # Clearing was not enough (or the person's messages, not tool
+            # output, fill the window): summarise. From the original
+            # history — the cleared copy was discarded — so the summary
+            # sees every output it describes.
+            if cleared is not None or not clear_first:
+                yield ContextCompactionStarted(run_id=run_id, reason=reason)
+            try:
+                summary = await self.session.compact_context(
+                    provider=self.provider,
+                    summary_type="detailed",
+                    keep_tokens=keep_tokens or int(settings.max_context_tokens * COMPACTION_KEEP_FRACTION),
+                    tools=tool_defs,
+                    chat_kwargs=(
+                        {"reasoning_effort": self.reasoning_effort}
+                        if self.reasoning_effort
+                        else {}
+                    ),
+                    is_prompt=is_user_prompt,
+                    max_request_tokens=settings.max_context_tokens,
+                )
+            except asyncio.CancelledError:
+                outcome[:] = ["cancelled"]
+                yield RunCancelled(
+                    run_id=run_id, reason=self._cancel_reason or "Run cancelled"
+                )
+                return
+            except Exception as exc:
+                outcome[:] = ["failed"]
+                yield ContextCompactionFailed(run_id=run_id, reason=reason, error=str(exc))
+            else:
+                # Every started compaction ends with one of these two. An
+                # empty summary, or "No messages to compact.", sent
+                # neither, and the app showed "compacting context" until
+                # it was restarted.
+                if summary and not summary.startswith(("Compaction failed", "No messages")):
+                    outcome[:] = ["compacted"]
+                    yield ContextCompactionCompleted(run_id=run_id, reason=reason)
+                else:
+                    outcome[:] = ["failed"]
+                    yield ContextCompactionFailed(
+                        run_id=run_id,
+                        reason=reason,
+                        error=summary or "the history did not need compacting",
+                    )
+
+    async def _compact_command(
+        self, run_id: str, settings: LoopSettings, tool_defs: Any, usage: Callable[..., ContextUsage]
+    ) -> AsyncIterator[RuntimeEvent]:
+        """``/compact``: summarise now, and say what it saved."""
+        yield RunStarted(run_id=run_id)
+        before = usage().used_tokens
+        outcome: list[str] = []
+        if len(self.session.messages) >= 3:
+            # A quarter of the window can be the whole of a short history,
+            # and then nothing would be summarised; asked for, it shrinks.
+            keep = min(
+                int(settings.max_context_tokens * COMPACTION_KEEP_FRACTION),
+                self.session.token_count // 4,
+            )
+            async for event in self._compact(
+                run_id, settings, tool_defs, outcome,
+                reason=COMMAND_REASON, force=True, clear_first=False, keep_tokens=max(keep, 1),
+            ):
+                yield event
+        if outcome == ["cancelled"]:
+            return
+        after = usage()
+        if outcome == ["compacted"]:
+            text = f"Compacted the conversation: about {before:,} → {after.used_tokens:,} tokens."
+        elif outcome == ["failed"]:
+            text = "Compaction failed; the conversation is unchanged or kept only its latest part."
+        else:
+            text = "Nothing to compact yet."
+        yield after
+        message_id = next_id("msg")
+        # Shown as the reply, never saved: the model did not say it.
+        yield MessageStarted(run_id=run_id, message_id=message_id)
+        yield MessageDelta(run_id=run_id, message_id=message_id, delta=text)
+        yield MessageCompleted(run_id=run_id, message_id=message_id, output_text=text)
+        yield RunCompleted(
+            run_id=run_id,
+            final_message_id=message_id,
+            result=AgentResult(run_id=run_id, final_message_id=message_id, output_text=text),
+        )
 
     async def _gate_tool_call(
         self,

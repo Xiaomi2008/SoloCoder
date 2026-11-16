@@ -21,10 +21,19 @@ from .types import (
 )
 
 
+#: A ceiling on the learned scale, so one odd count cannot empty the budget.
+MAX_TOKEN_SCALE = 3.0
+
+
 @dataclass
 class Session:
     system_prompt: str = ""
     _messages: list[Message] = field(default_factory=list)
+    #: The server's token count over this estimate, last time one was reported.
+    #: The estimate uses GPT-4o's tokenizer; Qwen3.8's counted 262,075 tokens
+    #: for a history estimated at 157,452, so compaction at 80% never came and
+    #: the window filled.
+    token_scale: float = 1.0
 
     @property
     def messages(self) -> list[Message]:
@@ -50,6 +59,14 @@ class Session:
 
     def clear(self) -> None:
         self._messages.clear()
+
+    def calibrate_tokens(self, reported: int, estimated: int) -> None:
+        """Learn the scale from a request the server counted.
+
+        Never below 1: an estimate that runs high only compacts early.
+        """
+        if reported > 0 and estimated > 0:
+            self.token_scale = min(MAX_TOKEN_SCALE, max(1.0, reported / estimated))
 
     def __len__(self) -> int:
         return len(self._messages)
@@ -164,6 +181,8 @@ class Session:
         if title:
             data["title"] = title
         data["system_prompt"] = self.system_prompt
+        if self.token_scale != 1.0:
+            data["token_scale"] = round(self.token_scale, 4)
         data["messages"] = self.to_list()
         Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -179,6 +198,9 @@ class Session:
         """
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         session = cls(system_prompt=data.get("system_prompt", ""))
+        scale = data.get("token_scale")
+        if isinstance(scale, (int, float)):
+            session.token_scale = min(MAX_TOKEN_SCALE, max(1.0, float(scale)))
 
         for msg_data in data.get("messages", []):
             role = msg_data["role"]
@@ -307,6 +329,7 @@ class Session:
         tools: Sequence[Any] | None = None,
         chat_kwargs: dict[str, Any] | None = None,
         is_prompt: Any = None,
+        max_request_tokens: int | None = None,
     ) -> str:
         """Summarise the older history into one message; keep the recent part.
 
@@ -325,6 +348,11 @@ class Session:
         200k-token history was prefilled from scratch just to be summarised.
         Pass ``tools`` as the runs send them, or the prefix differs at the
         tool schemas.
+
+        ``max_request_tokens`` (estimated, like ``keep_tokens``) is what the
+        window still takes. A history that fills it leaves the model no room
+        to write a summary, so then only the part being summarised is sent:
+        still a prefix of the conversation, so the cache still serves it.
         """
         if len(self._messages) < 2:
             return "No messages to compact."
@@ -344,49 +372,72 @@ class Session:
             tail.insert(0, latest)
 
         instruction = _SUMMARY_INSTRUCTIONS.get(summary_type, _SUMMARY_INSTRUCTIONS["detailed"])
-        instruction += (
-            f"\n\nThe last {len(self._messages) - start} messages stay in the conversation "
-            "word for word; concentrate on everything before them. Reply with the "
-            "summary as plain text only; do not call any tools."
-        )
-        request = [*self._messages, Message(role="user", content=instruction)]
-        tool_defs = list(tools) if tools else None
+        head = self._messages[:start]
+        whole = [
+            *self._messages,
+            Message(role="user", content=instruction + (
+                f"\n\nThe last {len(self._messages) - start} messages stay in the conversation "
+                "word for word; concentrate on everything before them. Reply with the "
+                "summary as plain text only; do not call any tools."
+            )),
+        ]
+        older = [
+            *head,
+            Message(role="user", content=instruction + (
+                "\n\nMore messages follow these and stay in the conversation word for "
+                "word. Reply with the summary as plain text only; do not call any tools."
+            )),
+        ]
         kwargs = dict(chat_kwargs or {})
-        try:
-            response = await provider.chat(
-                messages=request, tools=tool_defs, system_prompt=self.system_prompt, **kwargs
-            )
-            summary_text = response.text.strip()
-            if not summary_text:
-                # A thinking model can spend the whole reply on reasoning, or
-                # answer with a tool call, and return no text (qwen3.8-flash
-                # did). Ask again without thinking; a backend that does not
-                # take the knob raises into the fallback below.
+        no_thinking = {**kwargs, "reasoning_effort": "none"}
+        fits = max_request_tokens is None or self._estimate(self._messages) <= max_request_tokens
+        # A thinking model can spend the whole reply on reasoning, or answer
+        # with a tool call, and return no text (qwen3.8-flash did): ask again
+        # without thinking. A history that fills the window leaves no room to
+        # answer at all, or the server refuses it: send only the older part.
+        # The estimate can be short of the server's count, so that last try
+        # is made even when the whole history looked as if it fit.
+        attempts = [(whole, kwargs), (whole, no_thinking)] if fits else []
+        attempts.append((older, kwargs if not fits else no_thinking))
+        if not fits:
+            attempts.append((older, no_thinking))
+        tool_defs = list(tools) if tools else None
+        summary_text = ""
+        error: Exception | None = None
+        for request, options in attempts:
+            try:
                 response = await provider.chat(
-                    messages=request,
-                    tools=tool_defs,
-                    system_prompt=self.system_prompt,
-                    **{**kwargs, "reasoning_effort": "none"},
+                    messages=request, tools=tool_defs, system_prompt=self.system_prompt, **options
                 )
-                summary_text = response.text.strip()
-            if not summary_text:
-                # Replacing the history with an empty summary erased the
-                # whole conversation and reported success.
-                raise ValueError("the model returned an empty summary")
+            except Exception as exc:
+                error = exc
+                continue
+            summary_text = response.text.strip()
+            if summary_text:
+                break
 
-            self.replace_history(
-                [Message(role="system", content=f"Conversation summary:\n\n{summary_text}")] + tail
-            )
-            return (
-                f"Context compacted. Summary:\n{summary_text[:200]}..."
-                if len(summary_text) > 200
-                else summary_text
-            )
-
-        except Exception as e:
-            # No summary: keep the same tail, so the history still shrinks.
+        if not summary_text:
+            # Replacing the history with an empty summary erased the whole
+            # conversation and reported success. No summary: keep the same
+            # tail, so the history still shrinks.
             self.replace_history(tail)
-            return f"Compaction failed ({e}). Kept last {len(self._messages)} messages."
+            reason = error or "the model returned an empty summary"
+            return f"Compaction failed ({reason}). Kept last {len(self._messages)} messages."
+
+        self.replace_history(
+            [Message(role="system", content=f"Conversation summary:\n\n{summary_text}")] + tail
+        )
+        return (
+            f"Context compacted. Summary:\n{summary_text[:200]}..."
+            if len(summary_text) > 200
+            else summary_text
+        )
+
+    def _estimate(self, messages: list[Message]) -> int:
+        from .utils import count_tokens_for_messages
+
+        probe = Session(_messages=list(messages))
+        return count_tokens_for_messages(probe.to_list_for_compaction())
 
     def check_compaction_needed(
         self, max_tokens: int = 128000, threshold: float = 0.8

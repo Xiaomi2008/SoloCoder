@@ -46,7 +46,13 @@ from openagent.runtime.permissions import (
     tool_risk,
 )
 from openagent.runtime.runner import MAX_TURNS_MESSAGE, AgentRunner
-from openagent.providers import ProviderTextDelta, ProviderToolCall
+from openagent.providers import (
+    ProviderMessageCompleted,
+    ProviderMessageStarted,
+    ProviderTextDelta,
+    ProviderToolCall,
+    ProviderUsage,
+)
 from tests.support.streaming_provider import (
     HangingProvider,
     ScriptedStreamProvider,
@@ -677,3 +683,86 @@ async def test_a_summary_that_stays_empty_fails_and_keeps_the_history():
     assert "context_compaction_failed" in types
     assert not any("Conversation summary:\n\n" == m.text for m in session.messages)
     assert events[-1].type == "run_completed"
+
+
+def _counted(turn: list[Any], input_tokens: int, output_tokens: int = 10) -> list[Any]:
+    """A turn whose server reported its token counts, as the usage chunk does."""
+    usage = ProviderUsage(message_id="msg_script", input_tokens=input_tokens, output_tokens=output_tokens)
+    return [*turn[:-1], usage, turn[-1]]
+
+
+async def test_the_servers_count_moves_the_compaction_point():
+    """Qwen3.8's tokenizer counted 262,075 tokens where the estimate said
+    157,452: compaction at 80% never came, and the window filled."""
+    provider = _SummaryProvider(
+        [_counted(tool_turn("echo", {"text": "a"}), 18_000), text_turn("done")], ["the summary"]
+    )
+    session = _long_session()
+    runner = AgentRunner(provider, session=session, tools=[echo], context_window=20_000)
+
+    events = await collect(runner)
+
+    types = [e.type for e in events]
+    # Not before the first call, which the estimate put under the point; after
+    # the server counted 18k of a 20k window.
+    assert types.index("context_compaction_started") > types.index("tool_call_completed")
+    assert session.token_scale > 1.1
+    assert "the summary" in session.messages[0].text
+    assert events[-1].type == "run_completed"
+
+
+async def test_a_full_window_compacts_and_retries_without_a_nudge():
+    full = _counted(empty_turn(), 19_990, output_tokens=10)
+    provider = _SummaryProvider([full, text_turn("done")], ["the summary"])
+    session = _long_session()
+    runner = AgentRunner(provider, session=session, context_window=20_000)
+
+    events = await collect(runner)
+
+    failed = [e for e in events if isinstance(e, MessageFailed)]
+    assert len(failed) == 1 and "context window full" in failed[0].error
+    started = [e for e in events if isinstance(e, ContextCompactionStarted)]
+    assert started and started[0].reason == "context window full"
+    assert not any(m.role == "system" and "empty" in m.text for m in session.messages)
+    assert events[-1].type == "run_completed"
+    assert len(provider.calls) == 2
+
+
+async def test_a_window_that_stays_full_falls_back_to_the_empty_retry():
+    full = _counted(empty_turn(), 19_990)
+    provider = _SummaryProvider([full, full, full, full, full], ["the summary"] * 3)
+    runner = AgentRunner(provider, session=_long_session(), context_window=20_000)
+
+    events = await collect(runner, max_empty_response_retries=2)
+
+    assert sum("context window full" in e.error for e in events if isinstance(e, MessageFailed)) == 1
+    assert events[-1].type == "run_failed"
+
+
+async def test_slash_compact_summarises_without_asking_the_model_anything():
+    provider = _SummaryProvider([], ["the summary"])
+    session = _long_session()
+    runner = AgentRunner(provider, session=session, context_window=200_000)
+
+    events = await collect(runner, prompt="  /compact ")
+
+    types = [e.type for e in events]
+    assert types[0] == "run_started" and types[-1] == "run_completed"
+    assert "context_compaction_completed" in types
+    assert provider.calls == []  # no turn was streamed
+    assert session.messages[0].text.startswith("Conversation summary:")
+    assert not any(m.text.strip() == "/compact" for m in session.messages)
+    reply = next(e for e in events if isinstance(e, MessageCompleted))
+    assert reply.output_text.startswith("Compacted the conversation")
+    assert events[-1].result.output_text == reply.output_text
+
+
+async def test_slash_compact_on_a_new_conversation_says_so():
+    provider = _SummaryProvider([], [])
+    runner = AgentRunner(provider)
+
+    events = await collect(runner, prompt="/compact")
+
+    assert events[-1].type == "run_completed"
+    assert events[-1].result.output_text == "Nothing to compact yet."
+    assert runner.session.messages == []

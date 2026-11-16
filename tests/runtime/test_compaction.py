@@ -135,3 +135,49 @@ def test_a_screenshot_follow_up_is_not_the_persons_request():
     assert is_user_prompt(Message(role="user", content="fix the failing test"))
     assert not is_user_prompt(Message(role="user", content=f"{SCREENSHOT_FOLLOWUP_TEXT} more"))
     assert not is_user_prompt(Message(role="assistant", content="done"))
+
+
+async def test_a_history_that_fills_the_window_sends_only_what_it_summarises():
+    """The whole history plus the instruction no longer fits: the model got a
+    few dozen tokens, spent them thinking, and the summary came back empty."""
+    session = agent_run()
+    history = list(session.messages)
+    summariser = Summariser()
+
+    await session.compact_context(summariser, keep_tokens=1000, tools=TOOLS, max_request_tokens=2000)
+
+    sent = summariser.requests[0]["messages"][:-1]
+    assert 0 < len(sent) < len(history)
+    assert sent == history[: len(sent)]  # still a prefix, so a cache serves it
+    assert "More messages follow" in summariser.requests[0]["messages"][-1].text
+    assert session.messages[0].text.startswith("Conversation summary:")
+
+
+def test_the_learned_token_scale_survives_a_save(tmp_path):
+    session = agent_run(steps=1)
+    session.calibrate_tokens(reported=1664, estimated=1000)
+    session.save(tmp_path / "s.json")
+
+    assert Session.load(tmp_path / "s.json").token_scale == 1.664
+    session.calibrate_tokens(reported=500, estimated=1000)
+    assert session.token_scale == 1.0  # an estimate that runs high only compacts early
+
+
+async def test_a_history_the_server_refuses_is_summarised_from_its_older_part():
+    """The estimate said it fit; the server's tokenizer said otherwise."""
+    session = agent_run()
+    history = list(session.messages)
+
+    class Refuses(Summariser):
+        async def chat(self, messages, tools=None, system_prompt="", **kwargs):
+            if len(messages) > len(history):
+                self.requests.append({"messages": list(messages)})
+                raise RuntimeError("prompt is longer than the context window")
+            return await super().chat(messages, tools, system_prompt, **kwargs)
+
+    summariser = Refuses()
+    await session.compact_context(summariser, keep_tokens=1000, tools=TOOLS, max_request_tokens=10**9)
+
+    assert len(summariser.requests) == 3  # whole, whole without thinking, then the older part
+    assert summariser.requests[-1]["kwargs"] == {"reasoning_effort": "none"}
+    assert session.messages[0].text.startswith("Conversation summary:")
