@@ -56,6 +56,15 @@ build_app_binary() {
     tail -1 "$log"
 }
 
+# The icon is drawn by code (`macapp/icon/make_icon.swift`), so it is rendered
+# here rather than kept as a binary in the repository.
+copy_app_icon() {
+    local out="$ROOT/.build/icon"
+    mkdir -p "$out"
+    swift "$ROOT/macapp/icon/make_icon.swift" "$out" >/dev/null
+    cp "$out/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+}
+
 # The project's own source, into the bundle: small, and the thing most likely to
 # be stale after a Python edit. Byte-compiled with the bundle's interpreter, so
 # the magic number matches what will run it.
@@ -99,6 +108,10 @@ while [[ $# -gt 0 ]]; do
             copy_app_source
             [[ -f "$APP/Contents/MacOS/SoloCoder" ]] || { echo "no bundle to update; run without --binary first" >&2; exit 1; }
             cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
+            copy_app_icon
+            # A bundle built before the icon existed has no key naming it.
+            /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$APP/Contents/Info.plist" >/dev/null 2>&1 ||
+                /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP/Contents/Info.plist"
             codesign --force --sign "$SIGN" --timestamp=none "$APP/Contents/MacOS/SoloCoder" >/dev/null
             codesign --force --sign "$SIGN" --entitlements "$ROOT/macapp/entitlements.plist" --timestamp=none "$APP" >/dev/null
             codesign --verify --deep --strict "$APP" && echo "==> $APP"
@@ -146,6 +159,7 @@ cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
 # makes the tree relocatable.
 cp -R "$PY_DIR" "$APP/Contents/Resources/sidecar/python"
 copy_app_source
+copy_app_icon
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -153,6 +167,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>              <string>SoloCoder</string>
+    <key>CFBundleIconFile</key>                <string>AppIcon</string>
     <key>CFBundleIdentifier</key>              <string>dev.solocoder.app</string>
     <key>CFBundleName</key>                    <string>SoloCoder</string>
     <key>CFBundleDisplayName</key>             <string>SoloCoder</string>
