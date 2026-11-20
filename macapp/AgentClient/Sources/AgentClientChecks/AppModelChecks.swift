@@ -448,6 +448,104 @@ private func contextMeterChecks(_ checks: Checks) async throws {
     model.quiesce()
 }
 
+/// The bar over the composer follows the tasks, and the composer stays free.
+@MainActor
+private func backgroundTaskChecks(_ checks: Checks) async throws {
+    let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+    let model = AppModel()
+    model.ingest(stream)
+    model.busy = true
+    continuation.yield(try ev(#"{"type":"run_started","run_id":"r1"}"#))
+    continuation.yield(try ev(#"{"type":"tool_call_started","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"bash","arguments":{"command":"make"}}"#))
+    continuation.yield(try ev(#"{"type":"background_task_started","run_id":"r1","session_id":"s1","task_id":"bg_1","tool_call_id":"t1","tool_name":"bash","arguments":{"command":"make"}}"#))
+    continuation.yield(try ev(#"{"type":"run_completed","run_id":"r1","final_message_id":"m1","result":{"run_id":"r1","final_message_id":"m1","output_text":"building","stop_reason":"end_turn"}}"#))
+    await settle(model)
+    checks.equal(model.backgroundTasks.map(\.id), ["bg_1"], "a moved call is listed above the composer")
+    checks.expect(!model.busy, "and the composer is free while it runs")
+    continuation.yield(try ev(#"{"type":"background_task_finished","run_id":"r1","session_id":"s1","task_id":"bg_1","tool_call_id":"t1","tool_name":"bash","state":"completed","output":"ok","wake":true}"#))
+    await settle(model)
+    checks.expect(model.backgroundTasks.isEmpty, "a finished task leaves the list")
+    continuation.finish()
+}
+
+/// Words sent during a run land where the agent took them in, or come back.
+@MainActor
+private func steeringChecks(_ checks: Checks) async throws {
+    let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+    let model = AppModel()
+    model.ingest(stream)
+    model.busy = true
+    continuation.yield(try ev(#"{"type":"run_started","run_id":"r1"}"#))
+    await settle(model)
+    checks.expect(model.canSteer, "the composer stays open while the agent works")
+    model.pendingSteers = [PendingSteer(text: "use the other file", steerId: "steer_1")]
+    continuation.yield(try ev(#"{"type":"steering_delivered","run_id":"r1","steer_id":"steer_1","text":"use the other file"}"#))
+    await settle(model)
+    checks.expect(model.pendingSteers.isEmpty, "a delivered message leaves the queue")
+    if case .user(let text)? = model.transcript.lines.last?.kind {
+        checks.equal(text, "use the other file", "and shows where the agent took it in")
+    } else {
+        checks.expect(false, "and shows where the agent took it in")
+    }
+    model.pendingSteers = [PendingSteer(text: "and add a test", steerId: "steer_2")]
+    continuation.yield(try ev(#"{"type":"run_cancelled","run_id":"r1","reason":"cancelled by client"}"#))
+    await settle(model)
+    checks.expect(!model.canSteer, "an ended run takes nothing more")
+    checks.equal(model.returnedDraft, "and add a test", "a stopped run hands the words back to the composer")
+    checks.expect(model.pendingSteers.isEmpty, "and the queue is empty")
+    continuation.finish()
+}
+
+/// Sessions out of sight keep their state, and the sidebar says what they do.
+@MainActor
+private func sessionSwitchChecks(_ checks: Checks) async throws {
+    let model = AppModel()
+    model.transcript.addUserMessage("the session on screen")
+    model.busy = true
+    let first = model.visibleKey
+    model.newRun()
+    checks.expect(model.transcript.lines.isEmpty, "a new session starts empty while the other keeps working")
+    checks.expect(!model.busy, "and its composer is free")
+    checks.equal(model.activity[first], .running, "the sidebar shows the other session working")
+    checks.equal(model.sidebarEntries.first?.id, first, "before the service has saved it")
+    checks.equal(model.sidebarEntries.first?.row.title, "the session on screen", "named by its prompt")
+    checks.expect(!model.canDelete(first), "a working session cannot be deleted")
+    model.open(first)
+    if case .user(let text)? = model.transcript.lines.first?.kind {
+        checks.equal(text, "the session on screen", "clicking it brings its timeline back")
+    } else {
+        checks.expect(false, "clicking it brings its timeline back")
+    }
+    checks.expect(model.busy, "and its running state")
+
+    model.parkPreviewSession(title: "done elsewhere", activity: .finished)
+    guard let done = model.sidebarEntries.first(where: { $0.activity == .finished }) else {
+        checks.expect(false, "a finished session is marked")
+        return
+    }
+    checks.expect(model.canDelete(done.id), "a finished session can be deleted")
+    model.open(done.id)
+    checks.equal(model.activity[done.id], nil, "opening it clears the mark")
+    checks.equal(SessionActivity.inBackground(2).label, "2 tasks in background", "the row counts its tasks")
+
+    // Each session keeps its own model server.
+    let models = AppModel()
+    models.selectedModel = "local/splash"
+    models.transcript.addUserMessage("on splash")
+    models.busy = true
+    let onSplash = models.visibleKey
+    models.newRun()
+    checks.equal(models.selectedModel, "local/splash", "a new session starts on the model showing")
+    models.selectedModel = "taopc/ds41"
+    models.transcript.addUserMessage("on ds41")
+    models.busy = true
+    let onDs41 = models.visibleKey
+    models.open(onSplash)
+    checks.equal(models.selectedModel, "local/splash", "picking a model in one session leaves the other's alone")
+    models.open(onDs41)
+    checks.equal(models.selectedModel, "taopc/ds41", "and switching back brings its own model back")
+}
+
 /// The live view: frames reach the panel, and only the panel.
 @MainActor
 private func browserPanelChecks(_ checks: Checks) async throws {
@@ -513,6 +611,9 @@ func appChecks(_ checks: Checks) async {
     }
     do {
         try await browserPanelChecks(checks)
+        try await backgroundTaskChecks(checks)
+        try await sessionSwitchChecks(checks)
+        try await steeringChecks(checks)
         try await contextMeterChecks(checks)
     } catch {
         checks.expect(false, "browser panel checks ran: \(error)")

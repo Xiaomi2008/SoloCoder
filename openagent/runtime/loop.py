@@ -45,7 +45,12 @@ def is_user_prompt(message: Message) -> bool:
         return False
     text = message.text.strip()
     return bool(text) and not text.startswith(
-        (SCREENSHOT_FOLLOWUP_TEXT, BROWSER_SCREENSHOT_FOLLOWUP_TEXT, OLD_SCREENSHOT_TEXT)
+        (
+            SCREENSHOT_FOLLOWUP_TEXT,
+            BROWSER_SCREENSHOT_FOLLOWUP_TEXT,
+            OLD_SCREENSHOT_TEXT,
+            BACKGROUND_NOTICE_TEXT,
+        )
     )
 
 
@@ -153,6 +158,10 @@ def is_empty_final_response(message: Message) -> bool:
     return not message.has_tool_calls and not message.text.strip()
 
 
+#: Opens the message that gives the model a background task's result. Clients
+#: match it too, to draw a stored one as what it is and not as the person's words.
+BACKGROUND_NOTICE_TEXT = "[Background task]"
+
 SCREENSHOT_FOLLOWUP_TEXT = (
     "Latest screenshot from the screenshot tool. "
     "Use screenshot image coordinates only. "
@@ -166,6 +175,8 @@ COMPUTER_ACTION_TOOLS = frozenset(
     {"click", "double_click", "type_text", "key_combination", "move_mouse", "scroll"}
 )
 _AFTER_ACTION_NOTE = "A screenshot taken after it is attached."
+#: Tools that act on the one screen or browser the machine has.
+SHARED_DEVICE_TOOLS = COMPUTER_ACTION_TOOLS | {"screenshot"}
 KEEP_RECENT_SCREENSHOTS = 3
 OLD_SCREENSHOT_TEXT = "[An earlier screenshot, removed to save context.]"
 
@@ -332,6 +343,10 @@ class EmptyResponseGuard:
             or session.messages[-1].text != EMPTY_RESPONSE_RETRY_MESSAGE
         ):
             session.add("system", EMPTY_RESPONSE_RETRY_MESSAGE)
+
+
+def uses_shared_device(tool_name: str) -> bool:
+    return tool_name in SHARED_DEVICE_TOOLS or tool_name.startswith(("browser_", "desktop_"))
 
 
 def next_id(prefix: str) -> str:

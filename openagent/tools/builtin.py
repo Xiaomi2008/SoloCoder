@@ -7,12 +7,13 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from ..core.tool import ToolContext, tool
+from ..core.tool import ToolContext, ToolProgress, tool, tool_progress
 
 
 # ============================================================================
@@ -420,6 +421,32 @@ def format_grep_results(results: list[dict]) -> str:
 # ============================================================================
 
 
+def _watched_output(
+    process: subprocess.Popen, progress: ToolProgress, timeout: int | None
+) -> str:
+    """Wait for a command whose output and process the runner can reach."""
+    progress.attach(process)
+    lines: list[str] = []
+
+    def pump() -> None:
+        for line in process.stdout:
+            lines.append(line)
+            progress.write(line)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        progress.kill()
+        reader.join(1)
+        return f"Error: Command timed out after {timeout} seconds."
+    # A killed command's stragglers may hold the pipe open; nobody is waiting.
+    reader.join(1 if progress.killed else None)
+    output = "".join(lines)
+    return output if output else "(no output)"
+
+
 @tool
 def bash(
     command: str,
@@ -454,14 +481,20 @@ def bash(
 
         # `cwd` is the starting directory, not a boundary: no OS sandbox is
         # installed yet, so an absolute path or `cd /` can still escape.
+        progress = tool_progress.get()
         process = subprocess.Popen(
             command,
             shell=True,
+            stdin=subprocess.DEVNULL if progress else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
             text=True,
+            errors="replace",
+            start_new_session=progress is not None,
         )
+        if progress is not None:
+            return _watched_output(process, progress, timeout)
 
         try:
             output, _ = process.communicate(timeout=timeout)
@@ -674,11 +707,12 @@ async def bash_background(
 def bash_output(
     session_id: str,
     tail_lines: int | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
-    """Retrieve output from a running or completed background bash shell.
+    """Retrieve output from a running or completed background shell or task.
 
     Args:
-        session_id: Session ID returned by bash_background
+        session_id: Session ID from bash_background, a background task ID (bg_...), or "all" to list this session's background tasks
         tail_lines: If set, only return the last N lines of output
 
     Returns:
@@ -687,9 +721,14 @@ def bash_output(
     from ..core.bash_manager import get_bash_manager
 
     try:
-        manager = get_bash_manager()
         # Extract session ID from the result message if needed
         actual_session_id = session_id.strip()
+        jobs = tool_context.background if tool_context else None
+        if actual_session_id == "all" or actual_session_id.startswith("bg_"):
+            if jobs is None:
+                return "No background tasks in this session."
+            return jobs.status(actual_session_id, tail_lines)
+        manager = get_bash_manager()
         output = manager.get_output(session_id=actual_session_id, tail_lines=tail_lines)
         return output if output else "(no output)"
     except Exception as e:
@@ -699,16 +738,24 @@ def bash_output(
 @tool
 async def kill_shell(
     session_id: str,
+    tool_context: ToolContext | None = None,
 ) -> str:
-    """Terminate a running background bash shell.
+    """Terminate a running background bash shell or background task.
 
     Args:
-        session_id: Session ID of the shell to terminate
+        session_id: Session ID of the shell, or a background task ID (bg_...)
 
     Returns:
         Result message
     """
     from ..core.bash_manager import get_bash_manager
+
+    task_id = session_id.strip()
+    if task_id.startswith("bg_"):
+        jobs = tool_context.background if tool_context else None
+        if jobs is not None and jobs.cancel(task_id):
+            return f"Stopped background task {task_id}."
+        return f"Error: no running background task {task_id!r}"
 
     try:
         manager = get_bash_manager()

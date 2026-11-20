@@ -30,6 +30,39 @@ private func event(_ fields: [String: JSONValue]) -> AgentEvent? {
 
 private func object(_ fields: [String: JSONValue]) -> JSONValue { .object(fields) }
 
+/// A turn whose command outlived it.
+private func backgroundScript() -> [AgentEvent] {
+    let run = JSONValue.string("run_background")
+    let message = JSONValue.string("msg_background")
+    let call = JSONValue.string("call_background")
+    let command = object(["command": .string("swift test --parallel && ./scripts/package_check.sh")])
+    return [
+        ["type": .string("run_started"), "run_id": run],
+        ["type": .string("message_started"), "run_id": run, "message_id": message],
+        [
+            "type": .string("tool_call_started"), "run_id": run, "message_id": message,
+            "tool_call_id": call, "tool_name": .string("bash"), "arguments": command,
+        ],
+        [
+            "type": .string("background_task_started"), "run_id": run, "session_id": .string("sess_preview"),
+            "task_id": .string("bg_preview"), "tool_call_id": call, "tool_name": .string("bash"),
+            "arguments": command,
+        ],
+        [
+            "type": .string("message_completed"), "run_id": run, "message_id": message,
+            "output_text": .string("The test suite is running in the background. I'll pick this up when it finishes."),
+        ],
+        [
+            "type": .string("run_completed"), "run_id": run, "final_message_id": message,
+            "result": object([
+                "run_id": run, "final_message_id": message,
+                "output_text": .string("The test suite is running in the background."),
+                "stop_reason": .string("end_turn"),
+            ]),
+        ],
+    ].compactMap(event)
+}
+
 /// The answer a coding agent writes: headings, prose with inline runs, a fenced
 /// block and a shell one, both list kinds, a table, a quote, a rule.
 private let answer = """
@@ -326,6 +359,64 @@ private func liveScript() -> [AgentEvent] {
     return fields.compactMap(event)
 }
 
+/// A long-horizon run, shaped like a real one: thinking far past the live
+/// window, a structured note between tool calls (drawn by `AnswerText`, not
+/// `MarkdownView`), and long tool output, arriving in small pieces.
+private func heavyScript(rounds: Int = 60, tag: String = "") -> [AgentEvent] {
+    let run = JSONValue.string("r\(tag)1")
+    var fields: [[String: JSONValue]] = [["type": .string("run_started"), "run_id": run]]
+    let thought = String(repeating: "The reader closes the fence only when the indent matches, so a nested block keeps it open. ", count: 40)
+    for round in 1...rounds {
+        let message = JSONValue.string("m\(tag)\(round)")
+        fields.append(["type": .string("message_started"), "run_id": run, "message_id": message])
+        var rest = Substring(thought)
+        while !rest.isEmpty {
+            fields.append([
+                "type": .string("reasoning_delta"), "run_id": run, "message_id": message,
+                "delta": .string(String(rest.prefix(40))),
+            ])
+            rest = rest.dropFirst(40)
+        }
+        let note = """
+        ## Round \(round)
+
+        What the last check showed:
+
+        - the closing fence is dropped when the reader sees a nested block
+        - the list reader keeps the indent of the item above it
+        - **next:** run the fence checks with the nested case \(round)
+        """
+        var text = Substring(note)
+        while !text.isEmpty {
+            fields.append([
+                "type": .string("message_delta"), "run_id": run, "message_id": message,
+                "delta": .string(String(text.prefix(12))),
+            ])
+            text = text.dropFirst(12)
+        }
+        fields.append(["type": .string("message_completed"), "run_id": run, "message_id": message, "output_text": .string(note)])
+        let call = JSONValue.string("t\(tag)\(round)")
+        fields.append([
+            "type": .string("tool_call_started"), "run_id": run, "message_id": message,
+            "tool_call_id": call, "tool_name": .string("bash"),
+            "arguments": object(["command": .string("swift run agent-checks --filter fence\(round)")]),
+        ])
+        fields.append([
+            "type": .string("tool_call_completed"), "run_id": run, "message_id": message,
+            "tool_call_id": call, "tool_name": .string("bash"),
+            "result": .string(String(repeating: toolOutput + "\n", count: 6)),
+        ])
+    }
+    fields.append([
+        "type": .string("run_completed"), "run_id": run, "final_message_id": .string("m\(tag)\(rounds)"),
+        "result": object([
+            "run_id": run, "final_message_id": .string("m\(tag)\(rounds)"),
+            "output_text": .string("done"), "stop_reason": .string("end_turn"),
+        ]),
+    ])
+    return fields.compactMap(event)
+}
+
 /// A process launched from a shell starts `.prohibited`: no Dock tile, no menu
 /// bar, a window behind everything. Same line the app needs.
 final class PreviewDelegate: NSObject, NSApplicationDelegate {
@@ -337,6 +428,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             NSApp.appearance = NSAppearance(named: .darkAqua)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            // Looked at by screenshot, so it leaves the keyboard where it is.
+            let environment = ProcessInfo.processInfo.environment
+            guard environment["UI_PREVIEW_BACKGROUND"] == nil, environment["UI_PREVIEW_MULTI"] == nil,
+                environment["UI_PREVIEW_STEER"] == nil
+            else { return }
             NSApp.windows.first { $0.isVisible && !$0.title.isEmpty }?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -391,10 +487,20 @@ struct UIPreviewApp: App {
         if let pace = ProcessInfo.processInfo.environment["UI_PREVIEW_STREAM"] {
             // `UI_PREVIEW_STREAM=<ms between events>`: a long run arriving in
             // real time, so following the stream can be watched.
+            // `UI_PREVIEW_HISTORY=<turns>`: finished turns before the run, so the
+            // earlier part of the transcript is long and lazy, as a real session's is.
+            for turn in 0..<(Int(ProcessInfo.processInfo.environment["UI_PREVIEW_HISTORY"] ?? "") ?? 0) {
+                model.transcript.addUserMessage("Earlier request \(turn + 1): check the fence reader again.")
+                model.transcript.beginRun(runId: "rh\(turn)_1")
+                for event in heavyScript(rounds: 6, tag: "h\(turn)_") { model.transcript.apply(event) }
+            }
             model.transcript.addUserMessage("Find and fix the bug in the fence parser.")
+            model.transcript.beginRun(runId: "r1")
+            // `UI_PREVIEW_HEAVY=1` streams the long-horizon run instead.
+            let events = ProcessInfo.processInfo.environment["UI_PREVIEW_HEAVY"] != nil ? heavyScript() : liveScript()
             model.ingest(AsyncStream { continuation in
                 Task {
-                    for event in liveScript() {
+                    for event in events {
                         continuation.yield(event)
                         try? await Task.sleep(for: .milliseconds(Int(pace) ?? 120))
                     }
@@ -417,8 +523,33 @@ struct UIPreviewApp: App {
                    ]) {
                     continuation.yield(frame)
                 }
+                // `UI_PREVIEW_BACKGROUND=1` leaves a command running in the
+                // background, with the bar it puts over the composer. The stream
+                // stays open: its end means the service, and the task, are gone.
+                if ProcessInfo.processInfo.environment["UI_PREVIEW_BACKGROUND"] != nil {
+                    for item in backgroundScript() { continuation.yield(item) }
+                    return
+                }
+                // The same for `UI_PREVIEW_MULTI`: its sessions are still working.
+                if ProcessInfo.processInfo.environment["UI_PREVIEW_MULTI"] != nil { return }
                 continuation.finish()
             })
+        }
+        // `UI_PREVIEW_MULTI=1` puts sessions in every state in the sidebar.
+        if ProcessInfo.processInfo.environment["UI_PREVIEW_MULTI"] != nil {
+            model.parkPreviewSession(title: "Refactor the session store", activity: .running)
+            model.parkPreviewSession(title: "Install the new build", activity: .needsApproval)
+            model.parkPreviewSession(title: "Run the whole test suite", activity: .inBackground(1))
+            model.parkPreviewSession(title: "Why is the cache cold?", activity: .finished)
+            model.parkPreviewSession(title: "Update the release notes", activity: .failed)
+        }
+        // `UI_PREVIEW_STEER=1` (with `UI_PREVIEW_RUNNING=1`): messages typed
+        // during the run, waiting for the agent's next step.
+        if ProcessInfo.processInfo.environment["UI_PREVIEW_STEER"] != nil {
+            model.pendingSteers = [
+                PendingSteer(text: "use the H3 node for the narration too", steerId: "steer_1"),
+                PendingSteer(text: "and keep the 1080p output"),
+            ]
         }
         // `UI_PREVIEW_PALETTE=1` opens the command palette on a scripted
         // transcript, so the overlay can be looked at without a keyboard.

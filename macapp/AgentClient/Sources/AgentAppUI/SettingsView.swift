@@ -105,7 +105,7 @@ public struct SettingsView: View {
                 SettingsSection(title: "Computer use") {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Expose macOS GUI tools", isOn: $model.computerUse)
-                            .disabled(model.busy)
+                            .disabled(model.anyWorkActive)
                         if model.computerUse {
                             ComputerUsePermissions()
                         }
@@ -131,7 +131,7 @@ public struct SettingsView: View {
                 SettingsSection(title: "Desktop apps") {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Let the agent use other apps", isOn: $model.desktopUse)
-                            .disabled(model.busy)
+                            .disabled(model.anyWorkActive)
                         Text(
                             "Off by default. Adds desktop_snapshot, desktop_click, desktop_type, "
                                 + "desktop_press, desktop_launch, desktop_screenshot and desktop_list_apps, "
@@ -147,12 +147,12 @@ public struct SettingsView: View {
                 SettingsSection(title: "Browser use") {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Let the agent use its own browser", isOn: $model.browserUse)
-                            .disabled(model.busy)
+                            .disabled(model.anyWorkActive)
                         Toggle("Remember sign-ins", isOn: $model.browserRemembersSignIns)
-                            .disabled(model.busy || !model.browserUse)
+                            .disabled(model.anyWorkActive || !model.browserUse)
                             .help("Keep the browser's profile in ~/.openagent/browser-profile. Sign in by hand in the agent's window; the agent never types passwords.")
                         Toggle("Use my installed Google Chrome", isOn: $model.browserUsesChrome)
-                            .disabled(model.busy || !model.browserUse)
+                            .disabled(model.anyWorkActive || !model.browserUse)
                             .help("Drive /Applications/Google Chrome instead of Playwright's Chrome for Testing. It gets its own profile; your Chrome windows and sign-ins are untouched.")
                         Text(
                             "Off by default. Adds browser_navigate, browser_snapshot, browser_find, browser_click, "

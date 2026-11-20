@@ -388,7 +388,15 @@ def _parse_listing(
             if not model_id:
                 continue
             meta = entry.get("meta") or entry.get("details") or {}
-            context = meta.get("context_length") or meta.get("max_context") or 0
+            # Servers put the window in different places: Splash and vLLM report
+            # it on the entry itself.
+            context = (
+                meta.get("context_length")
+                or meta.get("max_context")
+                or entry.get("context_length")
+                or entry.get("max_model_len")
+                or 0
+            )
             # An OpenAI-compatible listing names a model, not its capabilities.
             # Tools and vision are therefore the endpoint's declared caps: a
             # server can serve a vision model without saying so in /v1/models,

@@ -34,6 +34,9 @@ class Session:
     #: for a history estimated at 157,452, so compaction at 80% never came and
     #: the window filled.
     token_scale: float = 1.0
+    #: The model key the session last ran on, so reopening it picks the same
+    #: server. Sessions run side by side on different models.
+    model: str | None = None
 
     @property
     def messages(self) -> list[Message]:
@@ -181,6 +184,8 @@ class Session:
         if title:
             data["title"] = title
         data["system_prompt"] = self.system_prompt
+        if self.model:
+            data["model"] = self.model
         if self.token_scale != 1.0:
             data["token_scale"] = round(self.token_scale, 4)
         data["messages"] = self.to_list()
@@ -198,6 +203,8 @@ class Session:
         """
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         session = cls(system_prompt=data.get("system_prompt", ""))
+        if isinstance(data.get("model"), str):
+            session.model = data["model"]
         scale = data.get("token_scale")
         if isinstance(scale, (int, float)):
             session.token_scale = min(MAX_TOKEN_SCALE, max(1.0, float(scale)))

@@ -13,13 +13,14 @@ public enum Wire {
 
     public static let methods: Set<String> = [
         "auth.login", "auth.logout", "auth.status",
+        "background.cancel", "background.list",
         "browser.show",
         "config.get", "config.set",
         "hello",
         "model.add_endpoint", "model.list", "model.probe", "model.remove_endpoint", "model.select",
         "permission.respond",
         "ping",
-        "run.cancel", "run.permission_mode", "run.start",
+        "run.cancel", "run.permission_mode", "run.start", "run.steer",
         "session.delete", "session.list", "session.load", "session.save",
         "tool.list",
     ]
@@ -36,6 +37,8 @@ public enum Wire {
         "context_compaction_started", "context_compaction_completed", "context_compaction_failed",
         "run_completed", "run_failed", "run_cancelled",
         "context_usage", "message_stats", "browser_frame",
+        "background_task_started", "background_task_finished", "background_tasks_delivered",
+        "steering_delivered",
     ]
 }
 

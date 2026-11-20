@@ -71,6 +71,7 @@ forever. A new terminal event type is therefore additive, not breaking.
 | `ping` | — | `{"pong": true, "server_time": float}` |
 | `run.start` | `prompt` (str), `working_dir` (str, **required**, absolute), `model` (str, optional `provider/model`), `session_id` (optional), `max_turns` (int), `permission_mode` (`allow_all`\|`allow_readonly`\|`ask`), `images` ([base64], optional), `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`\|`xhigh`\|`max`, optional) | `{"run_id": …, "session_id": …, "model": "provider/model"}` |
 | `run.cancel` | `run_id` | `{"cancelled": true}` (the `run_cancelled` event follows on the stream) |
+| `run.steer` | `run_id`, `text`, `images` (optional) | `{"run_id":…, "accepted": bool, "steer_id": str\|null}` — queues a message for the running agent's next turn (after the tool call in progress); `steering_delivered` follows when it goes in. `accepted: false` once the run has decided to end: start a run with the message instead |
 | `run.permission_mode` | `run_id`, `permission_mode` | `{"run_id": …, "permission_mode": str}` — changes the live run’s gate and file-tool scope |
 | `permission.respond` | `request_id`, `granted` (bool), `scope` (`once`\|`session`\|`never`) | `{"ok": true, "granted": bool, "scope": str}` |
 | `model.list` | `discover` (bool) | `{"models":[ModelRef…], "policy":…, "default_model":…, "selected":…}` |
@@ -83,16 +84,26 @@ forever. A new terminal event type is therefore additive, not breaking.
 | `auth.login` | `provider` | `NOT_IMPLEMENTED` in v1 — needs an interactive browser, keep it in the CLI |
 | `tool.list` | — | `{"tools":[{"name","description","risk","requires_permission"}]}` |
 | `session.list` | — | `{"sessions":[{"session_id","path","updated_at","message_count"}]}` |
-| `session.load` | `session_id` | `{"session_id":…, "messages":[…], "system_prompt":…, "context_tokens":…}` |
+| `session.load` | `session_id` | `{"session_id":…, "messages":[…], "system_prompt":…, "model":…, "context_tokens":…}` — `model` is the key the session last ran on, or null |
 | `session.save` | `session_id`, `path` (optional) | `{"path": …}` |
 | `config.get` | `keys` ([str], optional) | `{"config": {…}}` (secrets never included) |
 | `config.set` | `values` (object) | `{"config": {…}}` |
+| `background.list` | `session_id` | `{"session_id":…, "tasks":[{"task_id","tool_call_id","tool_name","arguments","state","elapsed"}], "wake_due": bool}` — the running tasks, and whether a finished one is waiting to call the agent back |
+| `background.cancel` | `session_id`, `task_id` | `{"task_id":…, "cancelled": bool}` — stops a running task; `background_task_finished` follows with `state: "cancelled"` |
 | `browser.show` | — | `{"open": bool, "headless": bool, "url": str, "pid": int}` — brings the agent's browser forward for the user to take over; `pid` is its process (0 unknown), for the client to activate |
 
-`run.start` **occupies the connection**: the server streams events for that run
-on the same socket until a terminal event. `run.cancel` and
-`permission.respond` are answered while a run is in flight. A second
-`run.start` on a busy connection is `INVALID_REQUEST`.
+`run.start` with `resume_background: true` and a `session_id` takes no prompt:
+it hands the model the session's finished background tasks. When there is
+nothing to hand over, or the session is busy, the result is
+`{"run_id": null, "session_id": …}` and no run starts.
+
+`run.start` **occupies its session**: the server streams that run's events on
+the same socket until a terminal event, and every event names its `run_id`.
+Runs on different sessions go side by side on one connection, so a client routes
+events by `run_id`. `run.cancel` and `permission.respond` are answered while runs
+are in flight. A second `run.start` on a busy session is `SESSION_BUSY`. A run's
+first browser, desktop or screen action waits, as a started tool call, until no
+other run holds those devices, and the run keeps them until it ends.
 
 ### Session scope
 
@@ -136,6 +147,10 @@ and `run_id`.
 | `context_compaction_completed` | `reason` |
 | `context_compaction_failed` | `reason`, `error` |
 | `context_usage` | `used_tokens`, `context_window`, `compact_at` |
+| `background_task_started` | `session_id`, `task_id`, `tool_call_id`, `tool_name`, `arguments` |
+| `background_task_finished` | `session_id`, `task_id`, `tool_call_id`, `tool_name`, `state`, `output`, `wake` |
+| `background_tasks_delivered` | `task_ids`, `summary`, `resumed` |
+| `steering_delivered` | `steer_id`, `text` |
 | `run_completed` | `final_message_id`, `result{run_id, final_message_id, output_text, stop_reason}` |
 | `run_failed` | `error` |
 | `run_cancelled` | `reason` |
@@ -181,6 +196,17 @@ Ordering guarantees the UI is written against:
    `/props` when it has one. The two window fields are null when the window is
    unknown. `session.load`'s `context_tokens` is the same estimate, for a
    session that has not run yet. Like `browser_frame`, it is not conversation.
+
+### Background tasks
+
+A `bash` call still running after 25 seconds (`serve --background-after`) emits
+`background_task_started` in place of a completion. The model gets a placeholder
+result, later calls in its batch are not run, and the run carries on and ends as
+usual. `background_task_finished` arrives when the command ends, possibly between
+runs, and its `run_id` is the run that started it. When `wake` is true and no run
+is going, the client calls `run.start` with `resume_background`. Any run on the
+session delivers waiting results at its next turn and says so with
+`background_tasks_delivered`. Tasks are stopped when their client disconnects.
 
 ## 5. Tool approval
 

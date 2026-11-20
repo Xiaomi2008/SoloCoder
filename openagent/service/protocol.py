@@ -29,6 +29,10 @@ from typing import Any, get_type_hints
 
 from openagent.runtime.events import (
     AgentResult,
+    BackgroundTaskFinished,
+    BackgroundTasksDelivered,
+    SteeringDelivered,
+    BackgroundTaskStarted,
     ContextCompactionCompleted,
     ContextCompactionFailed,
     BrowserFrame,
@@ -71,6 +75,7 @@ class Method(StrEnum):
     PING = "ping"
     RUN_START = "run.start"
     RUN_CANCEL = "run.cancel"
+    RUN_STEER = "run.steer"
     RUN_PERMISSION_MODE = "run.permission_mode"
     PERMISSION_RESPOND = "permission.respond"
     MODEL_LIST = "model.list"
@@ -89,6 +94,8 @@ class Method(StrEnum):
     CONFIG_GET = "config.get"
     CONFIG_SET = "config.set"
     BROWSER_SHOW = "browser.show"
+    BACKGROUND_LIST = "background.list"
+    BACKGROUND_CANCEL = "background.cancel"
 
 
 class ErrorCode:
@@ -359,6 +366,10 @@ EVENT_TYPES: dict[str, type] = {
     "context_usage": ContextUsage,
     "message_stats": MessageStats,
     "browser_frame": BrowserFrame,
+    "background_task_started": BackgroundTaskStarted,
+    "background_task_finished": BackgroundTaskFinished,
+    "background_tasks_delivered": BackgroundTasksDelivered,
+    "steering_delivered": SteeringDelivered,
 }
 
 TERMINAL_EVENT_TYPES = frozenset({"run_completed", "run_failed", "run_cancelled"})

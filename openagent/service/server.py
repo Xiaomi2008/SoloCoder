@@ -1,12 +1,11 @@
-"""The Unix-socket server: one connection, one run, a stream of events.
+"""The Unix-socket server: one connection, many sessions, a stream of events.
 
 Spec: ``dev_docs/agent-service-protocol.md``. Design notes worth keeping,
 because each one is a bug that was paid for:
 
-- **One run per connection.** A run streams on the connection that started it,
-  so cancellation and permission replies are addressed to the right run with no
-  routing table. A second ``run.start`` on a busy connection is refused, not
-  queued: a queue is a UI that silently loses work.
+- **One run per session.** Runs on different sessions go side by side on one
+  connection, and every event names its run. A second ``run.start`` on a busy
+  session is refused, not queued: a queue is a UI that silently loses work.
 - **The reader loop and the run task are separate.** The run blocks on tool
   approval; if the same task read the socket, ``permission.respond`` would
   arrive after the thing it is answering.
@@ -37,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from openagent.core.session import Session
+from openagent.core.task_manager import TaskManager, session_task_manager
 from openagent.core.tool import ToolContext
 from openagent.provider.auth.tokens import AuthRequired
 from openagent.provider.auth.broker import AuthBroker
@@ -51,7 +51,13 @@ from openagent.provider.registry import (
     spec_from_config,
 )
 from openagent.provider.router import ModelRouter, NoCapableModel, RoutingRules
-from openagent.runtime.events import BrowserFrame, RunFailed
+from openagent.runtime.background import (
+    BACKGROUND_AFTER,
+    MAX_RESULT_CHARS,
+    BackgroundJob,
+    BackgroundJobs,
+)
+from openagent.runtime.events import BackgroundTaskFinished, BrowserFrame, RunFailed
 from openagent.runtime.loop import next_id
 from openagent.runtime.permissions import (
     ASK_BY_DEFAULT,
@@ -104,6 +110,8 @@ class ServiceSettings:
     roots: tuple[str, ...] = ()
     permission_timeout: float = DEFAULT_PERMISSION_TIMEOUT
     max_turns: int = DEFAULT_MAX_TURNS
+    #: Seconds a shell command may hold the turn before it moves to the background.
+    background_after: float = BACKGROUND_AFTER
     computer_use: bool = False
     browser_use: bool = False
     desktop_use: bool = False
@@ -182,8 +190,10 @@ class Connection:
         self._write_lock = asyncio.Lock()
         self.handshaked = False
         self.fatal = False
-        self.run: _Run | None = None
+        self.runs: dict[str, _Run] = {}
         self.pending: dict[str, asyncio.Future] = {}
+        #: The run each pending permission request belongs to.
+        self.pending_runs: dict[str, str] = {}
         self.peer = ""
 
     # ---------------------------------------------------------------- writing
@@ -279,6 +289,7 @@ class Connection:
         """
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[request.request_id] = future
+        self.pending_runs[request.request_id] = request.run_id
         try:
             return await asyncio.wait_for(future, self.service.settings.permission_timeout)
         except asyncio.TimeoutError:
@@ -294,28 +305,34 @@ class Connection:
             return PermissionDecision(granted=False, scope="never", reason="run cancelled")
         finally:
             self.pending.pop(request.request_id, None)
+            self.pending_runs.pop(request.request_id, None)
 
-    def deny_pending(self, reason: str) -> None:
-        for future in list(self.pending.values()):
+    def deny_pending(self, reason: str, run_id: str | None = None) -> None:
+        """Refuse the open prompts: one run's, or with no run named, all of them."""
+        for request_id, future in list(self.pending.items()):
+            if run_id is not None and self.pending_runs.get(request_id) != run_id:
+                continue
             if not future.done():
                 future.set_result(
                     PermissionDecision(granted=False, scope="never", reason=reason)
                 )
-        self.pending.clear()
+            self.pending.pop(request_id, None)
+            self.pending_runs.pop(request_id, None)
 
     # ---------------------------------------------------------------- closing
 
     async def shutdown(self) -> None:
         self.deny_pending("client disconnected")
-        if self.run is not None and self.run.active:
-            self.run.runner.cancel("client disconnected")
-            if self.run.task is not None:
-                self.run.task.cancel()
+        self.service.drop_background(self)
+        for run in list(self.runs.values()):
+            if run.active and run.task is not None:
+                run.runner.cancel("client disconnected")
+                run.task.cancel()
                 try:
-                    await self.run.task
+                    await run.task
                 except (asyncio.CancelledError, Exception):
                     pass
-        self.run = None
+        self.runs.clear()
         self._writer.close()
         try:
             await self._writer.wait_closed()
@@ -346,7 +363,7 @@ class AgentService:
         self._bg_tasks: set[asyncio.Task] = set()
         #: Session ids a run has claimed, mapped to the run once it exists.
         #:
-        #: `conn.run` cannot be the guard for "is this session in use". It is set
+        #: `conn.runs` cannot be the guard for "is this session in use". It is set
         #: only after the provider is built — a network call to a model server —
         #: and it is cleared when the run ends, so between runs it is None while
         #: the session is still that connection's. A claim taken before the first
@@ -358,6 +375,13 @@ class AgentService:
         #: same id at the same time, and a delete from one should be refused while
         #: the other is writing it.
         self._live: dict[str, _Run | None] = {}
+        #: Background jobs by session. Outlive the runs that started them, and
+        #: not the connection: nobody would be left to call back.
+        self._background: dict[str, BackgroundJobs] = {}
+        #: Each session's to-do list, kept between its runs.
+        self._todos: dict[str, TaskManager] = {}
+        #: The one browser and screen the machine has, for one run at a time.
+        self._device_lock = asyncio.Lock()
 
     @property
     def active_connections(self) -> int:
@@ -535,6 +559,7 @@ class AgentService:
             Method.PING: self._ping,
             Method.RUN_START: self._run_start,
             Method.RUN_CANCEL: self._run_cancel,
+            Method.RUN_STEER: self._run_steer,
             Method.RUN_PERMISSION_MODE: self._run_permission_mode,
             Method.PERMISSION_RESPOND: self._permission_respond,
             Method.MODEL_LIST: self._model_list,
@@ -553,6 +578,8 @@ class AgentService:
             Method.CONFIG_GET: self._config_get,
             Method.CONFIG_SET: self._config_set,
             Method.BROWSER_SHOW: self._browser_show,
+            Method.BACKGROUND_LIST: self._background_list,
+            Method.BACKGROUND_CANCEL: self._background_cancel,
         }
 
     # ---------------------------------------------------------- handshake/liveness
@@ -598,15 +625,18 @@ class AgentService:
     # -------------------------------------------------------------------- runs
 
     async def _run_start(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
-        if conn.run is not None and conn.run.active:
-            raise RpcError(
-                ErrorCode.INVALID_REQUEST,
-                "this connection already has a run in flight; call run.cancel",
-                {"run_id": conn.run.run_id},
-            )
-
+        # The callback after a background task. Racing the person's own prompt is
+        # normal, and that prompt's run delivers the result, so finding nothing
+        # to do is an answer and not an error.
+        resume = params.get("resume_background") is True
         prompt = params.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
+        if resume:
+            prompt = None
+            target = sessions.check_session_id(params.get("session_id"))
+            jobs = self._background.get(target)
+            if target in self._live or jobs is None or not jobs.wake_due:
+                return {"run_id": None, "session_id": target}
+        elif not isinstance(prompt, str) or not prompt.strip():
             raise RpcError(ErrorCode.INVALID_PARAMS, "prompt is required and must be text")
 
         working_dir = validate_working_dir(params.get("working_dir"), self.settings.roots)
@@ -666,8 +696,10 @@ class AgentService:
                 if resume
                 else Session(system_prompt=self._system_prompt())
             )
+            session.model = ref.key
             provider = await self._build_provider(ref)
             run_id = next_id("run")
+            background = self._jobs_for(conn, session_id)
             runner = AgentRunner(
                 provider,
                 session=session,
@@ -676,7 +708,11 @@ class AgentService:
                     working_dir=str(working_dir),
                     enforce_scope=(mode == "allow_all"),
                     outputs_dir=str(sessions.outputs_dir(session_id)),
+                    background=background,
                 ),
+                background=background,
+                background_after=self.settings.background_after,
+                device_lock=self._device_lock,
                 max_turns=max_turns,
                 permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
                 reasoning_effort=reasoning_effort,
@@ -696,7 +732,9 @@ class AgentService:
             self._live.pop(session_id, None)
             raise
         self._live[session_id] = run
-        conn.run = run
+        conn.runs[run_id] = run
+        # Set before create_task, which copies the context.
+        session_task_manager.set(self._todos.setdefault(session_id, TaskManager()))
         if self.settings.browser_use:
             from openagent.tools import browser
 
@@ -715,7 +753,7 @@ class AgentService:
             "working_dir": str(working_dir),
         }
 
-    async def _pump(self, conn: Connection, run: _Run, prompt: str, images: Any) -> None:
+    async def _pump(self, conn: Connection, run: _Run, prompt: str | None, images: Any) -> None:
         """Stream one run to its terminal event, then clean up.
 
         Cleanup is unconditional: the session is saved even when the run
@@ -743,12 +781,69 @@ class AgentService:
             # that unlinked while the save was in flight would be undone by it.
             if self._live.get(run.session_id) is run:
                 self._live.pop(run.session_id, None)
+            run.runner.release_device()
             await _close_provider(run.provider)
             if run.frames is not None:
                 run.frames.close()
-            conn.deny_pending("run ended")
-            if conn.run is run:
-                conn.run = None
+            conn.deny_pending("run ended", run.run_id)
+            conn.runs.pop(run.run_id, None)
+
+    # -------------------------------------------------------------- background
+
+    def _jobs_for(self, conn: Connection, session_id: str) -> BackgroundJobs:
+        jobs = self._background.setdefault(session_id, BackgroundJobs(session_id))
+        jobs.owner = conn
+        jobs.on_finished = lambda job: self._announce_finished(conn, session_id, job)
+        return jobs
+
+    def _announce_finished(self, conn: Connection, session_id: str, job: BackgroundJob) -> None:
+        async def send() -> None:
+            try:
+                await conn.send_event(
+                    BackgroundTaskFinished(
+                        run_id=job.run_id,
+                        session_id=session_id,
+                        task_id=job.id,
+                        tool_call_id=job.tool_call_id,
+                        tool_name=job.tool_name,
+                        state=job.state,
+                        output=job.output[-MAX_RESULT_CHARS:],
+                        wake=job.wakes,
+                    )
+                )
+            except (ConnectionError, RuntimeError):
+                pass  # the client left; its jobs are being stopped
+
+        task = asyncio.ensure_future(send())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def drop_background(self, conn: Connection) -> None:
+        """Stop the jobs of a client that has gone."""
+        for session_id, jobs in list(self._background.items()):
+            if jobs.owner is conn:
+                self._discard_jobs(session_id)
+
+    def _discard_jobs(self, session_id: str) -> None:
+        jobs = self._background.pop(session_id, None)
+        if jobs is not None:
+            jobs.on_finished = None
+            jobs.cancel_all()
+
+    async def _background_list(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = sessions.check_session_id(params.get("session_id"))
+        jobs = self._background.get(session_id)
+        return {
+            "session_id": session_id,
+            "tasks": [job.info() for job in jobs.running] if jobs else [],
+            "wake_due": bool(jobs and jobs.wake_due),
+        }
+
+    async def _background_cancel(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = sessions.check_session_id(params.get("session_id"))
+        task_id = str(params.get("task_id") or "")
+        jobs = self._background.get(session_id)
+        return {"task_id": task_id, "cancelled": bool(jobs and jobs.cancel(task_id))}
 
     async def _browser_show(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
         """Bring the agent's browser window forward, for the user to take over.
@@ -762,6 +857,17 @@ class AgentService:
 
         return await show_browser()
 
+    def _connection_run(self, conn: Connection, params: dict[str, Any]) -> _Run:
+        run_id = params.get("run_id")
+        run = conn.runs.get(run_id) if isinstance(run_id, str) else None
+        if run is None:
+            raise RpcError(
+                ErrorCode.RUN_NOT_FOUND,
+                "no run with that id on this connection",
+                {"run_id": run_id, "active": sorted(conn.runs)},
+            )
+        return run
+
     async def _run_permission_mode(
         self, conn: Connection, params: dict[str, Any]
     ) -> dict[str, Any]:
@@ -771,14 +877,7 @@ class AgentService:
         made mid-run would otherwise only auto-answer prompts while the built-in
         file tools kept their old scope. This method changes both.
         """
-        run = conn.run
-        run_id = params.get("run_id")
-        if run is None or run.run_id != run_id:
-            raise RpcError(
-                ErrorCode.RUN_NOT_FOUND,
-                "no run with that id on this connection",
-                {"run_id": run_id, "active": run.run_id if run and run.active else None},
-            )
+        run = self._connection_run(conn, params)
         mode = params.get("permission_mode")
         if mode not in PERMISSION_MODES:
             raise RpcError(
@@ -794,20 +893,32 @@ class AgentService:
         }
 
     async def _run_cancel(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
-        run = conn.run
-        run_id = params.get("run_id")
-        if run is None or run.run_id != run_id:
-            raise RpcError(
-                ErrorCode.RUN_NOT_FOUND,
-                "no run with that id on this connection",
-                {"run_id": run_id, "active": run.run_id if run and run.active else None},
-            )
+        run = self._connection_run(conn, params)
         # Cooperative first, then the hard cancel: the flag is what makes the
         # runner end on run_cancelled instead of vanishing mid-generator.
         run.runner.cancel("cancelled by client")
         if run.task is not None:
             run.task.cancel()
         return {"cancelled": True, "run_id": run.run_id}
+
+    async def _run_steer(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
+        """Hand the running agent a message for its next turn.
+
+        Refused (``accepted: false``) once the run has decided to end; the
+        client then starts a run with the message instead.
+        """
+        text = params.get("text") or ""
+        images = params.get("images") or []
+        if not isinstance(text, str):
+            raise RpcError(ErrorCode.INVALID_PARAMS, "text must be a string")
+        if not isinstance(images, list) or not all(isinstance(i, str) for i in images):
+            raise RpcError(ErrorCode.INVALID_PARAMS, "images must be a list of base64 strings")
+        if not text.strip() and not images:
+            raise RpcError(ErrorCode.INVALID_PARAMS, "nothing to send")
+        run_id = params.get("run_id")
+        run = conn.runs.get(run_id) if isinstance(run_id, str) else None
+        steer_id = run.runner.steer(text.strip(), images) if run is not None else None
+        return {"run_id": run_id, "accepted": steer_id is not None, "steer_id": steer_id}
 
     async def _permission_respond(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
         request_id = str(params.get("request_id") or "")
@@ -1091,6 +1202,7 @@ class AgentService:
             "session_id": session_id,
             "system_prompt": session.system_prompt,
             "messages": session.to_list(),
+            "model": session.model,
             # The same estimate `context_usage` reports, so a reopened session
             # shows how full it is before its next run.
             "context_tokens": session.token_count + self._request_overhead(session),
@@ -1106,7 +1218,11 @@ class AgentService:
         return _fixed_overhead(session.system_prompt, registry.definitions)
 
     async def _session_save(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:
-        run = conn.run
+        wanted = params.get("session_id")
+        run = next(
+            (r for r in reversed(list(conn.runs.values())) if not wanted or r.session_id == wanted),
+            None,
+        )
         if run is None:
             raise RpcError(
                 ErrorCode.INVALID_REQUEST,
@@ -1133,6 +1249,8 @@ class AgentService:
                 "that session has a run on it; cancel the run first",
                 {"session_id": session_id, "run_id": busy.run_id if busy else None},
             )
+        self._discard_jobs(session_id)
+        self._todos.pop(session_id, None)
         return {"session_id": session_id, "deleted": sessions.delete(session_id)}
 
     # ----------------------------------------------------------------- config

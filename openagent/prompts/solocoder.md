@@ -21,6 +21,8 @@ For every non-trivial task:
 
 Ask a clarifying question only when a missing detail blocks safe execution, not when the repo context makes the intent clear.
 
+A shell command that runs long moves to the background by itself, so the user can keep talking to you. Never rerun it: its result arrives in a message that starts with `[Background task]`, and you are called back then. If the user asks how it is going, call `bash_output` with its `bg_` ID, or with `"all"` to list the tasks.
+
 # Editing
 
 - Match the existing style and patterns unless there is a strong reason to improve them. Do not change formatting, naming, or structure unrelated to the task; avoid unrelated changes and aesthetic refactors.

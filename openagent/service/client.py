@@ -49,7 +49,8 @@ class ServiceClosed(ConnectionError):
 class ServiceClient:
     """An async client for one service connection.
 
-    One connection runs one run at a time; open more connections for parallel
+    A connection can run one session at a time through :meth:`events`, which
+    ends at the first terminal event; open more connections for parallel
     runs.
     """
 
@@ -175,6 +176,15 @@ class ServiceClient:
 
     async def cancel(self, run_id: str) -> dict[str, Any]:
         return await self.call(Method.RUN_CANCEL, {"run_id": run_id})
+
+    async def steer(
+        self, run_id: str, text: str, images: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Give a running agent a message for its next turn."""
+        params: dict[str, Any] = {"run_id": run_id, "text": text}
+        if images:
+            params["images"] = images
+        return await self.call(Method.RUN_STEER, params)
 
     async def set_permission_mode(
         self, run_id: str, permission_mode: str

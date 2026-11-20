@@ -120,6 +120,70 @@ func transcriptChecks(_ checks: Checks) throws {
     checks.equal(run.finalText, "1 file", "finalText is the last assistant text")
     checks.equal(run.runId, "r1", "the run id is tracked")
 
+    // MARK: the gaps between steps
+
+    // Between a finished note and its tool call, and between a tool's result and
+    // the next reply, nothing streams and no row runs: on a local model the server
+    // is reading the context back in, for seconds or minutes. Read from the lines,
+    // the turn finished in every gap — its steps folded and the note became the
+    // answer — and the transcript jumped by the fold's height each time.
+    let gaps: [AgentEvent] = try [
+        ev(#"{"type":"run_started","run_id":"r1"}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        ev(#"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":"Let me check the tests."}"#),
+        ev(#"{"type":"tool_call_started","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"bash","arguments":{"command":"ls"}}"#),
+        ev(#"{"type":"tool_call_completed","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"bash","result":"file.txt"}"#),
+    ]
+    let afterNote = try fold(Array(gaps.prefix(3)))
+    checks.expect(afterNote.turns.last?.running == true, "a note with its tool call still to come is a running turn")
+    checks.expect(
+        afterNote.turns.last?.result.isEmpty == true,
+        "and the note is a step, not the answer, while the run goes on"
+    )
+    let afterTool = try fold(gaps)
+    checks.expect(afterTool.turns.last?.running == true, "a tool's result with the reply still to come is a running turn")
+    checks.expect(afterTool.turns.last?.activityLabel.hasPrefix("Working") == true, "and it says Working, not Worked")
+    let ended = try fold(gaps + [
+        ev(#"{"type":"run_completed","run_id":"r1","final_message_id":"m1","result":{"run_id":"r1","final_message_id":"m1","output_text":"Let me check the tests.","stop_reason":"end_turn"}}"#),
+    ])
+    checks.expect(ended.turns.last?.running == false, "the run's end ends the turn")
+    checks.expect(run.turns.last?.running == false, "a finished run's turn is not running")
+
+    // MARK: a tool call that moves to the background
+
+    let moved: [AgentEvent] = try [
+        ev(#"{"type":"run_started","run_id":"r1"}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m1"}"#),
+        ev(#"{"type":"message_completed","run_id":"r1","message_id":"m1","output_text":""}"#),
+        ev(#"{"type":"tool_call_started","run_id":"r1","message_id":"m1","tool_call_id":"t1","tool_name":"bash","arguments":{"command":"make"}}"#),
+        ev(#"{"type":"background_task_started","run_id":"r1","session_id":"s1","task_id":"bg_1","tool_call_id":"t1","tool_name":"bash","arguments":{"command":"make"}}"#),
+        ev(#"{"type":"message_started","run_id":"r1","message_id":"m2"}"#),
+        ev(#"{"type":"message_completed","run_id":"r1","message_id":"m2","output_text":"It is building."}"#),
+        ev(#"{"type":"run_completed","run_id":"r1","final_message_id":"m2","result":{"run_id":"r1","final_message_id":"m2","output_text":"It is building.","stop_reason":"end_turn"}}"#),
+    ]
+    var background = try fold(moved)
+    checks.equal(background.toolRows.first?.state, .background, "the moved call's row stays open, in the background")
+    checks.expect(background.turns.last?.running == false, "and it does not hold the turn open")
+    background.apply(try ev(#"{"type":"background_task_finished","run_id":"r1","session_id":"s1","task_id":"bg_1","tool_call_id":"t1","tool_name":"bash","state":"completed","output":"built","wake":true}"#))
+    checks.equal(background.toolRows.first?.state, .done("built"), "the result reaches the row after the run has ended")
+    background.apply(try ev(#"{"type":"run_started","run_id":"r2"}"#))
+    checks.expect(background.state.isRunning, "a callback starts a new run on a finished transcript")
+    background.apply(try ev(#"{"type":"background_tasks_delivered","run_id":"r2","task_ids":["bg_1"],"summary":"Background task finished: make","resumed":true}"#))
+    background.apply(try ev(#"{"type":"message_started","run_id":"r2","message_id":"m3"}"#))
+    checks.equal(background.turns.count, 2, "the callback opens a turn of its own")
+    checks.expect(background.turns.last?.user?.automatic == true, "one nobody typed")
+    var late = try fold(moved)
+    late.apply(try ev(#"{"type":"run_started","run_id":"r1"}"#))
+    checks.expect(!late.state.isRunning, "a late run_started for the finished run still changes nothing")
+
+    let savedNotice = BackgroundNotice.split("how is it?\n[Background task] bg_1 (make) finished after 3s.\nOutput:\nok")
+    checks.equal(savedNotice.prompt, "how is it?", "a stored prompt keeps its own words")
+    checks.equal(savedNotice.notice, "Background task (make) finished after 3s.", "and the result becomes a notice")
+    let alone = BackgroundNotice.split("[Background task] bg_1 (make) failed after 3s.")
+    checks.equal(alone.prompt, "", "a stored callback has no prompt")
+    checks.equal(alone.notice, "Background task (make) failed after 3s.", "only its notice")
+    checks.equal(BackgroundNotice.split("plain").notice, nil, "an ordinary prompt is left alone")
+
     // MARK: images on a prompt
 
     var pasted = Transcript()
