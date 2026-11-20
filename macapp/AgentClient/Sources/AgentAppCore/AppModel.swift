@@ -452,6 +452,10 @@ public final class AppModel: ObservableObject {
     /// that invalidates views to report invalidations is useless. The checks use
     /// it to prove a run of 200 deltas does not cost 200 view updates.
     public private(set) var transcriptPublishes = 0
+    /// How many times the agent was called back for a background result,
+    /// counted before the service is asked. The checks use it to see which
+    /// endings of a run keep that promise.
+    public private(set) var callbacksRequested = 0
     private var flushTask: Task<Void, Never>?
     private static let flushWindow = Duration.milliseconds(60)
 
@@ -611,8 +615,8 @@ public final class AppModel: ObservableObject {
             slot.busy = false
             slot.unseen = .finished
         case .runFailed:
+            // As on screen: a failed run keeps the callback, a stopped one does not.
             slot.busy = false
-            slot.wakeDue = false
             slot.unseen = .failed
         case .runCancelled:
             slot.busy = false
@@ -770,12 +774,12 @@ public final class AppModel: ObservableObject {
             // which the sidebar does whenever it appears.
             Task { await refreshSessions() }
             settleSteers()
-            // Only after a run that ended by itself: one the user stopped or
-            // that failed must not start again on its own.
-            if case .runCompleted = event {
-                wakeIfDue()
-            } else {
-                wakeDue = false
+            // A run the user stopped must not start again on its own: a result
+            // still waiting joins their next prompt. A failed run is no answer
+            // about the task, and the agent was told it would be called back.
+            switch event {
+            case .runCompleted, .runFailed: wakeIfDue()
+            default: wakeDue = false
             }
         }
     }
@@ -815,6 +819,7 @@ public final class AppModel: ObservableObject {
             if owner == visibleSlotID { busy = false } else { parked[owner]?.busy = false }
             refreshActivity()
         }
+        callbacksRequested += 1
         guard connected, let client else { return idle() }
         startsInFlight += 1
         Task {

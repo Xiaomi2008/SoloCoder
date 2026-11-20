@@ -460,11 +460,11 @@ def bash(
     Args:
         command: Shell command to run
         timeout: Seconds before the process is terminated
-        background: Return immediately with a session ID; read the output later with bash_output
+        background: Start it in the background and return at once; the result says whether you will be called back when it finishes
         working_dir: Directory to run in (default: the project directory, not the process directory)
 
     Returns:
-        Command output (stdout), or session ID for background processes
+        Command output (stdout), or the background task's ID
     """
     # For background execution, we'll use a shared dictionary managed by the agent
     if background:
@@ -676,7 +676,10 @@ async def bash_background(
     working_dir: str | None = None,
     tool_context: ToolContext | None = None,
 ) -> str:
-    """Start a background shell session and execute commands.
+    """Run a shell command in the background and return at once.
+
+    The result says whether you will be called back when it finishes. Only then
+    can you end your turn and wait for it; otherwise read it with bash_output.
 
     Args:
         command: Shell command to execute in the background session
@@ -684,7 +687,7 @@ async def bash_background(
                    working directory.
 
     Returns:
-        Session ID for tracking the background process
+        The background task's ID, or a shell session ID for bash_output
     """
     from ..core.bash_manager import get_bash_manager
 
@@ -698,7 +701,13 @@ async def bash_background(
             command=command,
             working_dir=str(session_dir),
         )
-        return f"Started bash session '{session_id}' in '{session_dir or '.'}'. Use bash_output to retrieve output."
+        # Where there is a runner with jobs, it runs the call as a job instead
+        # (``background_now``). This shell is only read, so it must not be
+        # mistaken for something that reports back.
+        return (
+            f"Started bash session '{session_id}' in '{session_dir or '.'}'. It will not "
+            f'call you back when it finishes: read its output with bash_output("{session_id}").'
+        )
     except Exception as e:
         return f"Error starting bash session: {e}"
 

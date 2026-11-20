@@ -200,13 +200,17 @@ Ordering guarantees the UI is written against:
 ### Background tasks
 
 A `bash` call still running after 25 seconds (`serve --background-after`) emits
-`background_task_started` in place of a completion. The model gets a placeholder
-result, later calls in its batch are not run, and the run carries on and ends as
-usual. `background_task_finished` arrives when the command ends, possibly between
-runs, and its `run_id` is the run that started it. When `wake` is true and no run
-is going, the client calls `run.start` with `resume_background`. Any run on the
-session delivers waiting results at its next turn and says so with
-`background_tasks_delivered`. Tasks are stopped when their client disconnects.
+`background_task_started` in place of a completion. A call that asks for the
+background outright (`bash_background`, or `bash` with `background` true) does so
+at once and runs as `bash`; its `tool_name` stays the one the model called. The
+model gets a placeholder result, later calls in its batch are not run, and the
+run carries on and ends as usual. `background_task_finished` arrives when the
+command ends, possibly between runs, and its `run_id` is the run that started it.
+When `wake` is true and no run is going, the client calls `run.start` with
+`resume_background`; a run that is going calls back when it ends, unless the user
+stopped it. Any run on the session delivers waiting results at its next turn and
+says so with `background_tasks_delivered`. Tasks are stopped when their client
+disconnects.
 
 ## 5. Tool approval
 

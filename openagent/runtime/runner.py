@@ -44,7 +44,12 @@ from openagent.providers import (
     ProviderToolCall,
     ProviderUsage,
 )
-from openagent.runtime.background import BACKGROUND_AFTER, BACKGROUND_TOOLS, BackgroundJobs
+from openagent.runtime.background import (
+    BACKGROUND_AFTER,
+    BACKGROUND_TOOLS,
+    BackgroundJobs,
+    background_now,
+)
 from openagent.provider.stall import is_stall
 from openagent.runtime.events import (
     ReasoningDelta,
@@ -590,18 +595,23 @@ class AgentRunner:
                         return
                     self._holds_device = True
 
-                if self.background is not None and call.name in BACKGROUND_TOOLS:
+                # Asked for the background outright: adopted without the wait.
+                now = background_now(call) if self.background is not None else None
+                if now is not None and self.tool_registry.resolve(now.name) is None:
+                    now = None  # nothing to run it as; the tool answers for itself
+                if self.background is not None and (now is not None or call.name in BACKGROUND_TOOLS):
                     progress = ToolProgress()
                     started_at = time.monotonic()
                     # The task's own context, so only this call sees the progress.
                     context = contextvars.copy_context()
                     context.run(tool_progress.set, progress)
                     task = asyncio.create_task(
-                        self.tool_registry.execute(call, context=self.tool_context),
+                        self.tool_registry.execute(now or call, context=self.tool_context),
                         context=context,
                     )
                     try:
-                        await asyncio.wait({task}, timeout=self.background_after)
+                        if now is None:
+                            await asyncio.wait({task}, timeout=self.background_after)
                     except asyncio.CancelledError:
                         progress.kill()
                         task.cancel()
@@ -624,7 +634,7 @@ class AgentRunner:
                             ToolResultBlock(
                                 tool_use_id=call.id,
                                 tool_name=call.name,
-                                content=self._moved_text(job.id),
+                                content=self._moved_text(job.id, asked=now is not None),
                             )
                         )
                         moved_to_background = True
@@ -676,10 +686,15 @@ class AgentRunner:
 
     # -------------------------------------------------------------- internals
 
-    def _moved_text(self, job_id: str) -> str:
+    def _moved_text(self, job_id: str, asked: bool = False) -> str:
+        where = (
+            f"Started in the background as {job_id}."
+            if asked
+            else f"Still running after {self.background_after:.0f}s, so it continues in the "
+            f"background as {job_id}."
+        )
         return (
-            f"Still running after {self.background_after:.0f}s, so it continues in the "
-            f"background as {job_id}. Do not run it again. Its output will arrive in a "
+            f"{where} Do not run it again. Its output will arrive in a "
             "message when it finishes, and you will be called back then. Carry on with "
             "work that does not depend on it; if everything does, end your turn with a "
             f'short note. bash_output("{job_id}") shows its output so far, and '

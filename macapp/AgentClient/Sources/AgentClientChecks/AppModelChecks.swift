@@ -468,6 +468,45 @@ private func backgroundTaskChecks(_ checks: Checks) async throws {
     continuation.finish()
 }
 
+/// A task that finishes during a run calls the agent back when that run ends,
+/// unless the user stopped it.
+@MainActor
+private func callbackChecks(_ checks: Checks) async throws {
+    func callbacks(after ending: String) async throws -> (requested: Int, stillDue: Bool) {
+        let (stream, continuation) = AsyncStream<AgentEvent>.makeStream()
+        let model = AppModel()
+        model.ingest(stream)
+        model.workingDir = "/tmp/oa-work"
+        defer { model.workingDir = "" }
+        // A session with an id, mid-run: the shape a callback needs.
+        model.parkPreviewSession(title: "render the opener", activity: .running)
+        guard let running = model.sidebarEntries.first(where: { $0.activity == .running }) else {
+            checks.expect(false, "a running session to call back")
+            return (0, false)
+        }
+        model.open(running.id)
+        let session = model.sessionId ?? ""
+        continuation.yield(try ev(#"{"type":"run_started","run_id":"r1"}"#))
+        continuation.yield(try ev(#"{"type":"background_task_finished","run_id":"r0","session_id":"\#(session)","task_id":"bg_1","tool_call_id":"t0","tool_name":"bash_background","state":"completed","output":"rendered","wake":true}"#))
+        await settle(model)
+        checks.equal(model.callbacksRequested, 0, "a result that lands mid-run waits for the run to end")
+        continuation.yield(try ev(ending))
+        await settle(model)
+        continuation.finish()
+        return (model.callbacksRequested, model.wakeDue)
+    }
+
+    let completed = try await callbacks(
+        after: #"{"type":"run_completed","run_id":"r1","final_message_id":"m1","result":{"run_id":"r1","final_message_id":"m1","output_text":"ok","stop_reason":"end_turn"}}"#
+    )
+    checks.equal(completed.requested, 1, "a run that ends calls the agent back for the result")
+    let failed = try await callbacks(after: #"{"type":"run_failed","run_id":"r1","error":"stalled"}"#)
+    checks.equal(failed.requested, 1, "so does a run that failed: the agent still owes the user that result")
+    let stopped = try await callbacks(after: #"{"type":"run_cancelled","run_id":"r1","reason":"user pressed stop"}"#)
+    checks.equal(stopped.requested, 0, "a run the user stopped does not start again on its own")
+    checks.expect(!stopped.stillDue, "and nothing is left to fire later")
+}
+
 /// Words sent during a run land where the agent took them in, or come back.
 @MainActor
 private func steeringChecks(_ checks: Checks) async throws {
@@ -612,6 +651,7 @@ func appChecks(_ checks: Checks) async {
     do {
         try await browserPanelChecks(checks)
         try await backgroundTaskChecks(checks)
+        try await callbackChecks(checks)
         try await sessionSwitchChecks(checks)
         try await steeringChecks(checks)
         try await contextMeterChecks(checks)

@@ -340,7 +340,7 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 #### Shell Commands
 - `bash(command, timeout, background, working_dir)` - Execute commands
-- `bash_background(command, working_dir)` - Start persistent session
+- `bash_background(command, working_dir)` - Run in the background: a job that calls the agent back in the service, a persistent session read with `bash_output` elsewhere
 - `bash_output(session_id, tail_lines)` - Retrieve session output
 - `kill_shell(session_id)` - Terminate session
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from openagent.core.tool import ToolProgress
@@ -27,6 +27,26 @@ BACKGROUND_AFTER = 25.0
 #: Only these move. A browser or desktop action left running would fight the
 #: model's next action for the one page or screen there is, so those still block.
 BACKGROUND_TOOLS = frozenset({"bash"})
+
+#: The arguments ``bash`` takes, kept when a call is redirected to it.
+_BASH_ARGUMENTS = ("command", "timeout", "working_dir")
+
+
+def background_now(call: ToolUseBlock) -> ToolUseBlock | None:
+    """The ``bash`` call to adopt at once, for a call that asked for the background.
+
+    ``bash_background`` and ``bash(background=true)`` skip the wait and become
+    jobs like any other, so they call the agent back. ``bash_background`` used to
+    start a shell only ``bash_output`` could read: a model that said it would
+    come back when its command finished was never woken to do so.
+    """
+    asked = call.name == "bash_background" or (
+        call.name == "bash" and str(call.arguments.get("background")).lower() == "true"
+    )
+    if not asked:
+        return None
+    arguments = {key: value for key, value in call.arguments.items() if key in _BASH_ARGUMENTS}
+    return replace(call, name="bash", arguments=arguments)
 
 #: What the model and the client are sent of a finished job's output: the end,
 #: where a build or a test run says how it went.
@@ -204,4 +224,10 @@ class BackgroundJobs:
         return job.status(tail_lines) if job else f"Error: no background task {job_id!r}"
 
 
-__all__ = ["BACKGROUND_AFTER", "BACKGROUND_TOOLS", "BackgroundJob", "BackgroundJobs"]
+__all__ = [
+    "BACKGROUND_AFTER",
+    "BACKGROUND_TOOLS",
+    "BackgroundJob",
+    "BackgroundJobs",
+    "background_now",
+]

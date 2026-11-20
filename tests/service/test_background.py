@@ -16,7 +16,9 @@ import pytest
 from openagent.core.types import Message
 from openagent.service.client import ServiceClient
 from openagent.service.protocol import Method
-from openagent.tools.builtin import bash, bash_output, kill_shell
+from openagent.core.types import ToolUseBlock
+from openagent.runtime.background import background_now
+from openagent.tools.builtin import bash, bash_background, bash_output, kill_shell
 from tests.service.test_server import Harness, collect_events
 from tests.support.streaming_provider import ScriptedStreamProvider, text_turn, tool_turn
 
@@ -48,7 +50,9 @@ def workdir(tmp_path: Path) -> Path:
     return folder
 
 
-async def serve(harness: Harness, *runs: list[list[Any]]) -> ServiceClient:
+async def serve(
+    harness: Harness, *runs: list[list[Any]], tools: list[Any] | None = None
+) -> ServiceClient:
     """A service whose Nth run replays the Nth script."""
     scripts = iter(runs)
 
@@ -58,7 +62,7 @@ async def serve(harness: Harness, *runs: list[list[Any]]) -> ServiceClient:
         return provider
 
     service = await harness.serve(
-        tools=[bash, bash_output, kill_shell],
+        tools=tools or [bash, bash_output, kill_shell],
         provider_factory=build,
         background_after=AFTER,
     )
@@ -271,3 +275,101 @@ async def test_a_quick_command_is_an_ordinary_tool_call(harness, workdir):
     events = await collect_events(client)
     assert of(events, "tool_call_completed").result == "quick\n"
     assert "background_task_started" not in types(events)
+
+
+async def test_bash_background_is_a_job_that_calls_the_agent_back(harness, workdir):
+    """It used to start a shell only bash_output could read: nothing woke the agent."""
+    client = await serve(
+        harness,
+        [tool_turn("bash_background", {"command": "echo rendered"}), text_turn("I will report back")],
+        [text_turn("the render is done")],
+        tools=[bash, bash_background, bash_output, kill_shell],
+    )
+    started = await start(client, workdir)
+    events = await collect_events(client)
+
+    # A quick command too: it was asked for in the background, so no waiting.
+    moved = of(events, "background_task_started")
+    assert (moved.tool_name, moved.task_id[:3]) == ("bash_background", "bg_")
+    assert "tool_call_completed" not in types(events)
+    placeholder = seen_text(harness.providers[0].calls[1]["messages"][-1])
+    assert placeholder.startswith(f"Started in the background as {moved.task_id}.")
+    assert "you will be called back" in placeholder
+
+    finished = await next_event(client, "background_task_finished")
+    assert (finished.state, finished.wake, finished.output) == ("completed", True, "rendered\n")
+
+    assert (await resume(client, workdir, started["session_id"]))["run_id"]
+    events = await collect_events(client)
+    assert of(events, "background_tasks_delivered").resumed is True
+    told = harness.providers[1].calls[0]["messages"][-1]
+    assert told.text.startswith("[Background task]") and "rendered" in told.text
+
+
+async def test_bash_with_background_set_is_a_job_too(harness, workdir):
+    client = await serve(
+        harness,
+        [tool_turn("bash", {"command": "echo hi", "background": True}), text_turn("started")],
+    )
+    await start(client, workdir)
+    events = await collect_events(client)
+    assert of(events, "background_task_started").tool_name == "bash"
+    finished = await next_event(client, "background_task_finished")
+    assert (finished.state, finished.wake, finished.output) == ("completed", True, "hi\n")
+
+
+async def test_a_failing_background_command_still_calls_back(harness, workdir):
+    """A watcher that ends on failure is one that reports."""
+    client = await serve(
+        harness,
+        [tool_turn("bash_background", {"command": "echo render failed; exit 3"}), text_turn("waiting")],
+        tools=[bash, bash_background, bash_output, kill_shell],
+    )
+    await start(client, workdir)
+    await collect_events(client)
+    finished = await next_event(client, "background_task_finished")
+    assert finished.wake is True
+    assert "render failed" in finished.output
+
+
+async def test_without_bash_to_run_it_as_the_shell_says_it_will_not_call_back(harness, workdir):
+    client = await serve(
+        harness,
+        [tool_turn("bash_background", {"command": "sleep 30"}), text_turn("started")],
+        tools=[bash_background, bash_output, kill_shell],
+    )
+    await start(client, workdir)
+    events = await collect_events(client)
+    result = of(events, "tool_call_completed").result
+    assert "will not call you back" in result
+    assert "background_task_started" not in types(events)
+    session_id = result.split("'")[1]
+    await kill_shell(session_id)
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "expected"),
+    [
+        ("bash_background", {"command": "make", "working_dir": "sub"}, {"command": "make", "working_dir": "sub"}),
+        ("bash", {"command": "make", "background": True, "timeout": 60}, {"command": "make", "timeout": 60}),
+        ("bash", {"command": "make", "background": "true"}, {"command": "make"}),
+    ],
+)
+def test_a_call_that_asks_for_the_background_runs_as_bash(name, arguments, expected):
+    call = ToolUseBlock(id="call_7", name=name, arguments=arguments)
+    redirected = background_now(call)
+    assert redirected is not None
+    assert (redirected.id, redirected.name, redirected.arguments) == ("call_7", "bash", expected)
+    assert call.name == name and call.arguments == arguments  # the model's call is left as it was
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        ToolUseBlock(name="bash", arguments={"command": "make"}),
+        ToolUseBlock(name="bash", arguments={"command": "make", "background": False}),
+        ToolUseBlock(name="bash_output", arguments={"session_id": "all"}),
+    ],
+)
+def test_other_calls_wait_their_turn(call):
+    assert background_now(call) is None
