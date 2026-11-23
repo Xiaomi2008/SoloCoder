@@ -8,6 +8,7 @@ This module is the single home for that policy so the two agents cannot drift.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -177,6 +178,7 @@ COMPUTER_ACTION_TOOLS = frozenset(
 _AFTER_ACTION_NOTE = "A screenshot taken after it is attached."
 #: Tools that act on the one screen or browser the machine has.
 SHARED_DEVICE_TOOLS = COMPUTER_ACTION_TOOLS | {"screenshot"}
+_SCREENSHOT_TOOLS = frozenset({"screenshot", "desktop_screenshot", "browser_screenshot"})
 KEEP_RECENT_SCREENSHOTS = 3
 OLD_SCREENSHOT_TEXT = "[An earlier screenshot, removed to save context.]"
 
@@ -190,12 +192,53 @@ BROWSER_SCREENSHOT_FOLLOWUP_TEXT = (
 
 PAGE_SCREENSHOT_FOLLOWUP_TEXT = "Latest screenshot of the page you opened with page_open."
 
+#: Added to a screenshot's tool result when the model cannot read images.
+NO_VISION_NOTE = (
+    "This model cannot read images, so the screenshot is not shown. "
+    "Work from text instead: browser_snapshot for a page, or the files and commands behind the app."
+)
+#: Stands in for an image taken out of the history for a model that cannot read it.
+NO_VISION_IMAGE_TEXT = "[An image, not shown: this model cannot read images.]"
+
+#: How servers word a refused image: llama.cpp without an mmproj, vLLM, LM Studio, Ollama.
+_IMAGES_REFUSED = re.compile(
+    r"image input is not supported|not a multimodal model|"
+    r"does not support (?:image|vision|multimodal)|(?:images?|vision) (?:is|are) not supported",
+    re.IGNORECASE,
+)
+
+
+def refuses_images(error: str) -> bool:
+    """Whether a provider error says the model cannot take images."""
+    return bool(_IMAGES_REFUSED.search(error))
+
+
+def drop_images(session: Session) -> int:
+    """Replace every image in the history with a note; returns how many.
+
+    For a model that cannot read images: one image anywhere in the history
+    fails every later request, not just the turn that added it.
+    """
+    dropped = 0
+    for message in session.messages:
+        if not isinstance(message.content, list):
+            continue
+        images = sum(isinstance(b, ImageBlock) for b in message.content)
+        if images:
+            message.content = [
+                TextBlock(text=NO_VISION_IMAGE_TEXT) if isinstance(b, ImageBlock) else b
+                for b in message.content
+            ]
+            dropped += images
+    return dropped
+
 
 def add_screenshot_followup(
     session: Session,
     results: list[Any],
     *,
     mime_type: str = "image/jpeg",
+    vision: bool = True,
 ) -> bool:
     """Feed a screenshot tool result back to a vision model as an image.
 
@@ -208,8 +251,22 @@ def add_screenshot_followup(
     in the session, so the cut reaches the history too.
 
     Reports whether an image was attached, because the caller must then cap
-    ``max_tokens`` for the next turn.
+    ``max_tokens`` for the next turn. Without ``vision`` nothing is attached:
+    each screenshot's result says why instead, so the model stops asking for one.
     """
+    if not vision:
+        for result in results:
+            if getattr(result, "is_error", False) or not result.content or result.content.startswith("Error"):
+                continue
+            name = getattr(result, "tool_name", None)
+            if name in _SCREENSHOT_TOOLS or (
+                name in COMPUTER_ACTION_TOOLS and _AFTER_ACTION_NOTE in result.content
+            ):
+                summary = result.content.replace(_AFTER_ACTION_NOTE, "").strip()
+                if len(summary) > 2000:  # a tool that returned the image itself
+                    summary = "Screenshot captured."
+                result.content = f"{summary} {NO_VISION_NOTE}".strip()
+        return False
     added = False
     desktop_capture = False
     desktop_result: Any = None

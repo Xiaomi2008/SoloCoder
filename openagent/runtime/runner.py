@@ -86,10 +86,12 @@ from openagent.runtime.loop import (
     LoopSettings,
     add_screenshot_followup,
     compaction_needed,
+    drop_images,
     history_budget,
     is_empty_final_response,
     is_user_prompt,
     next_id,
+    refuses_images,
     uses_shared_device,
 )
 from openagent.runtime.permissions import (
@@ -181,6 +183,7 @@ class AgentRunner:
         background: BackgroundJobs | None = None,
         background_after: float = BACKGROUND_AFTER,
         device_lock: asyncio.Lock | None = None,
+        vision: bool = True,
     ) -> None:
         self.provider = provider
         # `session or Session(...)` is a trap here: Session defines __len__, so
@@ -202,6 +205,9 @@ class AgentRunner:
         # of its window.
         self.context_window = context_window
         self.max_output_tokens = max_output_tokens
+        #: Whether the model reads images. Cleared by the run itself when the
+        #: server refuses one, so the caller can remember it for the next run.
+        self.vision = vision
         #: Where long tool calls go. None: every call is waited for.
         self.background = background
         self.background_after = background_after
@@ -318,6 +324,8 @@ class AgentRunner:
 
         if prompt or images:
             self.session.add_user_multimodal(text=prompt, images=images)
+        if not self.vision:
+            drop_images(self.session)
 
         yield RunStarted(run_id=run_id)
 
@@ -435,6 +443,20 @@ class AgentRunner:
                 continue
             if provider_error is None:
                 stall_retries = 0
+
+            if provider_error is not None and self.vision and refuses_images(provider_error):
+                # A text-only model behind a server that refuses images (llama.cpp
+                # without an mmproj): nothing of the reply went into the history,
+                # so the same turn is asked again without them.
+                self.vision = False
+                if drop_images(self.session):
+                    yield MessageFailed(
+                        run_id=run_id,
+                        message_id=message_id,
+                        error=f"{provider_error}; this model cannot read images, asking again without them",
+                    )
+                    screenshot_followup_added = False
+                    continue
 
             if provider_error is not None:
                 yield MessageFailed(
@@ -662,7 +684,7 @@ class AgentRunner:
 
             self.session.add_tool_results(results)
             screenshot_followup_added = add_screenshot_followup(
-                self.session, results, mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE
+                self.session, results, mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE, vision=self.vision
             )
             awaiting_final_response = True
 

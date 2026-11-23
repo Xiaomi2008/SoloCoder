@@ -382,6 +382,8 @@ class AgentService:
         self._todos: dict[str, TaskManager] = {}
         #: The one browser and screen the machine has, for one run at a time.
         self._device_lock = asyncio.Lock()
+        #: Models whose server refused an image: their runs send none.
+        self._blind_models: set[str] = set()
 
     @property
     def active_connections(self) -> int:
@@ -713,6 +715,7 @@ class AgentService:
                 background=background,
                 background_after=self.settings.background_after,
                 device_lock=self._device_lock,
+                vision=ref.key not in self._blind_models,
                 max_turns=max_turns,
                 permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
                 reasoning_effort=reasoning_effort,
@@ -782,6 +785,8 @@ class AgentService:
             if self._live.get(run.session_id) is run:
                 self._live.pop(run.session_id, None)
             run.runner.release_device()
+            if not run.runner.vision and run.session.model:
+                self._blind_models.add(run.session.model)
             await _close_provider(run.provider)
             if run.frames is not None:
                 run.frames.close()
