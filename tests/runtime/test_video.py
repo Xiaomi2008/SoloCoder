@@ -141,3 +141,15 @@ def test_an_endpoint_says_its_model_reads_video():
     entry = {"name": "taopc", "base_url": "http://192.168.4.22:8150/v1", "vision": True, "video": True}
     assert spec_from_config(entry).default_caps.video
     assert not spec_from_config({**entry, "video": False}).default_caps.video
+
+
+def test_an_endpoint_can_name_the_models_that_read_video():
+    from openagent.provider.registry import ProviderRegistry
+
+    entry = {"name": "taopc", "base_url": "http://192.168.4.22:8150/v1", "vision": True, "video": ["Qwen3.8-27B"]}
+    registry = ProviderRegistry(endpoints=[spec_from_config(entry)])
+    listed = registry.endpoint("taopc").default_caps
+
+    assert registry.ref("taopc", "Qwen3.8-27B", caps=listed).caps.video
+    assert not registry.ref("taopc", "Inkling-2-Mini", caps=listed).caps.video
+    assert registry.ref("taopc", "Inkling-2-Mini", caps=listed).caps.vision
