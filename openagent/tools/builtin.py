@@ -37,6 +37,10 @@ def _scope(ctx: ToolContext, path: str | None = None) -> tuple[Path | None, str 
     return resolved, None
 
 
+#: Opens ``read``'s result for an image file; the runtime matches it.
+IMAGE_FILE_RESULT = "[Image file"
+
+
 @tool
 def read(
     path: str,
@@ -67,14 +71,11 @@ def read(
             return f"Error: '{path}' is a directory, not a file."
         return f"Error: '{path}' does not exist or is not accessible."
 
-    # Check for image files
+    # Check for image files: the runtime attaches the picture itself in the
+    # next message, for a model that reads images; this is only the summary.
     image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"}
     if file_path.suffix.lower() in image_extensions:
-        import base64
-
-        with open(file_path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode("utf-8")
-        return f"[Image file ({file_path.suffix}): {len(encoded)} bytes of base64 data]"
+        return f"{IMAGE_FILE_RESULT} ({file_path.suffix}, {file_path.stat().st_size:,} bytes)]"
 
     try:
         content = file_path.read_text(encoding="utf-8")

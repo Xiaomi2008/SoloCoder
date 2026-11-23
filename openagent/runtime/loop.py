@@ -8,6 +8,7 @@ This module is the single home for that policy so the two agents cannot drift.
 
 from __future__ import annotations
 
+import base64
 import re
 import uuid
 from dataclasses import dataclass
@@ -53,6 +54,7 @@ def is_user_prompt(message: Message) -> bool:
             BACKGROUND_NOTICE_TEXT,
             VIDEO_FOLLOWUP_TEXT,
             OLD_VIDEO_TEXT,
+            READ_IMAGE_FOLLOWUP_TEXT,
         )
     )
 
@@ -233,6 +235,69 @@ def drop_images(session: Session) -> int:
             ]
             dropped += images
     return dropped
+
+
+READ_IMAGE_FOLLOWUP_TEXT = "The image from read:"
+#: Image files ``read`` attaches, by suffix. SVG is text, and read as such elsewhere.
+_READ_IMAGE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".bmp": "image/bmp", ".webp": "image/webp",
+}
+#: basalt and llama.cpp refuse a picture over 32 MiB.
+MAX_READ_IMAGE_BYTES = 20 << 20
+
+
+def add_read_image_followup(
+    session: Session,
+    results: list[Any],
+    calls: list[ToolUseBlock],
+    tool_context: Any = None,
+    *,
+    vision: bool = True,
+) -> bool:
+    """Attach the picture each ``read`` of an image file opened.
+
+    ``read`` returns only a summary for an image. Without this the model was
+    shown none of the files it rendered to look at, took the summary for a
+    picture too small to judge, and rendered them bigger again and again.
+    Without ``vision`` the result says the model cannot see it instead.
+    Reports whether an image was attached.
+    """
+    from pathlib import Path
+
+    from openagent.tools.builtin import IMAGE_FILE_RESULT
+
+    paths = {call.id: call.arguments.get("path") for call in calls if call.name == "read"}
+    added = False
+    for result in results:
+        if getattr(result, "tool_name", None) != "read" or getattr(result, "is_error", False):
+            continue
+        if not result.content.startswith(IMAGE_FILE_RESULT) or not paths.get(result.tool_use_id):
+            continue
+        path = (tool_context.resolve(paths[result.tool_use_id]) if tool_context is not None
+                else Path(paths[result.tool_use_id]).expanduser().resolve())
+        mime_type = _READ_IMAGE_TYPES.get(path.suffix.lower())
+        if not vision:
+            result.content += " This model cannot read images, so it is not shown."
+            continue
+        if mime_type is None:
+            continue
+        try:
+            if path.stat().st_size > MAX_READ_IMAGE_BYTES:
+                result.content += f" Too large to show (over {MAX_READ_IMAGE_BYTES >> 20} MiB): shrink it first."
+                continue
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError:
+            continue
+        result.content += " The image is attached in the next message."
+        session.add_message(
+            Message(role="user", content=[TextBlock(text=f"{READ_IMAGE_FOLLOWUP_TEXT} {path}"),
+                                          ImageBlock(data=data, mime_type=mime_type)])
+        )
+        added = True
+    if added:
+        drop_old_screenshots(session)
+    return added
 
 
 VIDEO_FOLLOWUP_TEXT = "The video from view_video:"
@@ -419,6 +484,7 @@ def drop_old_screenshots(session: Session, keep: int | None = None) -> int:
                     BROWSER_SCREENSHOT_FOLLOWUP_TEXT,
                     DESKTOP_SCREENSHOT_FOLLOWUP_TEXT,
                     PAGE_SCREENSHOT_FOLLOWUP_TEXT,
+                    READ_IMAGE_FOLLOWUP_TEXT,
                 )
             )
             for b in m.content

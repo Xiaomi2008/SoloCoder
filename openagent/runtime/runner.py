@@ -84,6 +84,7 @@ from openagent.runtime.loop import (
     EMPTY_RESPONSE_EXHAUSTED_MESSAGE,
     EmptyResponseGuard,
     LoopSettings,
+    add_read_image_followup,
     add_screenshot_followup,
     add_video_followup,
     compaction_needed,
@@ -692,6 +693,9 @@ class AgentRunner:
             self.session.add_tool_results(results)
             screenshot_followup_added = add_screenshot_followup(
                 self.session, results, mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE, vision=self.vision
+            )
+            add_read_image_followup(
+                self.session, results, tool_calls, self.tool_context, vision=self.vision
             )
             if self.vision and self.video:
                 add_video_followup(self.session, results, tool_calls, self.tool_context)
