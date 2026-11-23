@@ -166,7 +166,7 @@ python cli_coder.py [OPTIONS]
 Options:
   --model, -m MODEL       LLM model name (default: gpt-4o)
   --working-dir, -w DIR   Working directory for file operations
-  --max-turns, -t N       Max conversation turns before stopping (default: 20)
+  --max-turns, -t N       Max conversation turns before stopping (default: 600)
   --api-key, -k KEY       API key (optional for local servers)
   --base-url              OpenAI-compatible API URL (e.g., http://localhost:1234/v1)
 ```

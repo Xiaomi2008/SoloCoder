@@ -34,7 +34,7 @@ from openagent.runtime.events import (
 )
 from openagent.service.client import ServiceClient, ServiceClosed
 from openagent.service.protocol import PROTOCOL_VERSION, RpcError
-from openagent.service.server import ServiceSettings, serve
+from openagent.service.server import DEFAULT_MAX_TURNS, ServiceSettings, serve
 
 
 def add_subcommands(subparsers: Any) -> None:
@@ -62,7 +62,10 @@ def add_subcommands(subparsers: Any) -> None:
         default=60.0,
         help="seconds to wait for a permission answer before refusing (default: 60)",
     )
-    sp.add_argument("--max-turns", type=int, default=100, help="default turn budget per run")
+    sp.add_argument(
+        "--max-turns", type=int, default=DEFAULT_MAX_TURNS,
+        help=f"default turn budget per run (default: {DEFAULT_MAX_TURNS})",
+    )
     sp.add_argument(
         "--background-after",
         type=float,

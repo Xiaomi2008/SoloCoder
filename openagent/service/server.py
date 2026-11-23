@@ -95,7 +95,7 @@ READ_CHUNK = 64 * 1024
 
 logger = logging.getLogger("openagent.service")
 DEFAULT_PERMISSION_TIMEOUT = 60.0
-DEFAULT_MAX_TURNS = 100
+DEFAULT_MAX_TURNS = 600
 
 PERMISSION_MODES: tuple[str, ...] = ("allow_all", "allow_readonly", "ask")
 
