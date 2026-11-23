@@ -16,6 +16,7 @@ from .types import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    VideoBlock,
     text_message,
     tool_result_message,
 )
@@ -88,6 +89,8 @@ class Session:
                         blocks.append(
                             {"type": "image_url", "image_url": {"url": b.url}}
                         )
+                    elif isinstance(b, VideoBlock):
+                        blocks.append({"type": "video", "path": b.path, "mime_type": b.mime_type, "fps": b.fps, "max_frames": b.max_frames})
                     elif isinstance(b, ToolUseBlock):
                         blocks.append(
                             {
@@ -228,6 +231,15 @@ class Session:
                         if header.startswith("data:") and data:
                             mime_type = header[len("data:"):].split(";")[0] or "image/png"
                             blocks.append(ImageBlock(data=data, mime_type=mime_type))
+                    elif block_type == "video" and block_data.get("path"):
+                        blocks.append(
+                            VideoBlock(
+                                path=block_data["path"],
+                                mime_type=block_data.get("mime_type") or "video/mp4",
+                                fps=block_data.get("fps"),
+                                max_frames=block_data.get("max_frames"),
+                            )
+                        )
                     elif block_type == "tool_use":
                         blocks.append(
                             ToolUseBlock(
@@ -268,6 +280,8 @@ class Session:
                         blocks.append(
                             {"type": "image_url", "image_url": {"url": b.url}}
                         )
+                    elif isinstance(b, VideoBlock):
+                        blocks.append({"type": "video", "path": b.path})
                     elif isinstance(b, ToolUseBlock):
                         blocks.append(
                             {

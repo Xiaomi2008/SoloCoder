@@ -261,6 +261,7 @@ def spec_from_config(entry: dict[str, Any]) -> EndpointSpec:
     caps = Capabilities(
         tools=bool(entry.get("tools", True)),
         vision=bool(entry.get("vision", False)),
+        video=bool(entry.get("video", False)),
         streaming=True,
         context_window=int(entry.get("context_window", 32768)),
         max_output_tokens=int(entry.get("max_output_tokens", 8192)),

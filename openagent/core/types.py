@@ -29,6 +29,29 @@ class ImageBlock:
 
 
 @dataclass
+class VideoBlock:
+    """A video for a model that reads video, held as its path.
+
+    The file is read when a request is sent, so a stored session stays small
+    and a video is sent as it is now.
+    """
+    path: str
+    mime_type: str = "video/mp4"
+    #: Frames a second and the most frames to sample; None leaves it to the server.
+    fps: float | None = None
+    max_frames: int | None = None
+    type: Literal["video"] = "video"
+
+    def data_url(self) -> str:
+        """The file as a data: URL. OSError when it cannot be read."""
+        import base64
+        from pathlib import Path
+
+        data = base64.b64encode(Path(self.path).read_bytes()).decode("ascii")
+        return f"data:{self.mime_type};base64,{data}"
+
+
+@dataclass
 class ToolUseBlock:
     name: str
     arguments: dict[str, Any]
@@ -47,7 +70,7 @@ class ToolResultBlock:
     type: Literal["tool_result"] = "tool_result"
 
 
-ContentBlock = Union[TextBlock, ImageBlock, ToolUseBlock, ToolResultBlock]
+ContentBlock = Union[TextBlock, ImageBlock, VideoBlock, ToolUseBlock, ToolResultBlock]
 
 
 @dataclass
@@ -89,6 +112,12 @@ class Message:
         if isinstance(self.content, str):
             return False
         return any(isinstance(b, ImageBlock) for b in self.content)
+
+    @property
+    def has_videos(self) -> bool:
+        if isinstance(self.content, str):
+            return False
+        return any(isinstance(b, VideoBlock) for b in self.content)
 
 
 @dataclass

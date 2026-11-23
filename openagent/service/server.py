@@ -716,6 +716,7 @@ class AgentService:
                 background_after=self.settings.background_after,
                 device_lock=self._device_lock,
                 vision=ref.key not in self._blind_models,
+                video=ref.caps.video,
                 max_turns=max_turns,
                 permission_gate=gate_for_mode(mode, callback=conn.ask_permission),  # type: ignore[arg-type]
                 reasoning_effort=reasoning_effort,
@@ -1174,6 +1175,7 @@ class AgentService:
             browser_use=self.settings.browser_use,
             git=not local,
             desktop_use=self.settings.desktop_use,
+            video=bool(getattr(getattr(ref, "caps", None), "video", False)),
         )
 
     async def _tool_list(self, conn: Connection, params: dict[str, Any]) -> dict[str, Any]:

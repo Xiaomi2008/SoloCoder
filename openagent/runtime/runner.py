@@ -85,8 +85,10 @@ from openagent.runtime.loop import (
     EmptyResponseGuard,
     LoopSettings,
     add_screenshot_followup,
+    add_video_followup,
     compaction_needed,
     drop_images,
+    drop_old_videos,
     history_budget,
     is_empty_final_response,
     is_user_prompt,
@@ -184,6 +186,7 @@ class AgentRunner:
         background_after: float = BACKGROUND_AFTER,
         device_lock: asyncio.Lock | None = None,
         vision: bool = True,
+        video: bool = False,
     ) -> None:
         self.provider = provider
         # `session or Session(...)` is a trap here: Session defines __len__, so
@@ -208,6 +211,8 @@ class AgentRunner:
         #: Whether the model reads images. Cleared by the run itself when the
         #: server refuses one, so the caller can remember it for the next run.
         self.vision = vision
+        #: Whether the model reads video: a session's videos go only to one that does.
+        self.video = video
         #: Where long tool calls go. None: every call is waited for.
         self.background = background
         self.background_after = background_after
@@ -326,6 +331,8 @@ class AgentRunner:
             self.session.add_user_multimodal(text=prompt, images=images)
         if not self.vision:
             drop_images(self.session)
+        if not self.video:
+            drop_old_videos(self.session, keep=0)
 
         yield RunStarted(run_id=run_id)
 
@@ -686,6 +693,8 @@ class AgentRunner:
             screenshot_followup_added = add_screenshot_followup(
                 self.session, results, mime_type=self.SCREENSHOT_TOOL_IMAGE_MIME_TYPE, vision=self.vision
             )
+            if self.vision and self.video:
+                add_video_followup(self.session, results, tool_calls, self.tool_context)
             awaiting_final_response = True
 
         if self._cancel_reason:

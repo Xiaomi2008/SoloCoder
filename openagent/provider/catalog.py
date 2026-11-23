@@ -409,6 +409,7 @@ def _parse_listing(
                     caps=Capabilities(
                         tools=default_caps.tools if default_caps else True,
                         vision=default_caps.vision if default_caps else False,
+                        video=default_caps.video if default_caps else False,
                         streaming=True,
                         context_window=int(context) if context else default_context,
                         max_output_tokens=8192,

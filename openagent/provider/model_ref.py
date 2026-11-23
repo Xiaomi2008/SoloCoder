@@ -51,6 +51,8 @@ class Capabilities:
 
     tools: bool = False
     vision: bool = False
+    #: Reads video parts (Qwen3.8 on basalt). Only an endpoint's config says so.
+    video: bool = False
     reasoning: bool = False
     streaming: bool = True
     json_mode: bool = False
@@ -138,6 +140,7 @@ class ModelRef:
             "caps": {
                 "tools": self.caps.tools,
                 "vision": self.caps.vision,
+                "video": self.caps.video,
                 "reasoning": self.caps.reasoning,
                 "streaming": self.caps.streaming,
                 "json_mode": self.caps.json_mode,
@@ -169,6 +172,7 @@ class ModelRef:
             caps=Capabilities(
                 tools=bool(caps.get("tools", False)),
                 vision=bool(caps.get("vision", False)),
+                video=bool(caps.get("video", False)),
                 reasoning=bool(caps.get("reasoning", False)),
                 streaming=bool(caps.get("streaming", True)),
                 json_mode=bool(caps.get("json_mode", False)),

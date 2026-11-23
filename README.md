@@ -266,6 +266,7 @@ However, for most day-to-day coding tasks—reading files, writing functions, de
 | Task Manager | `todo_write`, `todo_update`, `todo_list` |
 | Web & Search | `web_search`, `web_fetch` (requires optional deps) |
 | Computer Use | `screenshot`, `click`, `type_text`, `key_combination` (macOS GUI automation, requires `computer-use` deps) |
+| Video | `view_video` (for an endpoint with `"video": true` in its config, e.g. Qwen3.8 on basalt) |
 | Planning | `enter_plan_mode`, `exit_plan_mode` |
 | User Interaction | `ask_user_question` |
 

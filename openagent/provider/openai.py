@@ -11,6 +11,7 @@ from openagent.provider.stall import is_stall
 from openagent.core.types import (
     ContentBlock,
     ImageBlock,
+    VideoBlock,
     Message,
     TextBlock,
     ToolDef,
@@ -101,7 +102,7 @@ class OpenAIConverterMixin(MessageConverterMixin):
 
                 if isinstance(msg.content, str):
                     entry["content"] = msg.content
-                elif msg.has_images:
+                elif msg.has_images or msg.has_videos:
                     # Handle multimodal content with images for Qwen3.5-VL
                     blocks: list[dict[str, Any]] = []
                     for block in msg.content:
@@ -109,6 +110,8 @@ class OpenAIConverterMixin(MessageConverterMixin):
                             blocks.append({"type": "text", "text": block.text})
                         elif isinstance(block, ImageBlock):
                             blocks.append({"type": "image_url", "image_url": {"url": block.url}})
+                        elif isinstance(block, VideoBlock):
+                            blocks.append(_video_part(block))
                     entry["content"] = blocks if blocks else msg.text
                 else:
                     entry["content"] = msg.text
@@ -519,3 +522,22 @@ def _usage_event(clock: CallClock, message_id: str, usage: Any, timings: Any) ->
         prefill_tps=prefill,
         decode_tps=decode,
     )
+
+
+def _video_part(block: VideoBlock) -> dict[str, Any]:
+    """A video as OpenAI chat's ``video_url`` part, read from its file now.
+
+    Sent as a data: URL because a server on another machine cannot read this
+    one's paths. ``fps`` and ``max_frames`` ride on the part, as vLLM and
+    basalt take them. A file gone since is said in words, not sent.
+    """
+    try:
+        url = block.data_url()
+    except OSError as exc:
+        return {"type": "text", "text": f"[Video {block.path} not shown: {exc.strerror or exc}]"}
+    part: dict[str, Any] = {"type": "video_url", "video_url": {"url": url}}
+    if block.fps is not None:
+        part["fps"] = block.fps
+    if block.max_frames is not None:
+        part["max_frames"] = block.max_frames
+    return part

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from openagent.core.session import Session
-from openagent.core.types import ImageBlock, Message, TextBlock
+from openagent.core.types import ImageBlock, Message, TextBlock, ToolUseBlock, VideoBlock
 from openagent.provider.base import BaseProvider
 
 EMPTY_RESPONSE_RETRY_MESSAGE = (
@@ -51,6 +51,8 @@ def is_user_prompt(message: Message) -> bool:
             BROWSER_SCREENSHOT_FOLLOWUP_TEXT,
             OLD_SCREENSHOT_TEXT,
             BACKGROUND_NOTICE_TEXT,
+            VIDEO_FOLLOWUP_TEXT,
+            OLD_VIDEO_TEXT,
         )
     )
 
@@ -214,7 +216,7 @@ def refuses_images(error: str) -> bool:
 
 
 def drop_images(session: Session) -> int:
-    """Replace every image in the history with a note; returns how many.
+    """Replace every image and video in the history with a note; returns how many.
 
     For a model that cannot read images: one image anywhere in the history
     fails every later request, not just the turn that added it.
@@ -223,13 +225,70 @@ def drop_images(session: Session) -> int:
     for message in session.messages:
         if not isinstance(message.content, list):
             continue
-        images = sum(isinstance(b, ImageBlock) for b in message.content)
+        images = sum(isinstance(b, (ImageBlock, VideoBlock)) for b in message.content)
         if images:
             message.content = [
-                TextBlock(text=NO_VISION_IMAGE_TEXT) if isinstance(b, ImageBlock) else b
+                TextBlock(text=NO_VISION_IMAGE_TEXT) if isinstance(b, (ImageBlock, VideoBlock)) else b
                 for b in message.content
             ]
             dropped += images
+    return dropped
+
+
+VIDEO_FOLLOWUP_TEXT = "The video from view_video:"
+#: Videos kept in the history: each is sent again, file and all, on every turn.
+KEEP_RECENT_VIDEOS = 2
+OLD_VIDEO_TEXT = "[A video, no longer attached:"
+
+
+def add_video_followup(
+    session: Session,
+    results: list[Any],
+    calls: list[ToolUseBlock],
+    tool_context: Any = None,
+) -> bool:
+    """Attach the video each successful ``view_video`` call named.
+
+    The block is built from the call's own arguments, so runs side by side
+    cannot attach each other's videos. Reports whether one was attached.
+    """
+    from openagent.tools.video import video_block
+
+    arguments = {call.id: call.arguments for call in calls}
+    added = False
+    for result in results:
+        if getattr(result, "tool_name", None) != "view_video" or getattr(result, "is_error", False):
+            continue
+        if result.content.startswith("Error") or result.tool_use_id not in arguments:
+            continue
+        args = arguments[result.tool_use_id]
+        try:
+            block = video_block(args.get("path", ""), args.get("fps"), args.get("max_frames"), tool_context)
+        except ValueError:
+            continue
+        session.add_message(
+            Message(role="user", content=[TextBlock(text=f"{VIDEO_FOLLOWUP_TEXT} {block.path}"), block])
+        )
+        added = True
+    if added:
+        drop_old_videos(session)
+    return added
+
+
+def drop_old_videos(session: Session, keep: int = KEEP_RECENT_VIDEOS) -> int:
+    """Take the video out of all but the last ``keep`` that hold one; returns how many."""
+    holders = [
+        m for m in session.messages
+        if isinstance(m.content, list) and any(isinstance(b, VideoBlock) for b in m.content)
+    ]
+    dropped = 0
+    for message in holders[: max(0, len(holders) - keep)]:
+        message.content = [
+            TextBlock(text=f"{OLD_VIDEO_TEXT} {b.path}]")
+            if isinstance(b, VideoBlock) else b
+            for b in message.content
+        ]
+        dropped += 1
     return dropped
 
 

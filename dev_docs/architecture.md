@@ -344,6 +344,10 @@ def web_search(query: str, max_results: int = 5) -> str:
 - `bash_output(session_id, tail_lines)` - Retrieve session output
 - `kill_shell(session_id)` - Terminate session
 
+#### Media
+- `view_video(path, fps, max_frames)` - Watch a video file: the frames go to the model in the next message, sent as a data: URL read from the path at request time (the session stores only the path; the last 2 videos stay attached). Offered only for an endpoint configured with `"video": true` (Qwen3.8 on basalt)
+- A server that refuses images (llama.cpp without `--mmproj`) gets the turn again without them, and that model gets no images or videos for the rest of the service's life
+
 #### Task Management
 - `todo_write(tasks)` - Create multiple tasks
 - `todo_update(task_id, status, subject, description)` - Update task
