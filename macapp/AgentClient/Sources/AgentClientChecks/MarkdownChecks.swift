@@ -192,6 +192,30 @@ func markdownChecks(_ checks: Checks) {
         "a row wider than the delimiter row pads the alignment too"
     )
 
+    // Models write a title line and the table straight under it, no blank line
+    // between: the paragraph swallowed the table and it rendered as prose.
+    checks.equal(
+        Markdown.blocks("Quick decision guide\n| Need | Format |\n|---|---|\n| Mac only | APFS |"),
+        [
+            .paragraph("Quick decision guide"),
+            .table(rows: [["Need", "Format"], ["Mac only", "APFS"]], alignment: [.leading, .leading]),
+        ],
+        "a paragraph stops in front of the table on the next line"
+    )
+    checks.equal(
+        Markdown.blocks("- exFAT for both\n| a | b |\n| --- | --- |\n| 1 | 2 |"),
+        [
+            .bullets(["exFAT for both"]),
+            .table(rows: [["a", "b"], ["1", "2"]], alignment: [.leading, .leading]),
+        ],
+        "a list item stops in front of the table on the next line"
+    )
+    checks.equal(
+        Markdown.blocks("Run this:\ncat a.txt | wc -l\nthen check."),
+        [.paragraph("Run this:\ncat a.txt | wc -l\nthen check.")],
+        "a pipe inside a paragraph, with no `---` row under it, stays in the paragraph"
+    )
+
     checks.equal(
         Markdown.blocks("cat a.txt | wc -l"),
         [.paragraph("cat a.txt | wc -l")],
