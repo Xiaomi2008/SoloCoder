@@ -15,7 +15,7 @@ from openagent.core.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from openagent.provider.base import BaseProvider
+from openagent.provider.base import BaseProvider, session_headers
 from openagent.provider.converter import MessageConverterMixin
 from openagent.providers import (
     CallClock,
@@ -192,6 +192,7 @@ class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
         # The Messages API has no `reasoning_effort` and rejects the request;
         # extended thinking would need its signed blocks kept in the history.
         kwargs.pop("reasoning_effort", None)
+        headers = session_headers(kwargs)
 
         @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
         async def _call() -> Message:
@@ -206,6 +207,8 @@ class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
                 api_kwargs["system"] = converted["system"]
             if tools:
                 api_kwargs["tools"] = self.convert_tools(tools)
+            if headers:
+                api_kwargs["extra_headers"] = headers
             mark_cache_breakpoints(api_kwargs)
             response = await self._client.messages.create(**api_kwargs)
             return self.convert_response(response)
@@ -228,6 +231,7 @@ class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
         fragments; they are assembled here and emitted once, complete.
         """
         kwargs.pop("reasoning_effort", None)
+        headers = session_headers(kwargs)
         converted = self.convert_messages(messages, system_prompt)
         api_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -239,6 +243,8 @@ class AnthropicProvider(AnthropicConverterMixin, BaseProvider):
             api_kwargs["system"] = converted["system"]
         if tools:
             api_kwargs["tools"] = self.convert_tools(tools)
+        if headers:
+            api_kwargs["extra_headers"] = headers
         mark_cache_breakpoints(api_kwargs)
 
         message_id = f"msg_{uuid.uuid4().hex[:24]}"

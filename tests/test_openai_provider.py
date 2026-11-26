@@ -206,6 +206,42 @@ class TestOpenAIProviderChat:
         ))
         mock_client.chat.completions.create.assert_called_once()
 
+    def test_session_id_is_a_header_not_a_body_field(self):
+        """basalt keeps a conversation's slot by `x-session-id`; a body field
+        named `session_id` would reach servers that refuse unknown fields."""
+        from openagent.provider.openai import OpenAIProvider
+
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        provider.model = "gpt-4o"
+        provider.base_url = None
+        provider._max_retries = 0
+
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = "OK"
+        mock_resp.choices[0].message.tool_calls = None
+
+        async def chunks():
+            yield MagicMock(choices=[MagicMock(delta=MagicMock(content="Hi"))])
+
+        create = AsyncMock(side_effect=[mock_resp, chunks()])
+        provider._client = MagicMock()
+        provider._client.chat.completions.create = create
+
+        import asyncio
+
+        async def run():
+            await provider.chat(messages=[Message(role="user", content="hi")], session_id="s-1")
+            async for _ in provider.stream(
+                messages=[Message(role="user", content="hi")], session_id="s-1"
+            ):
+                pass
+
+        asyncio.run(run())
+        assert create.call_count == 2
+        for call in create.call_args_list:
+            assert "session_id" not in call.kwargs
+            assert call.kwargs["extra_headers"] == {"x-session-id": "s-1"}
+
 
 # ============================================================================
 # OpenAIProvider stream
@@ -269,7 +305,8 @@ class TestOpenAIProviderRetry:
         provider._max_retries = 3
 
         call_count = 0
-        mock_request = MagicMock(spec=Request)
+        # A real request: openai 3.x reads its headers to build the error.
+        mock_request = Request("POST", "http://localhost/v1/chat/completions")
 
         async def mock_create(**kwargs):
             nonlocal call_count

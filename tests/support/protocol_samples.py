@@ -11,6 +11,10 @@ from typing import Any
 
 from openagent.runtime.events import (
     AgentResult,
+    BackgroundTaskFinished,
+    BackgroundTasksDelivered,
+    SteeringDelivered,
+    BackgroundTaskStarted,
     BrowserFrame,
     ContextUsage,
     MessageStats,
@@ -156,6 +160,31 @@ def sample_events() -> list[RuntimeEvent]:
             width=1280,
             height=800,
         ),
+        BackgroundTaskStarted(
+            run_id="run_sample",
+            session_id="sess_sample",
+            task_id="bg_sample",
+            tool_call_id="call_sample",
+            tool_name="bash",
+            arguments={"command": "make test"},
+        ),
+        BackgroundTaskFinished(
+            run_id="run_sample",
+            session_id="sess_sample",
+            task_id="bg_sample",
+            tool_call_id="call_sample",
+            tool_name="bash",
+            state="completed",
+            output="ok — 中文\n",
+            wake=True,
+        ),
+        BackgroundTasksDelivered(
+            run_id="run_sample",
+            task_ids=["bg_sample"],
+            summary="Background task finished: make test",
+            resumed=True,
+        ),
+        SteeringDelivered(run_id="run_sample", steer_id="steer_sample", text="use the other file — 中文"),
     ]
 
 

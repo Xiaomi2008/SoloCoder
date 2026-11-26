@@ -340,9 +340,14 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 #### Shell Commands
 - `bash(command, timeout, background, working_dir)` - Execute commands
-- `bash_background(command, working_dir)` - Start persistent session
+- `bash_background(command, working_dir)` - Run in the background: a job that calls the agent back in the service, a persistent session read with `bash_output` elsewhere
 - `bash_output(session_id, tail_lines)` - Retrieve session output
 - `kill_shell(session_id)` - Terminate session
+
+#### Media
+- `read` on an image file (png, jpg, gif, bmp, webp; up to 20 MiB) attaches the picture in the next message for a model that reads images, kept like screenshots (the last 3); for one that does not, the result says it is not shown
+- `view_video(path, fps, max_frames)` - Watch a video file: the frames go to the model in the next message, sent as a data: URL read from the path at request time (the session stores only the path; the last 2 videos stay attached). Offered only for an endpoint configured with `"video": true`, or with `"video": ["Qwen3.8-27B"]` to name the models that read video when one server serves several
+- A server that refuses images (llama.cpp without `--mmproj`) gets the turn again without them, and that model gets no images or videos for the rest of the service's life
 
 #### Task Management
 - `todo_write(tasks)` - Create multiple tasks

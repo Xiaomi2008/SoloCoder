@@ -40,7 +40,9 @@ PY_VERSION="3.14"
 # lxml and primp, 32 MB for a search tool that needs an API key, and
 # `computer-use` is pyobjc, which needs Accessibility grants a bundled app does
 # not have. Both are flags to add later, not omissions to rediscover.
-DEPS="mcp openai anthropic httpx google-genai ollama"
+# `playwright` is the browser tools' driver (158 MB, its Node runtime
+# included); the app drives the installed Chrome, so no browser is downloaded.
+DEPS="mcp openai anthropic httpx google-genai ollama playwright"
 
 # The Swift build, with its output kept. `| tail -1` on a *failing* build prints
 # a code frame and hides the error line, and the script then exits with that

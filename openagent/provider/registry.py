@@ -80,6 +80,9 @@ class EndpointSpec:
     docs_url: str = ""
     # Extra env var that can point this endpoint at a non-default host.
     host_env: str = ""
+    #: The models that read video, when the config names them: one server can
+    #: serve a model that does beside one that does not. None: as default_caps says.
+    video_models: frozenset[str] | None = None
 
 
 LOCAL_ENDPOINTS: tuple[EndpointSpec, ...] = (
@@ -258,9 +261,12 @@ def spec_from_config(entry: dict[str, Any]) -> EndpointSpec:
             f"{name}: unknown wire_api {wire_name!r}; known: {', '.join(sorted(WIRE_APIS_BY_NAME))}"
         )
     requires_key = entry.get("requires_key", True) is not False
+    video = entry.get("video", False)
+    video_models = frozenset(str(m) for m in video) if isinstance(video, list) else None
     caps = Capabilities(
         tools=bool(entry.get("tools", True)),
         vision=bool(entry.get("vision", False)),
+        video=video is True,
         streaming=True,
         context_window=int(entry.get("context_window", 32768)),
         max_output_tokens=int(entry.get("max_output_tokens", 8192)),
@@ -277,6 +283,7 @@ def spec_from_config(entry: dict[str, Any]) -> EndpointSpec:
         default_model=str(entry.get("default_model") or ""),
         default_caps=caps,
         local=bool(entry.get("local", False)),
+        video_models=video_models,
     )
 
 
@@ -397,6 +404,9 @@ class ProviderRegistry:
         """Build a ModelRef from an endpoint's defaults."""
         spec = self.endpoint(provider)
         chosen = model or spec.default_model
+        caps = caps or spec.default_caps
+        if spec.video_models is not None:
+            caps = replace(caps, video=chosen in spec.video_models)
         return ModelRef(
             model=chosen,
             provider=provider,
@@ -405,7 +415,7 @@ class ProviderRegistry:
             base_url=base_url or self.base_url_for(spec),
             label=label or chosen,
             family=_family_of(chosen),
-            caps=caps or spec.default_caps,
+            caps=caps,
             cost=cost or (
                 CostHint(CostKind.LOCAL) if spec.local
                 else CostHint(CostKind.SUBSCRIPTION)

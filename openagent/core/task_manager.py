@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -236,9 +237,18 @@ class TaskManager:
 # Global task manager instance for use by tools
 _global_task_manager: TaskManager | None = None
 
+#: The running session's list, where the host keeps one per session. Sessions run
+#: side by side in the service, and one global list would mix their work.
+session_task_manager: contextvars.ContextVar[TaskManager | None] = contextvars.ContextVar(
+    "session_task_manager", default=None
+)
+
 
 def get_task_manager() -> TaskManager:
-    """Get or create the global task manager."""
+    """The running session's task manager, or the global one."""
+    current = session_task_manager.get()
+    if current is not None:
+        return current
     global _global_task_manager
     if _global_task_manager is None:
         _global_task_manager = TaskManager()

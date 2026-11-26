@@ -156,6 +156,9 @@ public final class Sidecar {
             arguments += ["-I", "-B", "-u"]
         }
         arguments += [launch.script.path, "serve", "--socket", socketPath, "--quiet"]
+        // A session working out of sight can wait a while for its approval: the
+        // sidebar shows the request, and the default minute would refuse it first.
+        arguments += ["--permission-timeout", "3600"]
         if computerUse {
             arguments.append("--computer-use")
         }

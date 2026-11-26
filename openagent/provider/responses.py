@@ -29,7 +29,7 @@ from openagent.core.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from openagent.provider.base import BaseProvider
+from openagent.provider.base import BaseProvider, session_headers
 from openagent.provider.converter import MessageConverterMixin
 from openagent.providers.events import (
     CallClock,
@@ -207,6 +207,7 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
             kwargs["reasoning"] = reasoning
         if "max_tokens" in kwargs:
             kwargs.setdefault("max_output_tokens", kwargs.pop("max_tokens"))
+        headers = session_headers(kwargs)
         api_kwargs: dict[str, Any] = {
             "model": self.model,
             "input": converted["input"],
@@ -218,6 +219,8 @@ class OpenAIResponsesProvider(ResponsesConverterMixin, BaseProvider):
             api_kwargs["instructions"] = converted["instructions"]
         if tools:
             api_kwargs["tools"] = self.convert_tools(tools)
+        if headers:
+            api_kwargs["extra_headers"] = headers
         return api_kwargs
 
     async def chat(

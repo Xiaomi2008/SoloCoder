@@ -7,12 +7,13 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from ..core.tool import ToolContext, tool
+from ..core.tool import ToolContext, ToolProgress, tool, tool_progress
 
 
 # ============================================================================
@@ -34,6 +35,10 @@ def _scope(ctx: ToolContext, path: str | None = None) -> tuple[Path | None, str 
             f"directory '{ctx.working_dir}'."
         )
     return resolved, None
+
+
+#: Opens ``read``'s result for an image file; the runtime matches it.
+IMAGE_FILE_RESULT = "[Image file"
 
 
 @tool
@@ -66,14 +71,11 @@ def read(
             return f"Error: '{path}' is a directory, not a file."
         return f"Error: '{path}' does not exist or is not accessible."
 
-    # Check for image files
+    # Check for image files: the runtime attaches the picture itself in the
+    # next message, for a model that reads images; this is only the summary.
     image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"}
     if file_path.suffix.lower() in image_extensions:
-        import base64
-
-        with open(file_path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode("utf-8")
-        return f"[Image file ({file_path.suffix}): {len(encoded)} bytes of base64 data]"
+        return f"{IMAGE_FILE_RESULT} ({file_path.suffix}, {file_path.stat().st_size:,} bytes)]"
 
     try:
         content = file_path.read_text(encoding="utf-8")
@@ -420,6 +422,32 @@ def format_grep_results(results: list[dict]) -> str:
 # ============================================================================
 
 
+def _watched_output(
+    process: subprocess.Popen, progress: ToolProgress, timeout: int | None
+) -> str:
+    """Wait for a command whose output and process the runner can reach."""
+    progress.attach(process)
+    lines: list[str] = []
+
+    def pump() -> None:
+        for line in process.stdout:
+            lines.append(line)
+            progress.write(line)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        progress.kill()
+        reader.join(1)
+        return f"Error: Command timed out after {timeout} seconds."
+    # A killed command's stragglers may hold the pipe open; nobody is waiting.
+    reader.join(1 if progress.killed else None)
+    output = "".join(lines)
+    return output if output else "(no output)"
+
+
 @tool
 def bash(
     command: str,
@@ -433,11 +461,11 @@ def bash(
     Args:
         command: Shell command to run
         timeout: Seconds before the process is terminated
-        background: Return immediately with a session ID; read the output later with bash_output
+        background: Start it in the background and return at once; the result says whether you will be called back when it finishes
         working_dir: Directory to run in (default: the project directory, not the process directory)
 
     Returns:
-        Command output (stdout), or session ID for background processes
+        Command output (stdout), or the background task's ID
     """
     # For background execution, we'll use a shared dictionary managed by the agent
     if background:
@@ -454,14 +482,20 @@ def bash(
 
         # `cwd` is the starting directory, not a boundary: no OS sandbox is
         # installed yet, so an absolute path or `cd /` can still escape.
+        progress = tool_progress.get()
         process = subprocess.Popen(
             command,
             shell=True,
+            stdin=subprocess.DEVNULL if progress else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
             text=True,
+            errors="replace",
+            start_new_session=progress is not None,
         )
+        if progress is not None:
+            return _watched_output(process, progress, timeout)
 
         try:
             output, _ = process.communicate(timeout=timeout)
@@ -643,7 +677,10 @@ async def bash_background(
     working_dir: str | None = None,
     tool_context: ToolContext | None = None,
 ) -> str:
-    """Start a background shell session and execute commands.
+    """Run a shell command in the background and return at once.
+
+    The result says whether you will be called back when it finishes. Only then
+    can you end your turn and wait for it; otherwise read it with bash_output.
 
     Args:
         command: Shell command to execute in the background session
@@ -651,7 +688,7 @@ async def bash_background(
                    working directory.
 
     Returns:
-        Session ID for tracking the background process
+        The background task's ID, or a shell session ID for bash_output
     """
     from ..core.bash_manager import get_bash_manager
 
@@ -665,7 +702,13 @@ async def bash_background(
             command=command,
             working_dir=str(session_dir),
         )
-        return f"Started bash session '{session_id}' in '{session_dir or '.'}'. Use bash_output to retrieve output."
+        # Where there is a runner with jobs, it runs the call as a job instead
+        # (``background_now``). This shell is only read, so it must not be
+        # mistaken for something that reports back.
+        return (
+            f"Started bash session '{session_id}' in '{session_dir or '.'}'. It will not "
+            f'call you back when it finishes: read its output with bash_output("{session_id}").'
+        )
     except Exception as e:
         return f"Error starting bash session: {e}"
 
@@ -674,11 +717,12 @@ async def bash_background(
 def bash_output(
     session_id: str,
     tail_lines: int | None = None,
+    tool_context: ToolContext | None = None,
 ) -> str:
-    """Retrieve output from a running or completed background bash shell.
+    """Retrieve output from a running or completed background shell or task.
 
     Args:
-        session_id: Session ID returned by bash_background
+        session_id: Session ID from bash_background, a background task ID (bg_...), or "all" to list this session's background tasks
         tail_lines: If set, only return the last N lines of output
 
     Returns:
@@ -687,9 +731,14 @@ def bash_output(
     from ..core.bash_manager import get_bash_manager
 
     try:
-        manager = get_bash_manager()
         # Extract session ID from the result message if needed
         actual_session_id = session_id.strip()
+        jobs = tool_context.background if tool_context else None
+        if actual_session_id == "all" or actual_session_id.startswith("bg_"):
+            if jobs is None:
+                return "No background tasks in this session."
+            return jobs.status(actual_session_id, tail_lines)
+        manager = get_bash_manager()
         output = manager.get_output(session_id=actual_session_id, tail_lines=tail_lines)
         return output if output else "(no output)"
     except Exception as e:
@@ -699,16 +748,24 @@ def bash_output(
 @tool
 async def kill_shell(
     session_id: str,
+    tool_context: ToolContext | None = None,
 ) -> str:
-    """Terminate a running background bash shell.
+    """Terminate a running background bash shell or background task.
 
     Args:
-        session_id: Session ID of the shell to terminate
+        session_id: Session ID of the shell, or a background task ID (bg_...)
 
     Returns:
         Result message
     """
     from ..core.bash_manager import get_bash_manager
+
+    task_id = session_id.strip()
+    if task_id.startswith("bg_"):
+        jobs = tool_context.background if tool_context else None
+        if jobs is not None and jobs.cancel(task_id):
+            return f"Stopped background task {task_id}."
+        return f"Error: no running background task {task_id!r}"
 
     try:
         manager = get_bash_manager()

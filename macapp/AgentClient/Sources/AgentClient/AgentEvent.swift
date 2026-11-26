@@ -35,6 +35,10 @@ public enum AgentEvent: Sendable, Equatable {
     case contextUsage(ContextUsage)
     case messageStats(MessageStats)
     case browserFrame(BrowserFrame)
+    case backgroundTaskStarted(BackgroundTaskStarted)
+    case backgroundTaskFinished(BackgroundTaskFinished)
+    case backgroundTasksDelivered(BackgroundTasksDelivered)
+    case steeringDelivered(SteeringDelivered)
     case unknown(type: String, params: JSONValue)
 
     public var type: String {
@@ -59,6 +63,10 @@ public enum AgentEvent: Sendable, Equatable {
         case .contextUsage: "context_usage"
         case .messageStats: "message_stats"
         case .browserFrame: "browser_frame"
+        case .backgroundTaskStarted: "background_task_started"
+        case .backgroundTaskFinished: "background_task_finished"
+        case .backgroundTasksDelivered: "background_tasks_delivered"
+        case .steeringDelivered: "steering_delivered"
         case .unknown(let type, _): type
         }
     }
@@ -87,6 +95,10 @@ public enum AgentEvent: Sendable, Equatable {
         case .contextUsage(let e): e.runId
         case .messageStats(let e): e.runId
         case .browserFrame(let e): e.runId
+        case .backgroundTaskStarted(let e): e.runId
+        case .backgroundTaskFinished(let e): e.runId
+        case .backgroundTasksDelivered(let e): e.runId
+        case .steeringDelivered(let e): e.runId
         case .unknown: nil
         }
     }
@@ -129,6 +141,14 @@ public enum AgentEvent: Sendable, Equatable {
         case "context_usage": .contextUsage(try decoder.decode(ContextUsage.self, from: data))
         case "message_stats": .messageStats(try decoder.decode(MessageStats.self, from: data))
         case "browser_frame": .browserFrame(try decoder.decode(BrowserFrame.self, from: data))
+        case "background_task_started":
+            .backgroundTaskStarted(try decoder.decode(BackgroundTaskStarted.self, from: data))
+        case "background_task_finished":
+            .backgroundTaskFinished(try decoder.decode(BackgroundTaskFinished.self, from: data))
+        case "background_tasks_delivered":
+            .backgroundTasksDelivered(try decoder.decode(BackgroundTasksDelivered.self, from: data))
+        case "steering_delivered":
+            .steeringDelivered(try decoder.decode(SteeringDelivered.self, from: data))
         default:
             .unknown(type: envelope.type, params: try decoder.decode(JSONValue.self, from: data))
         }
@@ -313,6 +333,48 @@ public struct BrowserFrame: Decodable, Sendable, Equatable {
     public let title: String
     public let width: Int
     public let height: Int
+}
+
+/// A tool call that ran too long and now runs on without the turn. Its row gets
+/// no `tool_call_completed`; `BackgroundTaskFinished` closes it.
+public struct BackgroundTaskStarted: Decodable, Sendable, Equatable {
+    public let runId: String
+    public let sessionId: String
+    public let taskId: String
+    public let toolCallId: String
+    public let toolName: String
+    public let arguments: JSONValue
+}
+
+/// A background task ended, possibly between runs. `runId` is the run that
+/// started it. `wake` asks the client to call the agent back.
+public struct BackgroundTaskFinished: Decodable, Sendable, Equatable {
+    public let runId: String
+    public let sessionId: String
+    public let taskId: String
+    public let toolCallId: String
+    public let toolName: String
+    /// "completed", "failed" or "cancelled".
+    public let state: String
+    public let output: String
+    public let wake: Bool
+}
+
+/// Finished tasks' results went into the conversation. `resumed` is true when
+/// they are why this run exists.
+public struct BackgroundTasksDelivered: Decodable, Sendable, Equatable {
+    public let runId: String
+    public let taskIds: [String]
+    public let summary: String
+    public let resumed: Bool
+}
+
+/// A message sent with `run.steer` went into the conversation; the model sees
+/// it from its next turn on.
+public struct SteeringDelivered: Decodable, Sendable, Equatable {
+    public let runId: String
+    public let steerId: String
+    public let text: String
 }
 
 // MARK: - Closed sets with a fallback

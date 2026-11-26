@@ -61,6 +61,8 @@ class ProviderToolCall(ProviderStreamEvent):
 @dataclass(frozen=True)
 class ProviderError(ProviderStreamEvent):
     error: str
+    #: The reply began and then the server went quiet; asking again may work.
+    stalled: bool = False
     type: ClassVar[Literal["provider_error"]] = "provider_error"
 
 

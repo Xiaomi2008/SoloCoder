@@ -158,8 +158,8 @@ Type 'quit' or 'exit' to stop the agent.
         "--max-turns",
         "-t",
         type=int,
-        default=100,
-        help="Maximum conversation turns before stopping (default: 100)",
+        default=600,
+        help="Maximum conversation turns before stopping (default: 600)",
     )
 
     parser.add_argument(

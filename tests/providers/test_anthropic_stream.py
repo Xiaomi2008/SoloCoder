@@ -95,6 +95,16 @@ async def test_a_claude_tool_call_runs_and_the_answer_streams():
     assert all("reasoning_effort" not in r for r in fake.requests)
 
 
+async def test_the_session_id_goes_as_a_header():
+    fake = FakeMessages(text("ok"))
+    runner = AgentRunner(provider(fake), session_id="sess-1")
+
+    [e async for e in runner.stream("hi")]
+
+    assert "session_id" not in fake.requests[0]
+    assert fake.requests[0]["extra_headers"] == {"x-session-id": "sess-1"}
+
+
 async def test_invalid_tool_json_fails_the_turn_with_a_reason():
     fake = FakeMessages(tool_call("list_files", ['{"folder": ']))
     runner = AgentRunner(provider(fake), tools=[list_files])

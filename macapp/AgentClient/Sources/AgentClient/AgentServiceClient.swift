@@ -136,6 +136,28 @@ public struct RunStartResult: Decodable, Sendable, Equatable {
     public let model: String
 }
 
+/// The answer to a callback: `runId` is nil when there was nothing to resume.
+public struct ResumeResult: Decodable, Sendable, Equatable {
+    public let runId: String?
+    public let sessionId: String
+}
+
+/// A running background task, as `background.list` reports it.
+public struct BackgroundTaskInfo: Decodable, Sendable, Equatable {
+    public let taskId: String
+    public let toolCallId: String
+    public let toolName: String
+    public let arguments: JSONValue
+    public let state: String
+    public let elapsed: Double
+}
+
+public struct BackgroundTaskList: Decodable, Sendable, Equatable {
+    public let sessionId: String
+    public let tasks: [BackgroundTaskInfo]
+    public let wakeDue: Bool
+}
+
 public struct ModelCapabilities: Decodable, Sendable, Equatable {
     public let tools: Bool
     public let vision: Bool
@@ -268,6 +290,9 @@ public struct SessionRecord: Decodable, Sendable, Equatable {
     public let sessionId: String
     public let systemPrompt: String
     public let messages: [JSONValue]
+    /// The model key the session last ran on. Nil for a session saved before
+    /// the service recorded it.
+    public let model: String?
     /// The same estimate `context_usage` carries. Nil from a service that
     /// predates it.
     public let contextTokens: Int?
@@ -511,10 +536,53 @@ public actor AgentServiceClient {
         return try decode(RunStartResult.self, from: result)
     }
 
+    /// Call the agent back to a session whose background task has finished.
+    public func resumeBackground(
+        sessionId: String,
+        workingDir: String,
+        model: String? = nil,
+        permissionMode: PermissionMode = .ask,
+        reasoningEffort: ReasoningEffort? = nil
+    ) async throws -> ResumeResult {
+        var params: [String: JSONValue] = [
+            "resume_background": .bool(true),
+            "session_id": .string(sessionId),
+            "working_dir": .string(workingDir),
+            "permission_mode": .string(permissionMode.rawValue),
+        ]
+        if let model { params["model"] = .string(model) }
+        if let reasoningEffort { params["reasoning_effort"] = .string(reasoningEffort.rawValue) }
+        return try decode(ResumeResult.self, from: try await call("run.start", params: .object(params)))
+    }
+
+    public func backgroundTasks(sessionId: String) async throws -> BackgroundTaskList {
+        try decode(
+            BackgroundTaskList.self,
+            from: try await call("background.list", params: .object(["session_id": .string(sessionId)]))
+        )
+    }
+
+    public func cancelBackgroundTask(sessionId: String, taskId: String) async throws {
+        _ = try await call(
+            "background.cancel",
+            params: .object(["session_id": .string(sessionId), "task_id": .string(taskId)])
+        )
+    }
+
     /// Ask the server to stop a run. The `run_cancelled` event follows on the
     /// stream; this call only confirms the request was accepted.
     public func cancelRun(runId: String) async throws {
         _ = try await call("run.cancel", params: .object(["run_id": .string(runId)]))
+    }
+
+    /// Give a running agent a message for its next turn. Returns its steer id,
+    /// or nil when the run has already decided to end.
+    public func steer(runId: String, text: String, images: [String] = []) async throws -> String? {
+        var params: [String: JSONValue] = ["run_id": .string(runId), "text": .string(text)]
+        if !images.isEmpty { params["images"] = .array(images.map { .string($0) }) }
+        let result = try await call("run.steer", params: .object(params))
+        guard result.objectValue?["accepted"]?.boolValue == true else { return nil }
+        return result.objectValue?["steer_id"]?.stringValue
     }
 
     /// Change the live run's approval mode and file-tool scope. A run's gate

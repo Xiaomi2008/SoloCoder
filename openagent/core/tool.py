@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import inspect
 import json
+import os
 import re
+import signal
+import subprocess
+import threading
 from pathlib import Path
 from types import UnionType
 from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
@@ -149,6 +155,59 @@ def tool(
     return decorator
 
 
+class ToolProgress:
+    """A running tool's output so far, and the way to stop it.
+
+    A tool call the runner may move to the background runs with one of these
+    set, on a worker thread: the event loop stays free, the output can be read
+    while the call is going, and the process can be killed from outside it.
+    """
+
+    MAX_CHARS = 200_000
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._text = ""
+        self._process: subprocess.Popen | None = None
+        self.killed = False
+
+    def write(self, text: str) -> None:
+        with self._lock:
+            self._text = (self._text + text)[-self.MAX_CHARS :]
+
+    def text(self) -> str:
+        with self._lock:
+            return self._text
+
+    def attach(self, process: subprocess.Popen) -> None:
+        """Name the process to kill; it must lead its own process group."""
+        with self._lock:
+            self._process = process
+            killed = self.killed
+        if killed:
+            self._kill_group(process)
+
+    def kill(self) -> None:
+        with self._lock:
+            self.killed = True
+            process = self._process
+        if process is not None:
+            self._kill_group(process)
+
+    @staticmethod
+    def _kill_group(process: subprocess.Popen) -> None:
+        # The group, because the shell's children are what is doing the work.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+tool_progress: contextvars.ContextVar[ToolProgress | None] = contextvars.ContextVar(
+    "tool_progress", default=None
+)
+
+
 @dataclass
 class ToolContext:
     """Per-session facts a tool needs and the model must not be asked for.
@@ -168,6 +227,9 @@ class ToolContext:
     #: Where compaction saves the tool outputs it clears from this session,
     #: for ``recall_output``. None when the session is not stored.
     outputs_dir: str | None = None
+    #: This session's background jobs (``BackgroundJobs``), for the tools that
+    #: report on them and stop them. None outside the service.
+    background: Any = None
 
     def resolve(self, path: str | Path | None = None) -> Path:
         """Absolute path for ``path``, anchored at the session directory."""
@@ -230,6 +292,8 @@ async def _execute_tool_entry(
 
         if inspect.iscoroutinefunction(func):
             result = await func(**arguments)
+        elif tool_progress.get() is not None:
+            result = await asyncio.to_thread(func, **arguments)
         else:
             result = func(**arguments)
 

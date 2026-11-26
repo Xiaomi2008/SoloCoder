@@ -12,9 +12,11 @@ import Foundation
 ///
 /// Three rules this class's shape encodes:
 ///
-/// * **One run per connection.** One client, and `busy` gating the composer.
-///   The server refuses a second `run.start` on a busy connection; the app
-///   refuses it first, with a reason the user can read.
+/// * **One run per session, many sessions at once.** The published properties
+///   are the session on screen, and `busy` gates its composer. The others wait in
+///   `parked` and keep working: events reach them by `run_id`. The server refuses
+///   a second `run.start` on a busy session; the app refuses it first, with a
+///   reason the user can read.
 /// * **The transcript is folded from events, never written by the UI.** Every
 ///   change goes through `Transcript.apply`, so what is on screen is what the
 ///   service said. The two exceptions are the user's own message (not in the
@@ -180,6 +182,11 @@ public final class AppModel: ObservableObject {
     }
     @Published public var status = "not connected"
     @Published public var busy = false
+    /// What the person sent during the run on screen that has not reached it.
+    @Published public var pendingSteers: [PendingSteer] = []
+    /// Words sent during a run that ended before taking them, for the composer
+    /// to put back. The composer clears it once taken.
+    @Published public var returnedDraft: String?
     @Published public var connected = false
     /// True when there is an actual client, not merely a preview's painted
     /// "connected" state. The preview sets `connected` for its visuals and has
@@ -205,6 +212,25 @@ public final class AppModel: ObservableObject {
     /// the next non-delta event while the server still waits, so the id is the
     /// guard against a second `permission.respond`.
     private var autoAnsweredRequests: Set<String> = []
+    /// This session's tool calls still running in the background.
+    @Published public private(set) var backgroundTasks: [BackgroundTaskRow] = []
+    /// A background task finished and the agent has not been called back for it.
+    public private(set) var wakeDue = false
+    /// Identifies the session on screen across a switch, before and after the
+    /// service gives it an id.
+    @Published public private(set) var visibleSlotID = UUID()
+    /// The other sessions that are working or have news.
+    private var parked: [UUID: SessionSlot] = [:]
+    /// Which session each live run belongs to.
+    private var runOwners: [String: UUID] = [:]
+    /// `run.start` calls not answered yet. A run's events can overtake its
+    /// answer, and until the answer comes nothing says whose they are.
+    private var startsInFlight = 0
+    private var heldEvents: [String: [AgentEvent]] = [:]
+    /// The session a click last asked for, while it loads.
+    private var openingSession: String?
+    /// Every session with something to show, by sidebar id.
+    @Published public private(set) var activity: [String: SessionActivity] = [:]
 
     private static let workingDirKey = "openagent.workingDir"
     private static let modelKey = "openagent.model"
@@ -327,8 +353,9 @@ public final class AppModel: ObservableObject {
 
     func restartService(changed setting: String, on: Bool) async {
         guard client != nil else { return }
-        if busy {
-            banner = "stop the run before changing \(setting)"
+        // A restart ends the service, and everything it is running with it.
+        if anyWorkActive {
+            banner = "stop the running sessions and background tasks before changing \(setting)"
             return
         }
         stop()
@@ -382,10 +409,24 @@ public final class AppModel: ObservableObject {
     private func consume(_ stream: AsyncStream<AgentEvent>) {
         streamTask = Task { @MainActor in
             for await event in stream {
-                applyEvent(event)
+                route(event)
             }
             flushDeltas()
             busy = false
+            // The service is gone, and its runs and tasks went with it.
+            backgroundTasks = []
+            wakeDue = false
+            for id in Array(parked.keys) {
+                if parked[id]?.transcript.state.isRunning == true {
+                    parked[id]?.transcript.failLocally("the service stopped")
+                    parked[id]?.unseen = .failed
+                }
+                parked[id]?.busy = false
+                parked[id]?.backgroundTasks = []
+                parked[id]?.wakeDue = false
+            }
+            runOwners.removeAll()
+            refreshActivity()
         }
     }
 
@@ -411,6 +452,10 @@ public final class AppModel: ObservableObject {
     /// that invalidates views to report invalidations is useless. The checks use
     /// it to prove a run of 200 deltas does not cost 200 view updates.
     public private(set) var transcriptPublishes = 0
+    /// How many times the agent was called back for a background result,
+    /// counted before the service is asked. The checks use it to see which
+    /// endings of a run keep that promise.
+    public private(set) var callbacksRequested = 0
     private var flushTask: Task<Void, Never>?
     private static let flushWindow = Duration.milliseconds(60)
 
@@ -437,6 +482,239 @@ public final class AppModel: ObservableObject {
         case .messageDelta, .reasoningDelta: return true
         default: return false
         }
+    }
+
+    // MARK: sessions side by side
+
+    /// The sidebar's key for the session on screen.
+    public var visibleKey: String { sessionId ?? visibleSlotID.uuidString }
+
+    /// Anything a service restart would kill.
+    public var anyWorkActive: Bool {
+        busy || !backgroundTasks.isEmpty || parked.values.contains { $0.activity?.isLive == true }
+    }
+
+    private var visibleActivity: SessionActivity? {
+        SessionSlot.activity(
+            prompt: promptToAnswer != nil, busy: busy || transcript.state.isRunning,
+            background: backgroundTasks.count, unseen: nil
+        )
+    }
+
+    private var currentSettings: RunSettings {
+        RunSettings(
+            workingDir: workingDir, model: selectedModel, permissionMode: permissionMode,
+            reasoningEffort: reasoningEffort
+        )
+    }
+
+    /// The stored sessions, under the live ones that are not on disk yet.
+    public var sidebarEntries: [SidebarEntry] {
+        let saved = Set(sessions.map(\.sessionId))
+        var unsaved: [(key: String, transcript: Transcript)] = parked.values
+            .filter { !saved.contains($0.key) }
+            .map { ($0.key, $0.transcript) }
+        if !saved.contains(visibleKey), !transcript.lines.isEmpty {
+            unsaved.append((visibleKey, transcript))
+        }
+        let newest = unsaved.sorted {
+            ($0.transcript.lines.first?.at ?? .distantPast) > ($1.transcript.lines.first?.at ?? .distantPast)
+        }
+        let live = newest.map { item in
+            SidebarEntry(
+                id: item.key,
+                row: SessionRow(
+                    sessionId: item.key, path: "",
+                    updatedAt: item.transcript.lines.first?.at.timeIntervalSince1970 ?? 0,
+                    messageCount: item.transcript.promptCount,
+                    title: item.transcript.firstPrompt
+                ),
+                activity: activity[item.key]
+            )
+        }
+        return live + sessions.map { SidebarEntry(id: $0.sessionId, row: $0, activity: activity[$0.sessionId]) }
+    }
+
+    private func refreshActivity() {
+        var now: [String: SessionActivity] = [:]
+        for slot in parked.values {
+            if let state = slot.activity { now[slot.key] = state }
+        }
+        if let visibleActivity { now[visibleKey] = visibleActivity }
+        if now != activity { activity = now }
+    }
+
+    private func parkedSlot(session: String) -> UUID? {
+        parked.values.first { $0.sessionId == session }?.id
+    }
+
+    /// Hand one event to the session it belongs to.
+    private func route(_ event: AgentEvent) {
+        if case .backgroundTaskFinished(let e) = event {
+            // By session: the run that started the task is usually long over.
+            if let id = parkedSlot(session: e.sessionId) { applyParked(event, to: id) } else { applyEvent(event) }
+        } else if let runId = event.runId, let owner = runOwners[runId] {
+            if owner == visibleSlotID { applyEvent(event) } else { applyParked(event, to: owner) }
+            if event.isTerminal { runOwners[runId] = nil }
+        } else if let runId = event.runId, startsInFlight > 0 {
+            heldEvents[runId, default: []].append(event)
+            return
+        } else {
+            applyEvent(event)
+        }
+        if !Self.isDelta(event) { refreshActivity() }
+    }
+
+    /// `run.start` answered: the run is this session's, and so is what came first.
+    private func adopt(runId: String, owner: UUID) {
+        runOwners[runId] = owner
+        for event in heldEvents.removeValue(forKey: runId) ?? [] { route(event) }
+    }
+
+    private func startAnswered() {
+        startsInFlight -= 1
+        guard startsInFlight == 0, !heldEvents.isEmpty else { return }
+        let strays = heldEvents.values.flatMap { $0 }
+        heldEvents.removeAll()
+        for event in strays { route(event) }
+    }
+
+    /// An event for a session that is not on screen. Nothing here publishes the
+    /// transcript, which is why a busy session out of sight costs the view nothing.
+    private func applyParked(_ event: AgentEvent, to id: UUID) {
+        guard var slot = parked[id] else { return }
+        switch event {
+        case .contextUsage(let usage):
+            slot.contextUsed = usage.usedTokens
+            slot.compactAt = usage.compactAt
+            slot.runContextWindow = usage.contextWindow
+        case .messageStats(let stats):
+            slot.lastStats = stats
+        case .browserFrame:
+            break
+        case .steeringDelivered(let e):
+            let sent = PendingSteer.take(e, from: &slot.pendingSteers)
+            slot.transcript.addUserMessage(e.text, images: sent?.images ?? [])
+        default:
+            slot.transcript.apply(event)
+            slot.promptToAnswer = slot.transcript.pendingPermission
+        }
+        switch event {
+        case .permissionRequested:
+            Self.revealIfHidden()
+        case .backgroundTaskStarted(let e):
+            slot.backgroundTasks.append(
+                BackgroundTaskRow(id: e.taskId, toolName: e.toolName, arguments: e.arguments, startedAt: Date())
+            )
+        case .backgroundTaskFinished(let e):
+            slot.backgroundTasks.removeAll { $0.id == e.taskId }
+            if e.wake { slot.wakeDue = true }
+        case .backgroundTasksDelivered:
+            slot.wakeDue = false
+        case .runCompleted:
+            slot.busy = false
+            slot.unseen = .finished
+        case .runFailed:
+            // As on screen: a failed run keeps the callback, a stopped one does not.
+            slot.busy = false
+            slot.unseen = .failed
+        case .runCancelled:
+            slot.busy = false
+            slot.wakeDue = false
+        default:
+            break
+        }
+        parked[id] = slot.isWorthKeeping ? slot : nil
+        if event.isTerminal { Task { await refreshSessions() } }
+        wakeParked(id)
+    }
+
+    private func wakeParked(_ id: UUID) {
+        guard let slot = parked[id], slot.wakeDue, !slot.busy, let sessionId = slot.sessionId,
+            !slot.settings.workingDir.isEmpty
+        else { return }
+        parked[id]?.wakeDue = false
+        parked[id]?.busy = true
+        resume(owner: id, sessionId: sessionId, settings: slot.settings)
+    }
+
+    /// Put the session on screen away, if it still matters.
+    private func parkVisible() {
+        flushDeltas()
+        let slot = SessionSlot(
+            id: visibleSlotID, sessionId: sessionId, transcript: transcript, settings: currentSettings,
+            contextUsed: contextUsed, compactAt: compactAt, lastStats: lastStats,
+            runContextWindow: runContextWindow, promptToAnswer: promptToAnswer, busy: busy,
+            backgroundTasks: backgroundTasks, pendingSteers: pendingSteers, wakeDue: wakeDue
+        )
+        if slot.isWorthKeeping { parked[slot.id] = slot }
+    }
+
+    /// Bring a session on screen.
+    private func show(_ slot: SessionSlot, restoreSettings: Bool) {
+        parked[slot.id] = nil
+        visibleSlotID = slot.id
+        sessionId = slot.sessionId
+        transcript = slot.transcript
+        contextUsed = slot.contextUsed
+        compactAt = slot.compactAt
+        lastStats = slot.lastStats
+        runContextWindow = slot.runContextWindow
+        promptToAnswer = slot.promptToAnswer
+        busy = slot.busy
+        backgroundTasks = slot.backgroundTasks
+        pendingSteers = slot.pendingSteers
+        wakeDue = slot.wakeDue
+        browserPanel.hide()
+        if restoreSettings {
+            // Its own scope and approval rule: Auto chosen for another session
+            // must not answer the prompt this one is waiting on.
+            if !slot.settings.workingDir.isEmpty { workingDir = slot.settings.workingDir }
+            if permissionMode != slot.settings.permissionMode { permissionMode = slot.settings.permissionMode }
+        }
+        // Each session keeps its own model: picking a server for one must not
+        // move the others. A new session starts on whatever was showing.
+        if selectedModel != slot.settings.model { selectedModel = slot.settings.model }
+        if reasoningEffort != slot.settings.reasoningEffort {
+            reasoningEffort = slot.settings.reasoningEffort
+            clampEffort()
+        }
+        refreshActivity()
+        settleSteers()
+        wakeIfDue()
+    }
+
+    private func emptySlot() -> SessionSlot {
+        SessionSlot(
+            id: UUID(), sessionId: nil, transcript: Transcript(terminalTypes: terminalTypes),
+            settings: currentSettings
+        )
+    }
+
+    /// A session as the sidebar's previews show it, with no service behind it.
+    public func parkPreviewSession(title: String, activity state: SessionActivity) {
+        var slot = emptySlot()
+        slot.sessionId = "sess_preview_\(parked.count)"
+        slot.transcript.addUserMessage(title)
+        slot.transcript.addAssistantMessage("Answer for: \(title)")
+        switch state {
+        case .running: slot.busy = true
+        case .needsApproval:
+            slot.promptToAnswer = PermissionRequest(
+                id: "req_preview", toolName: "bash", arguments: .object(["command": .string("make install")]),
+                reason: "exec: runs arbitrary commands"
+            )
+        case .inBackground:
+            slot.backgroundTasks = [
+                BackgroundTaskRow(
+                    id: "bg_preview", toolName: "bash", arguments: .object(["command": .string("make test")]),
+                    startedAt: Date()
+                )
+            ]
+        case .finished, .failed: slot.unseen = state
+        }
+        parked[slot.id] = slot
+        refreshActivity()
     }
 
     private func applyEvent(_ event: AgentEvent) {
@@ -469,11 +747,17 @@ public final class AppModel: ObservableObject {
             return
         }
         flushDeltas()
-        transcript.apply(event)
+        if case .steeringDelivered(let e) = event {
+            let sent = PendingSteer.take(e, from: &pendingSteers)
+            transcript.addUserMessage(e.text, images: sent?.images ?? [])
+        } else {
+            transcript.apply(event)
+        }
         transcriptPublishes += 1
         let hadPrompt = promptToAnswer != nil
         promptToAnswer = transcript.pendingPermission
         autoAnswerIfNeeded()
+        applyBackgroundEvent(event)
         // The computer-use tools hide this app before they look or act, so its
         // window neither covers the screen nor takes the agent's typing. A
         // prompt hidden with it would wait forever, and a finished run's answer
@@ -489,7 +773,105 @@ public final class AppModel: ObservableObject {
             // and that is self-healing: the row appears on the next refresh,
             // which the sidebar does whenever it appears.
             Task { await refreshSessions() }
+            settleSteers()
+            // A run the user stopped must not start again on its own: a result
+            // still waiting joins their next prompt. A failed run is no answer
+            // about the task, and the agent was told it would be called back.
+            switch event {
+            case .runCompleted, .runFailed: wakeIfDue()
+            default: wakeDue = false
+            }
         }
+    }
+
+    // MARK: background tasks
+
+    private func applyBackgroundEvent(_ event: AgentEvent) {
+        switch event {
+        case .backgroundTaskStarted(let e):
+            guard sessionId == nil || e.sessionId == sessionId else { return }
+            backgroundTasks.append(
+                BackgroundTaskRow(id: e.taskId, toolName: e.toolName, arguments: e.arguments, startedAt: Date())
+            )
+        case .backgroundTaskFinished(let e):
+            backgroundTasks.removeAll { $0.id == e.taskId }
+            guard e.wake, e.sessionId == sessionId else { return }
+            wakeDue = true
+            wakeIfDue()
+        case .backgroundTasksDelivered:
+            wakeDue = false
+        default:
+            break
+        }
+    }
+
+    /// Call the agent back, unless a run is going: that run's turns pick the
+    /// result up, and its end comes back here if one is still waiting.
+    private func wakeIfDue() {
+        guard wakeDue, !busy, !workingDir.isEmpty, let sessionId else { return }
+        wakeDue = false
+        busy = true
+        resume(owner: visibleSlotID, sessionId: sessionId, settings: currentSettings)
+    }
+
+    private func resume(owner: UUID, sessionId: String, settings: RunSettings) {
+        func idle() {
+            if owner == visibleSlotID { busy = false } else { parked[owner]?.busy = false }
+            refreshActivity()
+        }
+        callbacksRequested += 1
+        guard connected, let client else { return idle() }
+        startsInFlight += 1
+        Task {
+            do {
+                let resumed = try await client.resumeBackground(
+                    sessionId: sessionId,
+                    workingDir: settings.workingDir,
+                    model: settings.model.isEmpty ? nil : settings.model,
+                    permissionMode: settings.permissionMode,
+                    reasoningEffort: settings.reasoningEffort
+                )
+                self.log("background callback: \(resumed.runId ?? "nothing to resume")")
+                if let runId = resumed.runId {
+                    adopt(runId: runId, owner: owner)
+                } else {
+                    idle()
+                    if owner == visibleSlotID { wakeIfDue() } else { wakeParked(owner) }
+                }
+            } catch {
+                idle()
+                banner = "could not call the agent back: \(Self.describe(error))"
+            }
+            startAnswered()
+        }
+    }
+
+    /// Stop one background task. `background_task_finished` removes its row.
+    public func cancelBackgroundTask(_ taskId: String) {
+        guard let client, let sessionId else { return }
+        Task {
+            do {
+                try await client.cancelBackgroundTask(sessionId: sessionId, taskId: taskId)
+            } catch {
+                banner = Self.describe(error)
+            }
+        }
+    }
+
+    /// Catch up with a session just opened: what still runs, and what finished
+    /// while the user was elsewhere.
+    private func syncBackgroundTasks(_ sessionId: String) async {
+        guard let client, let list = try? await client.backgroundTasks(sessionId: sessionId),
+            sessionId == self.sessionId
+        else { return }
+        backgroundTasks = list.tasks.map {
+            BackgroundTaskRow(
+                id: $0.taskId, toolName: $0.toolName, arguments: $0.arguments,
+                startedAt: Date().addingTimeInterval(-$0.elapsed)
+            )
+        }
+        wakeDue = list.wakeDue
+        wakeIfDue()
     }
 
     /// Apply everything buffered so far. The checks use it; the app uses it
@@ -547,7 +929,7 @@ public final class AppModel: ObservableObject {
     /// flight, the scope nothing can run in, then an empty field.
     public func sendBlock(_ draft: String, hasImages: Bool = false) -> SendBlock? {
         if !connected { return .notConnected }
-        if busy { return .busy }
+        if busy, steerableRunId == nil { return .busy }
         if workingDir.isEmpty { return .noWorkingDir }
         if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !hasImages {
             return .emptyDraft
@@ -579,6 +961,11 @@ public final class AppModel: ObservableObject {
             return .notConnected
         }
 
+        if busy, let runId = steerableRunId {
+            steer(trimmed, images: images, runId: runId, client: client)
+            return nil
+        }
+
         // The wire requires a non-empty prompt, so an image with no words gets
         // the question the image itself asks: what is in it. The timeline shows
         // that prompt too, because it is what the run was told.
@@ -586,6 +973,9 @@ public final class AppModel: ObservableObject {
         transcript.addUserMessage(text, images: images)
         transcript.beginRun(runId: "…")
         busy = true
+        let owner = visibleSlotID
+        startsInFlight += 1
+        refreshActivity()
 
         Task {
             do {
@@ -598,19 +988,87 @@ public final class AppModel: ObservableObject {
                     images: images,
                     reasoningEffort: reasoningEffort
                 )
-                sessionId = started.sessionId
-                transcript.beginRun(runId: started.runId)
-                banner = nil
+                if owner == visibleSlotID {
+                    sessionId = started.sessionId
+                    transcript.beginRun(runId: started.runId)
+                    banner = nil
+                } else {
+                    parked[owner]?.sessionId = started.sessionId
+                    parked[owner]?.transcript.beginRun(runId: started.runId)
+                }
                 self.log("run started: \(started.runId) model=\(started.model) session=\(started.sessionId)")
+                adopt(runId: started.runId, owner: owner)
             } catch {
                 // The run never started, so no event will say so. Say it here.
-                transcript.failLocally(Self.describe(error))
-                busy = false
+                if owner == visibleSlotID {
+                    transcript.failLocally(Self.describe(error))
+                    busy = false
+                } else {
+                    parked[owner]?.transcript.failLocally(Self.describe(error))
+                    parked[owner]?.busy = false
+                    parked[owner]?.unseen = .failed
+                }
                 banner = Self.describe(error)
                 self.log("run.start refused: \(Self.describe(error))")
             }
+            startAnswered()
+            refreshActivity()
         }
         return nil
+    }
+
+    /// The composer is open during a run: what is sent then steers it.
+    public var canSteer: Bool { steerableRunId != nil }
+
+    /// The run on screen, when it can take a message: started, and not ended.
+    private var steerableRunId: String? {
+        guard transcript.state.isRunning, let runId = transcript.runId, runId != "…" else { return nil }
+        return runId
+    }
+
+    /// Hand the running agent a message for its next turn: after the tool call
+    /// in progress, before the model is asked again.
+    private func steer(_ text: String, images: [String], runId: String, client: AgentServiceClient) {
+        let item = PendingSteer(text: text, images: images)
+        pendingSteers.append(item)
+        let owner = visibleSlotID
+        Task {
+            var steerId: String?
+            do {
+                steerId = try await client.steer(runId: runId, text: text, images: images)
+            } catch {
+                self.log("run.steer failed: \(Self.describe(error))")
+            }
+            func mark(_ list: inout [PendingSteer]) {
+                guard let index = list.firstIndex(where: { $0.id == item.id }) else { return }
+                if let steerId { list[index].steerId = steerId } else { list[index].refused = true }
+            }
+            if owner == visibleSlotID {
+                mark(&pendingSteers)
+                settleSteers()
+            } else if parked[owner] != nil {
+                mark(&parked[owner]!.pendingSteers)
+            }
+        }
+    }
+
+    /// Words the run on screen will never take: it ended, or refused them.
+    /// After a run that finished they go out as the next prompt; after one
+    /// that failed or was stopped they go back to the composer.
+    private func settleSteers() {
+        guard !pendingSteers.isEmpty, !busy, !transcript.state.isRunning else { return }
+        let left = pendingSteers
+        // Not yet answered: its `run.steer` reply settles it.
+        guard !left.contains(where: { $0.steerId == nil && !$0.refused }) else { return }
+        pendingSteers = []
+        let text = left.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let images = left.flatMap(\.images)
+        if case .finished = transcript.state {
+            send(text, images: images)
+        } else {
+            returnedDraft = text
+            notice = "the run ended before your message reached it — it is back in the box"
+        }
     }
 
     /// Stop the agent and hand the user its browser.
@@ -706,13 +1164,12 @@ public final class AppModel: ObservableObject {
     /// Start over. The event stream is *not* re-subscribed: an `AsyncStream`
     /// has one consumer for its life, and the connection's stream is already
     /// being consumed. Only the timeline resets.
+    ///
+    /// The session on screen keeps running in the sidebar if it has work going.
     public func newRun() {
-        sessionId = nil
-        transcript = Transcript(terminalTypes: terminalTypes)
-        resetContextMeter()
-        promptToAnswer = nil
-        autoAnsweredRequests.removeAll()
-        busy = false
+        openingSession = nil
+        parkVisible()
+        show(emptySlot(), restoreSettings: false)
         banner = nil
         paletteOpen = false
     }
@@ -723,13 +1180,6 @@ public final class AppModel: ObservableObject {
     public var contextWindow: Int? {
         let selected = modelRows.first { $0.key == selectedModel }?.caps.contextWindow
         return selected.flatMap { $0 > 0 ? $0 : nil } ?? runContextWindow
-    }
-
-    private func resetContextMeter() {
-        contextUsed = nil
-        compactAt = nil
-        runContextWindow = nil
-        lastStats = nil
     }
 
     // MARK: models, sessions
@@ -817,11 +1267,25 @@ public final class AppModel: ObservableObject {
 
     /// Resume a stored conversation. The event stream is not resumable; the
     /// session is, and the next run continues it.
+    ///
+    /// A session with work going is already here, and comes back as it stands.
     public func open(_ sessionId: String) {
+        guard sessionId != visibleKey else { return }
+        if let slot = parked.values.first(where: { $0.key == sessionId }) {
+            openingSession = nil
+            var seen = slot
+            seen.unseen = nil
+            parkVisible()
+            show(seen, restoreSettings: true)
+            return
+        }
         guard let client else { return }
+        openingSession = sessionId
         Task {
             do {
                 let record = try await client.loadSession(sessionId)
+                guard openingSession == sessionId else { return }
+                openingSession = nil
                 var history = Transcript(terminalTypes: terminalTypes)
                 for message in record.messages {
                     guard let fields = message.objectValue else { continue }
@@ -831,21 +1295,33 @@ public final class AppModel: ObservableObject {
                     let images = role == "user" ? Self.images(of: content) : []
                     if text.isEmpty, images.isEmpty { continue }
                     if role == "user" {
-                        history.addUserMessage(text, images: images)
+                        let parts = BackgroundNotice.split(text)
+                        if !parts.prompt.isEmpty || !images.isEmpty {
+                            history.addUserMessage(parts.prompt, images: images)
+                        }
+                        if let notice = parts.notice { history.addBackgroundNotice(notice) }
                     } else {
                         history.addAssistantMessage(text)
                     }
                 }
-                self.sessionId = record.sessionId
-                transcript = history
-                resetContextMeter()
-                contextUsed = record.contextTokens
-                promptToAnswer = nil
-                busy = false
+                parkVisible()
+                var opened = emptySlot()
+                opened.sessionId = record.sessionId
+                opened.transcript = history
+                opened.contextUsed = record.contextTokens
+                // A session saved before sessions recorded their model opens on
+                // the one showing.
+                if let model = record.model, !model.isEmpty { opened.settings.model = model }
+                show(opened, restoreSettings: false)
                 self.notice = Self.resumedNotice(
                     sessionId: record.sessionId,
                     row: sessions.first { $0.sessionId == record.sessionId }
                 )
+                if !modelRows.isEmpty, !modelRows.contains(where: { $0.key == selectedModel }) {
+                    // Kept, not swapped: its server may only be down for now.
+                    self.notice = "this session ran on \(selectedModel), which is not in the model table right now"
+                }
+                await syncBackgroundTasks(record.sessionId)
             } catch {
                 banner = Self.describe(error)
             }
@@ -875,7 +1351,9 @@ public final class AppModel: ObservableObject {
     /// thing writing it — and the server's refusal stays the backstop for a run
     /// started on the CLI, which the app cannot see.
     public func canDelete(_ sessionId: String) -> Bool {
-        SessionDeletion.isOffered(sessionId, openSessionId: sessionId, running: busy)
+        SessionDeletion.isOffered(
+            sessionId, openSessionId: sessionId, running: activity[sessionId]?.isLive == true
+        )
     }
 
     /// Remove a session, then read the list back from the service.
@@ -893,6 +1371,8 @@ public final class AppModel: ObservableObject {
                 // Leaving it on screen is a transcript the user cannot resume.
                 newRun()
             }
+            if let id = parkedSlot(session: sessionId) { parked[id] = nil }
+            refreshActivity()
             sessions.removeAll { $0.sessionId == sessionId }
             notice = removed ? "deleted \(name)" : "\(name) was already gone"
         } catch {
@@ -957,5 +1437,30 @@ public final class AppModel: ObservableObject {
             return prose
         }
         return "\(error)"
+    }
+}
+
+/// A tool call running in the background, for the bar above the composer.
+public struct BackgroundTaskRow: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let toolName: String
+    public let arguments: JSONValue
+    public let startedAt: Date
+}
+
+/// The message that hands the model a background result, read back from a
+/// stored session. The service opens it with `marker`, and may have added it to
+/// the end of the person's prompt.
+public enum BackgroundNotice {
+    static let marker = "[Background task]"
+
+    public static func split(_ text: String) -> (prompt: String, notice: String?) {
+        guard let range = text.hasPrefix(marker) ? text.startIndex..<text.startIndex : text.range(of: "\n" + marker)
+        else { return (text, nil) }
+        let tail = text[range.upperBound...].dropFirst(range.isEmpty ? marker.count : 0)
+        let first = tail.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        // "bg_1 (make test) finished after 3s." without the id.
+        let described = first.drop { $0 != "(" }
+        return (String(text[..<range.lowerBound]), "Background task " + (described.isEmpty ? "finished" : String(described)))
     }
 }

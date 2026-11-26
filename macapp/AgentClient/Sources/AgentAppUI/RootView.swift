@@ -32,7 +32,6 @@ public struct RootView: View {
     @EnvironmentObject var model: AppModel
     private let initialPrompt: String
     @State private var query = ""
-    @State private var selection: String?
 
     /// `prompt` seeds the composer, so a preview can show the field as the user
     /// left it: multi-line, with a reason under it, Send greyed out.
@@ -42,7 +41,7 @@ public struct RootView: View {
 
     public var body: some View {
         NavigationSplitView {
-            Sidebar(query: $query, selection: $selection)
+            Sidebar(query: $query)
                 .navigationSplitViewColumnWidth(min: 190, ideal: Theme.sidebarWidth, max: 320)
         } detail: {
             Detail(initialPrompt: initialPrompt)
@@ -372,12 +371,12 @@ struct CommandPalette: View {
             ) { model.permissionMode = mode })
         }
 
-        for row in model.sessions {
+        for entry in model.sidebarEntries {
             items.append(PaletteCommand(
-                title: "Resume \(SessionTitle.label(row))",
-                detail: "\(row.messageCount) messages",
+                title: "Resume \(SessionTitle.label(entry.row))",
+                detail: entry.activity?.label ?? "\(entry.row.messageCount) messages",
                 symbol: "clock.arrow.circlepath"
-            ) { model.open(row.sessionId) })
+            ) { model.open(entry.id) })
         }
 
         return items
@@ -464,13 +463,11 @@ func chooseWorkingDir(_ model: AppModel) {
 struct Sidebar: View {
     @EnvironmentObject var model: AppModel
     @Binding var query: String
-    @Binding var selection: String?
     @State private var deleteTarget: SessionRow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                selection = nil
                 model.newRun()
             } label: {
                 HStack(spacing: 7) {
@@ -501,28 +498,28 @@ struct Sidebar: View {
             .padding(.top, 8)
 
             List {
-                ForEach(filtered, id: \.sessionId) { row in
-                    SessionRowView(row: row)
+                ForEach(filtered) { entry in
+                    SessionRowView(entry: entry)
                         .contentShape(Rectangle())
                         .listRowBackground(
                             RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous)
-                                .fill(selection == row.sessionId ? Theme.accent.opacity(0.12) : Color.clear)
+                                .fill(model.visibleKey == entry.id ? Theme.accent.opacity(0.12) : Color.clear)
                         )
                         .listRowSeparator(.hidden)
-                        .onTapGesture { selection = row.sessionId }
+                        .onTapGesture { model.open(entry.id) }
                         .contextMenu {
-                            Button("Delete Session", role: .destructive) { deleteTarget = row }
+                            Button("Delete Session", role: .destructive) { deleteTarget = entry.row }
                                 // The row you are watching writes itself: the run
                                 // saves its session when it ends, so a delete
                                 // now would be undone a second later. The server
                                 // refuses the same thing (`session_busy`) for a
                                 // run the app cannot see — one started on the CLI.
-                                .disabled(!model.canDelete(row.sessionId))
+                                .disabled(!entry.isSaved || !model.canDelete(entry.id))
                         }
                 }
                 // An empty list of files reads as a broken sidebar, and an empty
                 // search reads as a broken search — the two answers are different.
-                if model.sessions.isEmpty {
+                if model.sidebarEntries.isEmpty {
                     Text("No sessions yet")
                         .font(.caption)
                         .foregroundStyle(Theme.faint)
@@ -541,10 +538,6 @@ struct Sidebar: View {
             // The platform's selection pill is system blue and cannot be tinted
             // from here, so the row background is drawn in the app's own violet.
             // The List still owns the scroll, row sizing and context menu.
-            .onChange(of: selection) { _, chosen in
-                guard let chosen, chosen != model.sessionId else { return }
-                model.open(chosen)
-            }
             // The name in the question, not the id: the user is about to remove
             // the conversation they recognise, and a 28-character string is not
             // a thing they can check.
@@ -575,8 +568,8 @@ struct Sidebar: View {
     /// The stored sessions, filtered by the search field. The rule is the core's
     /// (`SessionTitle.matches`), so the check suite can say what a row answers
     /// to; the view only applies it.
-    private var filtered: [SessionRow] {
-        model.sessions.filter { SessionTitle.matches($0, query: query) }
+    private var filtered: [SidebarEntry] {
+        model.sidebarEntries.filter { SessionTitle.matches($0.row, query: query) }
     }
 
     /// The binding the dialog wants.
@@ -594,7 +587,9 @@ struct Sidebar: View {
 /// the two names stay apart — an unqualified `SessionRow` in this file would
 /// otherwise mean the view and not the payload.
 struct SessionRowView: View {
-    let row: AgentClient.SessionRow
+    let entry: SidebarEntry
+
+    private var row: AgentClient.SessionRow { entry.row }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -610,10 +605,10 @@ struct SessionRowView: View {
                     // is the one that truncates in the middle, because a prefix
                     // of an id is still an id you can type.
                     .truncationMode(.tail)
-                Text(subtitle)
+                Text(entry.activity?.label ?? subtitle)
                     .font(.caption2)
-                    .foregroundStyle(Theme.faint)
-                if row.title != nil {
+                    .foregroundStyle(entry.activity == nil ? Theme.faint : activityColor)
+                if row.title != nil, entry.isSaved {
                     // The id stays visible under the name: it is what `--session`
                     // takes, and a sidebar that hides it leaves the CLI user
                     // reading a title they cannot type anywhere.
@@ -627,6 +622,7 @@ struct SessionRowView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .help(row.sessionId)
+            activityMark
             if row.error != nil {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.caption2)
@@ -635,6 +631,34 @@ struct SessionRowView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var activityColor: Color {
+        switch entry.activity {
+        case .needsApproval: Theme.warning
+        case .failed: Theme.danger
+        default: Theme.accent
+        }
+    }
+
+    @ViewBuilder private var activityMark: some View {
+        switch entry.activity {
+        case .running:
+            ProgressView().controlSize(.mini).tint(Theme.accent).scaleEffect(0.8).accessibilityLabel("Working")
+        case .needsApproval:
+            Image(systemName: "hand.raised.fill").font(.caption2).foregroundStyle(Theme.warning)
+                .accessibilityLabel("Needs approval")
+        case .inBackground:
+            Image(systemName: "clock.arrow.circlepath").font(.caption2).foregroundStyle(Theme.accent)
+                .accessibilityLabel("Task in background")
+        case .finished:
+            Circle().fill(Theme.accent).frame(width: 7, height: 7).accessibilityLabel("Finished, not seen yet")
+        case .failed:
+            Image(systemName: "xmark.circle.fill").font(.caption2).foregroundStyle(Theme.danger)
+                .accessibilityLabel("Failed")
+        case nil:
+            EmptyView()
+        }
     }
 
     private var subtitle: String {
@@ -714,7 +738,8 @@ struct Detail: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 Header()
-                TranscriptColumn()
+                // Its own scroll position and pin for each session.
+                TranscriptColumn().id(model.visibleSlotID)
                 ComposerCard(prompt: initialPrompt)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -791,7 +816,7 @@ struct Header: View {
     /// The first prompt, on one line. A session is named by what it asked for;
     /// with no prompt yet, it is a new session.
     private var title: String {
-        for line in model.transcript.lines {
+        for line in model.transcript.lines where !line.automatic {
             if case .user(let text) = line.kind {
                 let first = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
                 return first.isEmpty ? "New session" : String(first.prefix(80))
@@ -815,13 +840,18 @@ struct Header: View {
 /// appended and when the text in it grows — and it is acted on only while the
 /// view is pinned to the bottom.
 ///
-/// **The last turn is not lazy.** It is the one that grows and shrinks: a
-/// thinking line folds once the answer starts, and a finished run folds its
-/// steps, so a turn thousands of points tall becomes a few hundred under an
-/// offset that was at its bottom. `LazyVStack` then decided nothing was on
-/// screen and drew nothing until a scroll made it look again: a blank window
-/// mid-run. The turns before it, which do not change, stay lazy, which is what
-/// keeps a long session cheap.
+/// **Nothing is lazy on macOS 15.** The last turn never was: it grows and
+/// shrinks, and `LazyVStack` drew a blank window when a tall turn folded under
+/// an offset at its bottom. The earlier turns were, and that broke following:
+/// the scroll view placed them by estimated heights, and as a run streamed it
+/// re-placed them and moved the offset about a thousand points up, over and
+/// over. The view stopped following a few seconds into a run, and a user who
+/// scrolled down was thrown back up before reaching the end. Measured with
+/// `UI_PREVIEW_HISTORY` and `UI_DEBUG_SCROLL`: thirty earlier turns, jumps of
+/// 1,025 points; drawn eagerly, none. An earlier turn is folded to its prompt
+/// and answer, and `.equatable()` skips the ones that did not change, so a long
+/// session stays cheap without the lazy stack. Before macOS 15 the layout is
+/// as it was.
 ///
 /// The pin is read from the scroll geometry (macOS 15): an offset that moves
 /// with the content the same size is the user scrolling, and sets the pin to
@@ -829,9 +859,15 @@ struct Header: View {
 /// while pinned. Before macOS 15 there is no geometry to read, and the layout
 /// stays as it was: all lazy, pinned by the last turn's `onAppear` /
 /// `onDisappear`.
+///
+/// On macOS 15 the view follows by offset — the content's height less the
+/// window's — through a `ScrollPosition`, read from the same geometry that
+/// decides the pin.
 struct TranscriptColumn: View {
     @EnvironmentObject var model: AppModel
     @State private var pinned = true
+    /// Bumped to ask for the bottom; on macOS 15 `EdgeFollow` does the scroll.
+    @State private var toBottom = 0
     @AppStorage(Zoom.key) private var zoom = 1.0
 
     private static let bottom = "transcript-bottom"
@@ -853,7 +889,7 @@ struct TranscriptColumn: View {
                     }
                     if #available(macOS 15, *) {
                         let turns = model.transcript.turns
-                        LazyVStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 20) {
                             ForEach(turns.dropLast()) { turn in
                                 turnView(turn)
                             }
@@ -883,13 +919,13 @@ struct TranscriptColumn: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 Color.clear.frame(height: 1).id(Self.bottom)
             }
-            .modifier(FollowGeometry(pinned: $pinned) { proxy.scrollTo(Self.bottom, anchor: .bottom) })
+            .modifier(FollowGeometry(pinned: $pinned, request: toBottom))
             .background(Theme.canvas)
             .overlay(alignment: .bottomTrailing) {
                 if !pinned, !model.transcript.turns.isEmpty {
                     Button {
                         pinned = true
-                        proxy.scrollTo(Self.bottom, anchor: .bottom)
+                        scrollToBottom(proxy)
                     } label: {
                         Image(systemName: "arrow.down")
                             .zoomFont(.system(size: 12, weight: .semibold))
@@ -906,10 +942,18 @@ struct TranscriptColumn: View {
                 guard let after else { return }
                 // The user's own message is always worth scrolling to: they just
                 // typed it, and a view left scrolled up would hide it.
-                if case .user = after.kind { pinned = true }
+                if case .user = after.kind, !after.automatic { pinned = true }
                 guard pinned else { return }
-                proxy.scrollTo(Self.bottom, anchor: .bottom)
+                scrollToBottom(proxy)
             }
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        if #available(macOS 15, *) {
+            toBottom &+= 1
+        } else {
+            proxy.scrollTo(Self.bottom, anchor: .bottom)
         }
     }
 
@@ -936,28 +980,73 @@ private struct ScrollState: Equatable {
 }
 
 /// The pin, from the scroll geometry, and the stream followed while pinned.
+///
+/// The user's scroll sets the pin: at the bottom or not. While pinned, content
+/// that changes size is followed down to the bottom edge.
 private struct FollowGeometry: ViewModifier {
     @Binding var pinned: Bool
-    let toBottom: () -> Void
+    let request: Int
 
     func body(content: Content) -> some View {
         if #available(macOS 15, *) {
-            content.onScrollGeometryChange(for: ScrollState.self) { geometry in
+            content.modifier(EdgeFollow(pinned: $pinned, request: request))
+        } else {
+            content
+        }
+    }
+}
+
+@available(macOS 15, *)
+private struct EdgeFollow: ViewModifier {
+    @Binding var pinned: Bool
+    let request: Int
+    @State private var position = ScrollPosition()
+    @State private var userScrolling = false
+    @State private var last = ScrollState(offset: 0, content: 0, container: 0)
+
+    private static let debug = ProcessInfo.processInfo.environment["UI_DEBUG_SCROLL"] != nil
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($position)
+            .onScrollPhaseChange { before, after in
+                userScrolling = after != .idle && after != .animating
+                // A fling that ends at the bottom pins; one that ends above unpins.
+                if before != .idle, before != .animating, after == .idle { pinned = last.atBottom }
+                if Self.debug { log("phase \(before) → \(after) pinned \(pinned)") }
+            }
+            .onScrollGeometryChange(for: ScrollState.self) { geometry in
                 ScrollState(
                     offset: geometry.contentOffset.y,
                     content: geometry.contentSize.height,
                     container: geometry.containerSize.height
                 )
             } action: { before, after in
-                if after.content != before.content || after.container != before.container {
-                    if pinned { toBottom() }
-                } else if after.offset != before.offset {
+                last = after
+                if Self.debug {
+                    log("scroll offset \(Int(before.offset))→\(Int(after.offset)) content \(Int(before.content))→\(Int(after.content)) atBottom \(after.atBottom) pinned \(pinned) user \(userScrolling)")
+                }
+                let resized = after.content != before.content || after.container != before.container
+                if userScrolling || (!resized && after.offset != before.offset) {
+                    // A trackpad or a dragged scroller has a phase; a mouse wheel
+                    // has none, and is an offset that moved with nothing resized.
                     pinned = after.atBottom
+                } else if pinned, !after.atBottom {
+                    toBottom(after)
                 }
             }
-        } else {
-            content
-        }
+            .onChange(of: request) { _, _ in toBottom(last) }
+    }
+
+    /// By offset, not `scrollTo(edge:)`: asking for the edge the position
+    /// already names is no change, and the view stayed at the top of a session
+    /// until the user scrolled once.
+    private func toBottom(_ state: ScrollState) {
+        position.scrollTo(y: max(0, state.content - state.container))
+    }
+
+    private func log(_ text: String) {
+        FileHandle.standardError.write(Data((text + "\n").utf8))
     }
 }
 
@@ -968,7 +1057,11 @@ struct TurnView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let user = turn.user, case .user(let text) = user.kind {
-                UserBubble(text: text, images: user.images)
+                if user.automatic {
+                    BackgroundNoticeLine(text: text)
+                } else {
+                    UserBubble(text: text, images: user.images)
+                }
             }
             let steps = turn.steps
             if !steps.isEmpty {
@@ -983,6 +1076,18 @@ struct TurnView: View {
 }
 
 extension TurnView: Equatable {}
+
+/// What opens a turn nobody typed: a background task calling the agent back.
+struct BackgroundNoticeLine: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "arrow.uturn.backward.circle")
+            .zoomFont(.caption)
+            .foregroundStyle(Theme.muted)
+            .lineLimit(2)
+    }
+}
 
 /// The process, as a timeline: "Worked for 2m 50s · 12 steps ›".
 ///
@@ -1102,6 +1207,7 @@ struct StepRow: View {
         case .tool(let row):
             switch row.state {
             case .running: ProgressView().controlSize(.mini).tint(Theme.accent).scaleEffect(0.8)
+            case .background: symbol("clock.arrow.circlepath", Theme.accent)
             case .done: symbol(ToolDisplay.symbol(tool: row.name), Theme.muted)
             case .failed: symbol("xmark", Theme.danger, weight: .bold)
             }
@@ -1568,7 +1674,7 @@ struct ToolLine: View {
 
     @State private var expanded = false
 
-    private var running: Bool { row.state == .running }
+    private var running: Bool { row.state == .running || row.state == .background }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1579,6 +1685,12 @@ struct ToolLine: View {
                     label
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    if row.state == .background {
+                        Text("in background")
+                            .zoomFont(.caption)
+                            .foregroundStyle(Theme.faint)
+                            .fixedSize()
+                    }
                     Image(systemName: "chevron.right")
                         .zoomFont(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.faint)
@@ -1681,6 +1793,78 @@ struct ToolLine: View {
     }
 }
 
+/// The commands still running after their turn ended, each with its clock and
+/// a way to stop it. The prompt field below stays free while they run.
+/// Messages sent during the run, until the agent takes them in.
+struct PendingSteersBar: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(model.pendingSteers) { item in
+                HStack(spacing: 6) {
+                    Image(systemName: item.refused ? "arrow.uturn.down" : "text.bubble")
+                        .font(.caption)
+                        .foregroundStyle(Theme.accent)
+                    Text(item.text.isEmpty ? "\(item.images.count) image(s)" : item.text)
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 8)
+                    Text(item.refused ? "sends when this run ends" : "at the agent's next step")
+                        .font(.caption)
+                        .foregroundStyle(Theme.faint)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+    }
+}
+
+struct BackgroundTasksBar: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(model.backgroundTasks) { task in
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(Theme.accent)
+                    Text(ToolDisplay.summary(tool: task.toolName, arguments: task.arguments, running: true))
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 8)
+                    TimelineView(.periodic(from: task.startedAt, by: 1)) { context in
+                        Text(DurationFormat.short(context.date.timeIntervalSince(task.startedAt)) ?? "…")
+                            .font(.caption)
+                            .foregroundStyle(Theme.faint)
+                            .monospacedDigit()
+                    }
+                    Button {
+                        model.cancelBackgroundTask(task.id)
+                    } label: {
+                        Image(systemName: "stop.circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop this background task")
+                    .accessibilityLabel("Stop background task")
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Theme.fill, in: RoundedRectangle(cornerRadius: Theme.radiusSmall, style: .continuous))
+    }
+}
+
 struct PermissionLine: View {
     let outcome: PermissionOutcome
 
@@ -1778,7 +1962,18 @@ struct ComposerCard: View {
                 }
             }
 
-            TextField("Ask for something…", text: $draft, axis: .vertical)
+            if !model.backgroundTasks.isEmpty {
+                BackgroundTasksBar()
+            }
+
+            if !model.pendingSteers.isEmpty {
+                PendingSteersBar()
+            }
+
+            TextField(
+                model.canSteer ? "Steer the agent — it reads this at its next step…" : "Ask for something…",
+                text: $draft, axis: .vertical
+            )
                 .focused($promptFocused)
                 .textFieldStyle(.plain)
                 .lineLimit(1...8)
@@ -1792,7 +1987,8 @@ struct ComposerCard: View {
                 )
                 .background(ComposerAnchor())
                 .onSubmit(submit)
-                .disabled(model.busy)
+                // Open while the agent works: what is typed then steers it.
+                .disabled(model.busy && !model.canSteer)
 
             HStack(spacing: 8) {
                 ModelMenu()
@@ -1811,7 +2007,7 @@ struct ComposerCard: View {
                 .buttonStyle(.plain)
                 .help("Paste an image from the clipboard")
                 .accessibilityLabel("Paste image from clipboard")
-                .disabled(model.busy)
+                .disabled(model.busy && !model.canSteer)
                 if let reason = visibleReason {
                     Text(reason)
                         .font(.caption)
@@ -1828,6 +2024,11 @@ struct ComposerCard: View {
         .onReceive(NotificationCenter.default.publisher(for: .solocoderPasteImage)) { _ in
             addClipboardImage()
         }
+        .onChange(of: model.returnedDraft) { _, returned in
+            guard let returned else { return }
+            draft = draft.isEmpty ? returned : "\(returned)\n\(draft)"
+            model.returnedDraft = nil
+        }
         .padding(12)
         .frame(maxWidth: Theme.columnWidth)
         .background(Theme.canvas, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
@@ -1841,6 +2042,9 @@ struct ComposerCard: View {
 
     @ViewBuilder private var trailing: some View {
         if model.transcript.state.isRunning {
+            if model.canSteer, enabled {
+                sendButton
+            }
             Button {
                 model.cancel()
             } label: {
@@ -1854,23 +2058,29 @@ struct ComposerCard: View {
             .help("Cancel this run")
             .accessibilityLabel("Stop run")
         } else {
-            Button {
-                send()
-            } label: {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(enabled ? Color.white : Theme.faint)
-                    .frame(width: 30, height: 30)
-                    .background(enabled ? Theme.accent : Theme.fillRaised, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!enabled)
-            .help(
-                model.sendBlock(draft, hasImages: !attachments.isEmpty).map(\.reason)
-                    ?? "↵ sends, ⇧↵ writes a new line"
-            )
-            .accessibilityLabel("Send prompt")
+            sendButton
         }
+    }
+
+    private var sendButton: some View {
+        Button {
+            send()
+        } label: {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(enabled ? Color.white : Theme.faint)
+                .frame(width: 30, height: 30)
+                .background(enabled ? Theme.accent : Theme.fillRaised, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(
+            model.sendBlock(draft, hasImages: !attachments.isEmpty).map(\.reason)
+                ?? (model.canSteer
+                    ? "↵ sends it to the agent for its next step, ⇧↵ writes a new line"
+                    : "↵ sends, ⇧↵ writes a new line")
+        )
+        .accessibilityLabel(model.canSteer ? "Send to the running agent" : "Send prompt")
     }
 
     /// The reason worth showing.

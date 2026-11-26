@@ -8,12 +8,14 @@ This module is the single home for that policy so the two agents cannot drift.
 
 from __future__ import annotations
 
+import base64
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from openagent.core.session import Session
-from openagent.core.types import ImageBlock, Message, TextBlock
+from openagent.core.types import ImageBlock, Message, TextBlock, ToolUseBlock, VideoBlock
 from openagent.provider.base import BaseProvider
 
 EMPTY_RESPONSE_RETRY_MESSAGE = (
@@ -45,7 +47,15 @@ def is_user_prompt(message: Message) -> bool:
         return False
     text = message.text.strip()
     return bool(text) and not text.startswith(
-        (SCREENSHOT_FOLLOWUP_TEXT, BROWSER_SCREENSHOT_FOLLOWUP_TEXT, OLD_SCREENSHOT_TEXT)
+        (
+            SCREENSHOT_FOLLOWUP_TEXT,
+            BROWSER_SCREENSHOT_FOLLOWUP_TEXT,
+            OLD_SCREENSHOT_TEXT,
+            BACKGROUND_NOTICE_TEXT,
+            VIDEO_FOLLOWUP_TEXT,
+            OLD_VIDEO_TEXT,
+            READ_IMAGE_FOLLOWUP_TEXT,
+        )
     )
 
 
@@ -153,6 +163,10 @@ def is_empty_final_response(message: Message) -> bool:
     return not message.has_tool_calls and not message.text.strip()
 
 
+#: Opens the message that gives the model a background task's result. Clients
+#: match it too, to draw a stored one as what it is and not as the person's words.
+BACKGROUND_NOTICE_TEXT = "[Background task]"
+
 SCREENSHOT_FOLLOWUP_TEXT = (
     "Latest screenshot from the screenshot tool. "
     "Use screenshot image coordinates only. "
@@ -166,6 +180,9 @@ COMPUTER_ACTION_TOOLS = frozenset(
     {"click", "double_click", "type_text", "key_combination", "move_mouse", "scroll"}
 )
 _AFTER_ACTION_NOTE = "A screenshot taken after it is attached."
+#: Tools that act on the one screen or browser the machine has.
+SHARED_DEVICE_TOOLS = COMPUTER_ACTION_TOOLS | {"screenshot"}
+_SCREENSHOT_TOOLS = frozenset({"screenshot", "desktop_screenshot", "browser_screenshot"})
 KEEP_RECENT_SCREENSHOTS = 3
 OLD_SCREENSHOT_TEXT = "[An earlier screenshot, removed to save context.]"
 
@@ -179,12 +196,173 @@ BROWSER_SCREENSHOT_FOLLOWUP_TEXT = (
 
 PAGE_SCREENSHOT_FOLLOWUP_TEXT = "Latest screenshot of the page you opened with page_open."
 
+#: Added to a screenshot's tool result when the model cannot read images.
+NO_VISION_NOTE = (
+    "This model cannot read images, so the screenshot is not shown. "
+    "Work from text instead: browser_snapshot for a page, or the files and commands behind the app."
+)
+#: Stands in for an image taken out of the history for a model that cannot read it.
+NO_VISION_IMAGE_TEXT = "[An image, not shown: this model cannot read images.]"
+
+#: How servers word a refused image: llama.cpp without an mmproj, vLLM, LM Studio, Ollama.
+_IMAGES_REFUSED = re.compile(
+    r"image input is not supported|not a multimodal model|"
+    r"does not support (?:image|vision|multimodal)|(?:images?|vision) (?:is|are) not supported",
+    re.IGNORECASE,
+)
+
+
+def refuses_images(error: str) -> bool:
+    """Whether a provider error says the model cannot take images."""
+    return bool(_IMAGES_REFUSED.search(error))
+
+
+def drop_images(session: Session) -> int:
+    """Replace every image and video in the history with a note; returns how many.
+
+    For a model that cannot read images: one image anywhere in the history
+    fails every later request, not just the turn that added it.
+    """
+    dropped = 0
+    for message in session.messages:
+        if not isinstance(message.content, list):
+            continue
+        images = sum(isinstance(b, (ImageBlock, VideoBlock)) for b in message.content)
+        if images:
+            message.content = [
+                TextBlock(text=NO_VISION_IMAGE_TEXT) if isinstance(b, (ImageBlock, VideoBlock)) else b
+                for b in message.content
+            ]
+            dropped += images
+    return dropped
+
+
+READ_IMAGE_FOLLOWUP_TEXT = "The image from read:"
+#: Image files ``read`` attaches, by suffix. SVG is text, and read as such elsewhere.
+_READ_IMAGE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".bmp": "image/bmp", ".webp": "image/webp",
+}
+#: basalt and llama.cpp refuse a picture over 32 MiB.
+MAX_READ_IMAGE_BYTES = 20 << 20
+
+
+def add_read_image_followup(
+    session: Session,
+    results: list[Any],
+    calls: list[ToolUseBlock],
+    tool_context: Any = None,
+    *,
+    vision: bool = True,
+) -> bool:
+    """Attach the picture each ``read`` of an image file opened.
+
+    ``read`` returns only a summary for an image. Without this the model was
+    shown none of the files it rendered to look at, took the summary for a
+    picture too small to judge, and rendered them bigger again and again.
+    Without ``vision`` the result says the model cannot see it instead.
+    Reports whether an image was attached.
+    """
+    from pathlib import Path
+
+    from openagent.tools.builtin import IMAGE_FILE_RESULT
+
+    paths = {call.id: call.arguments.get("path") for call in calls if call.name == "read"}
+    added = False
+    for result in results:
+        if getattr(result, "tool_name", None) != "read" or getattr(result, "is_error", False):
+            continue
+        if not result.content.startswith(IMAGE_FILE_RESULT) or not paths.get(result.tool_use_id):
+            continue
+        path = (tool_context.resolve(paths[result.tool_use_id]) if tool_context is not None
+                else Path(paths[result.tool_use_id]).expanduser().resolve())
+        mime_type = _READ_IMAGE_TYPES.get(path.suffix.lower())
+        if not vision:
+            result.content += " This model cannot read images, so it is not shown."
+            continue
+        if mime_type is None:
+            continue
+        try:
+            if path.stat().st_size > MAX_READ_IMAGE_BYTES:
+                result.content += f" Too large to show (over {MAX_READ_IMAGE_BYTES >> 20} MiB): shrink it first."
+                continue
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError:
+            continue
+        result.content += " The image is attached in the next message."
+        session.add_message(
+            Message(role="user", content=[TextBlock(text=f"{READ_IMAGE_FOLLOWUP_TEXT} {path}"),
+                                          ImageBlock(data=data, mime_type=mime_type)])
+        )
+        added = True
+    if added:
+        drop_old_screenshots(session)
+    return added
+
+
+VIDEO_FOLLOWUP_TEXT = "The video from view_video:"
+#: Videos kept in the history: each is sent again, file and all, on every turn.
+KEEP_RECENT_VIDEOS = 2
+OLD_VIDEO_TEXT = "[A video, no longer attached:"
+
+
+def add_video_followup(
+    session: Session,
+    results: list[Any],
+    calls: list[ToolUseBlock],
+    tool_context: Any = None,
+) -> bool:
+    """Attach the video each successful ``view_video`` call named.
+
+    The block is built from the call's own arguments, so runs side by side
+    cannot attach each other's videos. Reports whether one was attached.
+    """
+    from openagent.tools.video import video_block
+
+    arguments = {call.id: call.arguments for call in calls}
+    added = False
+    for result in results:
+        if getattr(result, "tool_name", None) != "view_video" or getattr(result, "is_error", False):
+            continue
+        if result.content.startswith("Error") or result.tool_use_id not in arguments:
+            continue
+        args = arguments[result.tool_use_id]
+        try:
+            block = video_block(args.get("path", ""), args.get("fps"), args.get("max_frames"), tool_context)
+        except ValueError:
+            continue
+        session.add_message(
+            Message(role="user", content=[TextBlock(text=f"{VIDEO_FOLLOWUP_TEXT} {block.path}"), block])
+        )
+        added = True
+    if added:
+        drop_old_videos(session)
+    return added
+
+
+def drop_old_videos(session: Session, keep: int = KEEP_RECENT_VIDEOS) -> int:
+    """Take the video out of all but the last ``keep`` that hold one; returns how many."""
+    holders = [
+        m for m in session.messages
+        if isinstance(m.content, list) and any(isinstance(b, VideoBlock) for b in m.content)
+    ]
+    dropped = 0
+    for message in holders[: max(0, len(holders) - keep)]:
+        message.content = [
+            TextBlock(text=f"{OLD_VIDEO_TEXT} {b.path}]")
+            if isinstance(b, VideoBlock) else b
+            for b in message.content
+        ]
+        dropped += 1
+    return dropped
+
 
 def add_screenshot_followup(
     session: Session,
     results: list[Any],
     *,
     mime_type: str = "image/jpeg",
+    vision: bool = True,
 ) -> bool:
     """Feed a screenshot tool result back to a vision model as an image.
 
@@ -197,8 +375,22 @@ def add_screenshot_followup(
     in the session, so the cut reaches the history too.
 
     Reports whether an image was attached, because the caller must then cap
-    ``max_tokens`` for the next turn.
+    ``max_tokens`` for the next turn. Without ``vision`` nothing is attached:
+    each screenshot's result says why instead, so the model stops asking for one.
     """
+    if not vision:
+        for result in results:
+            if getattr(result, "is_error", False) or not result.content or result.content.startswith("Error"):
+                continue
+            name = getattr(result, "tool_name", None)
+            if name in _SCREENSHOT_TOOLS or (
+                name in COMPUTER_ACTION_TOOLS and _AFTER_ACTION_NOTE in result.content
+            ):
+                summary = result.content.replace(_AFTER_ACTION_NOTE, "").strip()
+                if len(summary) > 2000:  # a tool that returned the image itself
+                    summary = "Screenshot captured."
+                result.content = f"{summary} {NO_VISION_NOTE}".strip()
+        return False
     added = False
     desktop_capture = False
     desktop_result: Any = None
@@ -292,6 +484,7 @@ def drop_old_screenshots(session: Session, keep: int | None = None) -> int:
                     BROWSER_SCREENSHOT_FOLLOWUP_TEXT,
                     DESKTOP_SCREENSHOT_FOLLOWUP_TEXT,
                     PAGE_SCREENSHOT_FOLLOWUP_TEXT,
+                    READ_IMAGE_FOLLOWUP_TEXT,
                 )
             )
             for b in m.content
@@ -332,6 +525,10 @@ class EmptyResponseGuard:
             or session.messages[-1].text != EMPTY_RESPONSE_RETRY_MESSAGE
         ):
             session.add("system", EMPTY_RESPONSE_RETRY_MESSAGE)
+
+
+def uses_shared_device(tool_name: str) -> bool:
+    return tool_name in SHARED_DEVICE_TOOLS or tool_name.startswith(("browser_", "desktop_"))
 
 
 def next_id(prefix: str) -> str:

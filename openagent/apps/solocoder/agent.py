@@ -41,6 +41,7 @@ def build_solocoder_tools(
     browser_use: bool = False,
     git: bool = True,
     desktop_use: bool = False,
+    video: bool = False,
 ) -> list[Callable[..., Any]]:
     """Build the default SoloCoder tool set.
 
@@ -54,6 +55,7 @@ def build_solocoder_tools(
             token, so small local models leave out tools they rarely need.
         git: Include git_status, git_diff, git_log and git_commit. bash covers git too, but the
             read-only git tools run without an approval prompt.
+        video: Include view_video, for a model that reads video.
     """
     tools: list[Callable[..., Any]] = [
         read,
@@ -117,6 +119,11 @@ def build_solocoder_tools(
         from openagent.tools.desktop import desktop_tools
 
         tools.extend(desktop_tools)
+
+    if video:
+        from openagent.tools.video import video_tools
+
+        tools.extend(video_tools)
 
     # Offered only with a keyset: a tool that can only fail is prompt the
     # model reads for nothing.

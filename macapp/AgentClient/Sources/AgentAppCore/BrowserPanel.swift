@@ -41,6 +41,11 @@ public final class BrowserPanelModel: ObservableObject {
         isVisible = false
     }
 
+    /// Another session came on screen. Unlike `dismiss`, its next frame reopens it.
+    public func hide() {
+        isVisible = false
+    }
+
     /// The bundle Playwright's Chromium runs as.
     static let chromiumBundleIds: Set<String> = ["com.google.chrome.for.testing", "org.chromium.Chromium"]
 

@@ -58,6 +58,8 @@ def _get_encoder(model: str):
 # high. Counting images as nothing let a session of pasted images and
 # screenshots overflow the window before compaction thought it was needed.
 IMAGE_TOKEN_ESTIMATE = 1000
+#: And one video: basalt fits a video's frames in 8192 image tokens unless told otherwise.
+VIDEO_TOKEN_ESTIMATE = 8192
 
 
 def count_tokens_for_messages(messages: list[dict], model: str = "gpt-4o") -> int:
@@ -95,6 +97,8 @@ def count_tokens_for_messages(messages: list[dict], model: str = "gpt-4o") -> in
                             total_tokens += len(encoder.encode(text_content))
                         elif block_type in ("image_url", "image"):
                             total_tokens += IMAGE_TOKEN_ESTIMATE
+                        elif block_type == "video":
+                            total_tokens += VIDEO_TOKEN_ESTIMATE
                         elif block_type in ("tool_use", "tool_result"):
                             # Count tool-related tokens (name, arguments, etc.)
                             for key, value in block.items():

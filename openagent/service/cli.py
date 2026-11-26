@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from openagent.core.display import bold, cyan, dim, green, red, yellow
+from openagent.runtime.background import BACKGROUND_AFTER
 from openagent.runtime.events import (
     ContextCompactionCompleted,
     ContextCompactionStarted,
@@ -33,7 +34,7 @@ from openagent.runtime.events import (
 )
 from openagent.service.client import ServiceClient, ServiceClosed
 from openagent.service.protocol import PROTOCOL_VERSION, RpcError
-from openagent.service.server import ServiceSettings, serve
+from openagent.service.server import DEFAULT_MAX_TURNS, ServiceSettings, serve
 
 
 def add_subcommands(subparsers: Any) -> None:
@@ -61,7 +62,16 @@ def add_subcommands(subparsers: Any) -> None:
         default=60.0,
         help="seconds to wait for a permission answer before refusing (default: 60)",
     )
-    sp.add_argument("--max-turns", type=int, default=100, help="default turn budget per run")
+    sp.add_argument(
+        "--max-turns", type=int, default=DEFAULT_MAX_TURNS,
+        help=f"default turn budget per run (default: {DEFAULT_MAX_TURNS})",
+    )
+    sp.add_argument(
+        "--background-after",
+        type=float,
+        default=BACKGROUND_AFTER,
+        help="seconds a shell command may hold the turn before it moves to the background",
+    )
     sp.add_argument(
         "--computer-use",
         action="store_true",
@@ -122,6 +132,7 @@ async def handle_serve(args: argparse.Namespace) -> int:
         roots=tuple(args.root or ()),
         permission_timeout=args.permission_timeout,
         max_turns=args.max_turns,
+        background_after=args.background_after,
         computer_use=args.computer_use,
         browser_use=args.browser_use,
         desktop_use=args.desktop_use,

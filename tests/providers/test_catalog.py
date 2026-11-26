@@ -57,6 +57,12 @@ def test_unreported_context_falls_back_to_the_endpoint_window():
     assert models[1].caps.context_window == 65536
 
 
+@pytest.mark.parametrize("field", ["context_length", "max_model_len"])
+def test_openai_listing_reads_a_window_reported_on_the_entry(field):
+    payload = {"data": [{"id": "served", field: 122865}]}
+    assert _parse_listing(WireAPI.OPENAI_CHAT, payload)[0].caps.context_window == 122865
+
+
 def test_codex_listing_keeps_listed_slugs_with_their_windows():
     payload = {"models": [
         {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list",

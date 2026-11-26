@@ -231,6 +231,71 @@ class BrowserFrame:
     type: Literal["browser_frame"] = "browser_frame"
 
 
+@dataclass
+class BackgroundTaskStarted:
+    """A tool call ran too long and now runs on without the turn.
+
+    Its ``tool_call_id`` gets no ``tool_call_completed``: the row stays open
+    until ``background_task_finished``, which may come after the run has ended.
+    """
+
+    run_id: str
+    session_id: str
+    task_id: str
+    tool_call_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    type: Literal["background_task_started"] = "background_task_started"
+
+
+@dataclass
+class BackgroundTaskFinished:
+    """A background task ended. Sent whether or not a run is going.
+
+    ``state`` is "completed", "failed" or "cancelled". ``wake`` says the agent
+    should be called back: ``run.start`` with ``resume_background``.
+    """
+
+    run_id: str
+    session_id: str
+    task_id: str
+    tool_call_id: str
+    tool_name: str
+    state: str
+    output: str
+    wake: bool
+    type: Literal["background_task_finished"] = "background_task_finished"
+
+
+@dataclass
+class BackgroundTasksDelivered:
+    """Finished tasks' results went into the conversation for the model.
+
+    ``resumed`` is true when they are the reason this run exists, and false
+    when they joined a run that was going anyway.
+    """
+
+    run_id: str
+    task_ids: list[str]
+    summary: str
+    resumed: bool
+    type: Literal["background_tasks_delivered"] = "background_tasks_delivered"
+
+
+@dataclass
+class SteeringDelivered:
+    """A message the person sent during the run went into the conversation.
+
+    ``steer_id`` is the id ``run.steer`` answered with; the model sees the
+    message from its next turn on.
+    """
+
+    run_id: str
+    steer_id: str
+    text: str
+    type: Literal["steering_delivered"] = "steering_delivered"
+
+
 RuntimeEvent = (
     RunStarted
     | RunCompleted
@@ -252,29 +317,37 @@ RuntimeEvent = (
     | ContextUsage
     | MessageStats
     | BrowserFrame
+    | BackgroundTaskStarted
+    | BackgroundTaskFinished
+    | BackgroundTasksDelivered
+    | SteeringDelivered
 )
 
 
 __all__ = [
     "AgentResult",
+    "BackgroundTaskFinished",
+    "BackgroundTaskStarted",
+    "BackgroundTasksDelivered",
     "BrowserFrame",
     "ContextCompactionCompleted",
     "ContextCompactionFailed",
     "ContextCompactionStarted",
     "ContextUsage",
-    "MessageStats",
     "MessageCompleted",
     "MessageDelta",
     "MessageFailed",
     "MessageStarted",
-    "ReasoningDelta",
+    "MessageStats",
     "PermissionRequested",
     "PermissionResolved",
+    "ReasoningDelta",
     "RunCancelled",
     "RunCompleted",
     "RunFailed",
     "RunStarted",
     "RuntimeEvent",
+    "SteeringDelivered",
     "ToolCallCompleted",
     "ToolCallFailed",
     "ToolCallStarted",

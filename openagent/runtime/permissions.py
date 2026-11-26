@@ -67,6 +67,7 @@ TOOL_RISK: dict[str, Risk] = {
     "desktop_list_apps": "read",
     "desktop_snapshot": "read",
     "desktop_screenshot": "read",
+    "view_video": "read",
     "desktop_launch": "gui",
     "desktop_click": "gui",
     "desktop_type": "gui",

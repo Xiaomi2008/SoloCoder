@@ -424,15 +424,15 @@ async def test_working_dir_reaches_the_tools(harness: Harness, tmp_path: Path):
     assert (project / "sub" / "note.txt").read_text() == "hi"
 
 
-async def test_a_second_run_on_a_busy_connection_is_refused(harness: Harness, workdir: Path):
+async def test_a_second_run_on_a_busy_session_is_refused(harness: Harness, workdir: Path):
     """A queue here is a UI that silently loses work; refuse it out loud."""
     service = await harness.serve(provider_factory=lambda ref: HangingProvider())
     client = await harness.connect(service)
 
     started = await client.start_run("go", workdir)
     with pytest.raises(RpcError) as exc:
-        await client.start_run("second", workdir)
-    assert exc.value.code == ErrorCode.INVALID_REQUEST
+        await client.start_run("second", workdir, session_id=started["session_id"])
+    assert exc.value.code == ErrorCode.SESSION_BUSY
     assert exc.value.data["run_id"] == started["run_id"]
 
     await client.cancel(started["run_id"])
@@ -661,6 +661,16 @@ async def test_a_session_survives_a_reconnect(harness: Harness, workdir: Path):
     history = carried_history(resumed)
     assert "first question" in history, "the resumed run must carry the conversation"
     assert "second question" in history
+
+
+async def test_a_session_remembers_the_model_it_ran_on(harness: Harness, workdir: Path):
+    """Sessions run side by side on different servers; reopening one keeps its own."""
+    client = await harness.connect(await harness.serve())
+    started = await client.start_run("go", workdir, permission_mode="allow_all")
+    await collect_events(client)
+
+    loaded = await client.call(Method.SESSION_LOAD, {"session_id": started["session_id"]})
+    assert loaded["model"] == started["model"]
 
 
 async def test_session_ids_are_validated(connected: ServiceClient, workdir: Path):

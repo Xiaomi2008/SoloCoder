@@ -7,16 +7,18 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from openagent.core.retry import get_provider_retryable_exceptions, with_retry
+from openagent.provider.stall import is_stall
 from openagent.core.types import (
     ContentBlock,
     ImageBlock,
+    VideoBlock,
     Message,
     TextBlock,
     ToolDef,
     ToolResultBlock,
     ToolUseBlock,
 )
-from openagent.provider.base import BaseProvider
+from openagent.provider.base import BaseProvider, session_headers
 from openagent.provider.converter import MessageConverterMixin
 from openagent.providers.events import (
     CallClock,
@@ -100,7 +102,7 @@ class OpenAIConverterMixin(MessageConverterMixin):
 
                 if isinstance(msg.content, str):
                     entry["content"] = msg.content
-                elif msg.has_images:
+                elif msg.has_images or msg.has_videos:
                     # Handle multimodal content with images for Qwen3.5-VL
                     blocks: list[dict[str, Any]] = []
                     for block in msg.content:
@@ -108,6 +110,8 @@ class OpenAIConverterMixin(MessageConverterMixin):
                             blocks.append({"type": "text", "text": block.text})
                         elif isinstance(block, ImageBlock):
                             blocks.append({"type": "image_url", "image_url": {"url": block.url}})
+                        elif isinstance(block, VideoBlock):
+                            blocks.append(_video_part(block))
                     entry["content"] = blocks if blocks else msg.text
                 else:
                     entry["content"] = msg.text
@@ -209,6 +213,27 @@ class OpenAIConverterMixin(MessageConverterMixin):
         ]
 
 
+def _stall_guarded_client() -> Any:
+    """The SDK's own HTTP client, with replies that stall mid-stream failing
+    after ``STALL_AFTER`` seconds instead of the ten-minute read timeout."""
+    import importlib
+
+    from openai import DefaultAsyncHttpxClient
+    from openai._constants import DEFAULT_CONNECTION_LIMITS
+
+    from openagent.provider.stall import stall_guard_transport
+
+    # The package the SDK's client is made of: httpx, or httpx2 from openai 3.
+    package = next(
+        base.__module__.split(".")[0]
+        for base in DefaultAsyncHttpxClient.__mro__
+        if base.__name__ == "AsyncClient"
+    )
+    http = importlib.import_module(package)
+    inner = http.AsyncHTTPTransport(limits=DEFAULT_CONNECTION_LIMITS)
+    return DefaultAsyncHttpxClient(transport=stall_guard_transport(http, inner))
+
+
 class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
     def __init__(
         self,
@@ -231,6 +256,8 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         if base_url and not api_key:
             effective_api_key = "not-needed"
 
+        if "http_client" not in kwargs:
+            kwargs["http_client"] = _stall_guarded_client()
         self._client = AsyncOpenAI(
             api_key=effective_api_key, base_url=base_url or None, **kwargs
         )
@@ -278,6 +305,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         **kwargs: Any,
     ) -> Message:
         retryable = get_provider_retryable_exceptions("openai")
+        headers = session_headers(kwargs)
 
         @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
         async def _call() -> Message:
@@ -290,6 +318,8 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             }
             if tools:
                 api_kwargs["tools"] = self.convert_tools(tools)
+            if headers:
+                api_kwargs["extra_headers"] = headers
             response = await self._client.chat.completions.create(**api_kwargs)
             return self.convert_response(response)
 
@@ -303,6 +333,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         **kwargs: Any,
     ) -> AsyncIterator[ProviderStreamEvent]:
         """Stream provider events from OpenAI text responses."""
+        headers = session_headers(kwargs)
         converted = self.convert_messages(messages, system_prompt)
         api_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -314,6 +345,8 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         }
         if tools:
             api_kwargs["tools"] = self.convert_tools(tools)
+        if headers:
+            api_kwargs["extra_headers"] = headers
 
         fallback_message_id = f"msg_{uuid.uuid4().hex[:24]}"
         message_id: str | None = None
@@ -429,7 +462,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             if not started:
                 started = True
                 yield ProviderMessageStarted(message_id=message_id)
-            yield ProviderError(message_id=message_id, error=str(exc))
+            yield ProviderError(message_id=message_id, error=str(exc), stalled=is_stall(exc))
             return
 
         if message_id is None:
@@ -495,3 +528,22 @@ def _usage_event(clock: CallClock, message_id: str, usage: Any, timings: Any) ->
         prefill_tps=prefill,
         decode_tps=decode,
     )
+
+
+def _video_part(block: VideoBlock) -> dict[str, Any]:
+    """A video as OpenAI chat's ``video_url`` part, read from its file now.
+
+    Sent as a data: URL because a server on another machine cannot read this
+    one's paths. ``fps`` and ``max_frames`` ride on the part, as vLLM and
+    basalt take them. A file gone since is said in words, not sent.
+    """
+    try:
+        url = block.data_url()
+    except OSError as exc:
+        return {"type": "text", "text": f"[Video {block.path} not shown: {exc.strerror or exc}]"}
+    part: dict[str, Any] = {"type": "video_url", "video_url": {"url": url}}
+    if block.fps is not None:
+        part["fps"] = block.fps
+    if block.max_frames is not None:
+        part["max_frames"] = block.max_frames
+    return part

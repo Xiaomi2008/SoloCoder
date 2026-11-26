@@ -34,6 +34,8 @@ import Foundation
 public struct ToolCallRow: Identifiable, Equatable, Sendable {
     public enum State: Equatable, Sendable {
         case running
+        /// Still going, without holding the turn: the run may end around it.
+        case background
         case done(String)
         case failed(String)
     }
@@ -232,6 +234,9 @@ public struct TranscriptLine: Identifiable, Equatable, Sendable {
     public var messageId: String?
     /// The images a prompt carried. Empty for every other kind.
     public var images: [TranscriptImage] = []
+    /// A `.user` line the person did not write: a background task calling the
+    /// agent back. It opens a turn as a prompt does, and is drawn as a notice.
+    public var automatic = false
     /// True while the text is still arriving.
     ///
     /// The view turns text selection off while streaming: a selectable `Text`
@@ -535,9 +540,13 @@ public struct Turn: Identifiable, Equatable, Sendable {
     ///
     /// While the run is going, an answer with anything after it is a step: the
     /// model moved on from it, and drawing it below the thinking that came
-    /// later puts the timeline out of order.
+    /// later puts the timeline out of order. And while the run is live, every
+    /// answer is a step: until the run ends, the note just finished is as
+    /// likely to be followed by a tool call as to be the last word, and drawing
+    /// it as the answer moved it out of the steps and back in on every round.
     private var split: (steps: [TranscriptLine], result: [TranscriptLine]) {
         guard let last = lines.lastIndex(where: \.isResult) else { return (lines, []) }
+        if runLive { return (lines, []) }
         if running, last != lines.index(before: lines.endIndex) { return (lines, []) }
         var steps = Array(lines[..<last])
         var result = [lines[last]]
@@ -555,6 +564,18 @@ public struct Turn: Identifiable, Equatable, Sendable {
     /// last thing that rendered.
     var runEndedAt: Date?
 
+    /// The run this turn belongs to has started and not ended. Set on the last
+    /// turn by the transcript, which is the only thing that knows.
+    ///
+    /// The lines alone cannot say it. Between a finished note and the tool call
+    /// it announces, or a tool's result and the model's next reply, nothing is
+    /// streaming and no row is running — and on a local model that gap is the
+    /// server reading the whole context back in, seconds to minutes on a long
+    /// task. Read from the lines, the turn finished in every gap: its steps
+    /// folded, the last note became the answer, the work in progress was hidden
+    /// in the fold, and the transcript jumped by the fold's height each time.
+    var runLive = false
+
     public var start: Date? { user?.at ?? lines.first?.at }
     public var end: Date? {
         var last = lines.map(\.stoppedAt).max() ?? user?.at
@@ -565,7 +586,7 @@ public struct Turn: Identifiable, Equatable, Sendable {
 
     /// True while something in the turn is still going.
     public var running: Bool {
-        lines.contains {
+        runLive || lines.contains {
             if case .tool(let row) = $0.kind, row.state == .running { return true }
             if case .compaction(let row) = $0.kind, row.state == .running { return true }
             return $0.streaming
@@ -689,6 +710,13 @@ public struct Transcript: Equatable, Sendable {
         emit(line)
     }
 
+    /// What opens the turn a background task's result started.
+    public mutating func addBackgroundNotice(_ text: String) {
+        var line = TranscriptLine(id: "user-\(lines.count)", kind: .user(text), messageId: nil)
+        line.automatic = true
+        emit(line)
+    }
+
     /// A past assistant message, for a session loaded from disk.
     ///
     /// History is not a stream: a stored session has the finished text and no
@@ -727,7 +755,15 @@ public struct Transcript: Equatable, Sendable {
         // A terminal event ends the run. Anything after it is a late arrival on
         // a connection that is closing; rendering it would resurrect a finished
         // run in the UI.
-        if finished, !isTerminal(event) { return }
+        // Two things do belong after the end: a task finishing in the background,
+        // and the next run starting, which the callback does with no prompt.
+        var afterTheEnd = false
+        switch event {
+        case .backgroundTaskFinished: afterTheEnd = true
+        case .runStarted(let e): afterTheEnd = e.runId != runId
+        default: break
+        }
+        if finished, !isTerminal(event), !afterTheEnd { return }
 
         switch event {
         case .runStarted(let e):
@@ -934,6 +970,30 @@ public struct Transcript: Equatable, Sendable {
             state = .cancelled(e.reason)
             closeStreamingLines()
 
+        case .backgroundTaskStarted(let e):
+            setToolState(e.toolCallId, .background, ended: false)
+
+        case .backgroundTaskFinished(let e):
+            let state: ToolCallRow.State =
+                switch e.state {
+                case "completed": .done(e.output)
+                case "cancelled": .failed("stopped")
+                default: .failed(e.output)
+                }
+            setToolState(e.toolCallId, state, ended: true)
+
+        case .steeringDelivered(let e):
+            // AppModel adds these itself, with the images it sent; this is for
+            // a transcript fed straight from the stream.
+            addUserMessage(e.text)
+
+        case .backgroundTasksDelivered(let e):
+            if e.resumed {
+                addBackgroundNotice(e.summary)
+            } else {
+                emit(TranscriptLine(id: "background-\(lines.count)", kind: .note(e.summary), messageId: nil))
+            }
+
         case .browserFrame, .contextUsage, .messageStats:
             // Not the conversation: AppModel takes both before they reach here.
             break
@@ -982,6 +1042,9 @@ public struct Transcript: Equatable, Sendable {
         }
         if finished, let finishedAt, !out.isEmpty {
             out[out.count - 1].runEndedAt = finishedAt
+        }
+        if !finished, state.isRunning, !out.isEmpty {
+            out[out.count - 1].runLive = true
         }
         return out
     }
@@ -1191,6 +1254,13 @@ public struct Transcript: Equatable, Sendable {
 
     private func indexOfTool(_ toolCallId: String) -> Int? {
         lines.lastIndex { if case .tool(let row) = $0.kind { return row.id == toolCallId } else { return false } }
+    }
+
+    private mutating func setToolState(_ toolCallId: String, _ state: ToolCallRow.State, ended: Bool) {
+        guard let index = indexOfTool(toolCallId), case .tool(var row) = lines[index].kind else { return }
+        row.state = state
+        if ended { row.endedAt = clock() }
+        lines[index].kind = .tool(row)
     }
 
     private func isAssistant(_ kind: TranscriptLine.Kind) -> Bool {

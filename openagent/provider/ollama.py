@@ -145,6 +145,8 @@ class OllamaProvider(OllamaConverterMixin, BaseProvider):
         **kwargs: Any,
     ) -> Message:
         retryable = get_provider_retryable_exceptions("ollama")
+        # Ollama keeps no slots by session; its client takes no such field.
+        kwargs.pop("session_id", None)
 
         @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
         async def _call() -> Message:
@@ -169,6 +171,7 @@ class OllamaProvider(OllamaConverterMixin, BaseProvider):
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Stream text chunks from Ollama."""
+        kwargs.pop("session_id", None)
         converted = self.convert_messages(messages, system_prompt)
         api_kwargs: dict[str, Any] = {
             "model": self.model,

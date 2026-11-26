@@ -159,6 +159,8 @@ class GoogleProvider(GoogleConverterMixin, BaseProvider):
         from google.genai import types
 
         retryable = get_provider_retryable_exceptions("google")
+        # GenerateContentConfig refuses a field it does not know.
+        kwargs.pop("session_id", None)
 
         @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
         async def _call() -> Message:
@@ -191,6 +193,7 @@ class GoogleProvider(GoogleConverterMixin, BaseProvider):
         """Stream provider events from Google."""
         from google.genai import types
 
+        kwargs.pop("session_id", None)
         converted = self.convert_messages(messages, system_prompt)
         config_kwargs: dict[str, Any] = {**kwargs}
         if "system_instruction" in converted:
