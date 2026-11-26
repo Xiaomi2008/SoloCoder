@@ -305,7 +305,8 @@ class TestOpenAIProviderRetry:
         provider._max_retries = 3
 
         call_count = 0
-        mock_request = MagicMock(spec=Request)
+        # A real request: openai 3.x reads its headers to build the error.
+        mock_request = Request("POST", "http://localhost/v1/chat/completions")
 
         async def mock_create(**kwargs):
             nonlocal call_count
