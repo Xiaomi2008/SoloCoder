@@ -118,9 +118,7 @@ public enum Markdown {
                 continue
             }
 
-            // A table is a header row plus its `---` delimiter row. Both have to
-            // be here, because a bare `|` line is a model writing a shell pipe.
-            if index + 1 < lines.count, isTableRow(line), isTableDelimiter(lines[index + 1]) {
+            if startsTable(lines, at: index) {
                 var rows: [[String]] = [cells(of: line)]
                 let declared = tableAlignment(of: lines[index + 1])
                 index += 2
@@ -148,7 +146,11 @@ public enum Markdown {
             }
 
             var paragraph: [String] = []
-            while index < lines.count, !isBlank(lines[index]), !startsBlock(lines[index]) {
+            // A table needs two lines to be seen, so `startsBlock`, which reads
+            // one, cannot stop a paragraph in front of it: "Quick guide" with a
+            // table on the next line rendered the whole table as prose.
+            while index < lines.count, !isBlank(lines[index]), !startsBlock(lines[index]),
+                  !startsTable(lines, at: index) {
                 paragraph.append(lines[index])
                 index += 1
             }
@@ -258,6 +260,12 @@ public enum Markdown {
         // `1.5 miles` is a number, not a list.
         return trimmed.index(after: digits.endIndex) < trimmed.endIndex
             && trimmed[trimmed.index(after: digits.endIndex)].isWhitespace
+    }
+
+    /// A table is a header row plus its `---` delimiter row. Both have to be
+    /// here, because a bare `|` line is a model writing a shell pipe.
+    private static func startsTable(_ lines: [String], at index: Int) -> Bool {
+        index + 1 < lines.count && isTableRow(lines[index]) && isTableDelimiter(lines[index + 1])
     }
 
     private static func isTableRow(_ line: String) -> Bool {
@@ -393,7 +401,7 @@ public enum Markdown {
                 }
                 break
             }
-            if !startsBlock(line), !items.isEmpty {
+            if !startsBlock(line), !startsTable(lines, at: index), !items.isEmpty {
                 // A subscript write, not a read-then-append: `let item = items[i]`
                 // shares the string with the element, and appending to the copy
                 // writes the whole string back. See `Transcript.appendDelta`.
