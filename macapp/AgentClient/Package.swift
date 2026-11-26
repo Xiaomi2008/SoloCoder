@@ -32,10 +32,18 @@ let package = Package(
         .executable(name: "ui-cost", targets: ["UICost"]),
         .executable(name: "agent-checks", targets: ["AgentClientChecks"]),
     ],
+    // The one dependency: LaTeX math typeset with its own math fonts, which the
+    // system has no API for. Only the views use it; the core finds the formulas.
+    dependencies: [
+        .package(url: "https://github.com/mgriebling/SwiftMath.git", exact: "1.7.3"),
+    ],
     targets: [
         .target(name: "AgentClient"),
         .target(name: "AgentAppCore", dependencies: ["AgentClient"]),
-        .target(name: "AgentAppUI", dependencies: ["AgentClient", "AgentAppCore"]),
+        .target(
+            name: "AgentAppUI",
+            dependencies: ["AgentClient", "AgentAppCore", .product(name: "SwiftMath", package: "SwiftMath")]
+        ),
         .executableTarget(name: "AgentApp", dependencies: ["AgentClient", "AgentAppCore", "AgentAppUI"]),
         .executableTarget(
             name: "UIPreview",

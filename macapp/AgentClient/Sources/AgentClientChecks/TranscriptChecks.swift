@@ -906,6 +906,7 @@ private func blockText(_ block: MarkdownBlock) -> String {
     case .quote(let lines): return lines.joined(separator: "\n")
     case .table(let rows, _): return rows.map { $0.joined(separator: " ") }.joined(separator: "\n")
     case .rule: return "---"
+    case .math(let latex): return latex
     }
 }
 

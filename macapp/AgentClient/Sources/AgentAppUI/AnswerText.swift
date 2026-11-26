@@ -107,6 +107,7 @@ final class AnswerTextView: NSTextView {
     }
 }
 
+@MainActor
 enum AnswerTextBuilder {
     private static let blockGap: CGFloat = 8
     private static let itemGap: CGFloat = 4
@@ -123,6 +124,7 @@ enum AnswerTextBuilder {
     /// The text with each table row on one line. A cell's newline is what separates
     /// it from the next cell, so all but a row's last become tabs.
     static func plainText(_ text: NSAttributedString) -> String {
+        let text = withFormulaSources(text)
         let string = text.string as NSString
         var out = ""
         string.enumerateSubstrings(
@@ -160,6 +162,10 @@ enum AnswerTextBuilder {
             out.append(line(inline(text, font: headingFont(level), color: .labelColor), style))
         case .paragraph(let text):
             out.append(line(inline(text, font: font(.body), color: .labelColor), paragraph(after: blockGap)))
+        case .math(let latex):
+            let style = paragraph(after: blockGap)
+            style.alignment = .center
+            out.append(line(formula(latex, display: true, font: font(.body), color: .labelColor), style))
         case .code(let language, let text):
             appendCode(text, language: language, to: out)
         case .bullets(let items):
@@ -275,7 +281,10 @@ enum AnswerTextBuilder {
     /// line it would space a list of paths out like separate blocks.
     private static func line(_ text: NSAttributedString, _ style: NSParagraphStyle) -> NSAttributedString {
         let out = NSMutableAttributedString(attributedString: text)
-        out.append(NSAttributedString(string: "\n", attributes: text.length > 0 ? out.attributes(at: text.length - 1, effectiveRange: nil) : [:]))
+        var end = text.length > 0 ? out.attributes(at: text.length - 1, effectiveRange: nil) : [:]
+        // A paragraph that ends in a formula would hand its newline the attachment.
+        end[.attachment] = nil
+        out.append(NSAttributedString(string: "\n", attributes: end))
         let inner = style.mutableCopy() as! NSMutableParagraphStyle
         inner.paragraphSpacing = 0
         out.addAttribute(.paragraphStyle, value: inner, range: NSRange(location: 0, length: out.length))
@@ -290,9 +299,48 @@ enum AnswerTextBuilder {
         return style
     }
 
+    /// One line of inline text: its markdown styled, its formulas typeset.
+    private static func inline(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
+        let runs = Markdown.inlineRuns(text)
+        guard runs != [.text(text)] else { return markup(text, font: font, color: color) }
+        let out = NSMutableAttributedString()
+        for run in runs {
+            switch run {
+            case .text(let piece): out.append(markup(piece, font: font, color: color))
+            case .math(let latex): out.append(formula(latex, display: false, font: font, color: color))
+            }
+        }
+        return out
+    }
+
+    /// A formula as text: its attachment, or the LaTeX as written, in code type,
+    /// when SwiftMath cannot parse it.
+    private static func formula(_ latex: String, display: Bool, font: NSFont, color: NSColor) -> NSAttributedString {
+        guard let attachment = FormulaAttachment(
+            latex: latex, display: display, size: font.pointSize, maxWidth: Theme.columnWidth
+        ) else {
+            let mono = NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .regular)
+            let source = display ? "\\[\(latex)\\]" : "\\(\(latex)\\)"
+            return NSAttributedString(string: source, attributes: [.font: mono, .foregroundColor: color])
+        }
+        let out = NSMutableAttributedString(attachment: attachment)
+        out.addAttributes([.font: font, .foregroundColor: color], range: NSRange(location: 0, length: out.length))
+        return out
+    }
+
+    /// The text with each formula's LaTeX where its attachment character was.
+    private static func withFormulaSources(_ text: NSAttributedString) -> NSAttributedString {
+        let out = NSMutableAttributedString(attributedString: text)
+        out.enumerateAttribute(.attachment, in: NSRange(location: 0, length: out.length), options: .reverse) { value, range, _ in
+            guard let formula = value as? FormulaAttachment else { return }
+            out.replaceCharacters(in: range, with: formula.source)
+        }
+        return out
+    }
+
     /// Inline markdown, read by the same parser and options as `markdownText`, and
     /// with the same fallback: markup the parser refuses is shown, not lost.
-    private static func inline(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
+    private static func markup(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
         let plain: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
         guard let parsed = try? AttributedString(
             markdown: text,

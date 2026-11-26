@@ -69,6 +69,18 @@ public enum MarkdownBlock: Equatable, Sendable {
     case table(rows: [[String]], alignment: [ColumnAlignment])
     /// `---`, `***`, `___`.
     case rule
+    /// A display formula, `\[ … \]` or `$$ … $$`: the LaTeX between the
+    /// delimiters. Kept from the inline parser, which reads `\[` as an escaped `[`
+    /// and `_` as emphasis, and showed bare brackets around broken LaTeX.
+    case math(String)
+}
+
+/// A piece of one line of inline text: markdown for the system parser, or a
+/// formula for the typesetter.
+public enum InlineRun: Equatable, Sendable {
+    case text(String)
+    /// `\( … \)`, `$ … $`, or a display formula written inside a line: the LaTeX.
+    case math(String)
 }
 
 // MARK: - Parser
@@ -92,6 +104,12 @@ public enum Markdown {
             if let fence = fenceOpener(line) {
                 let (body, next) = readFence(lines, from: index, marker: fence)
                 blocks.append(.code(language: fence.language, text: body))
+                index = next
+                continue
+            }
+
+            if let (latex, next) = readMath(lines, from: index) {
+                blocks.append(.math(latex))
                 index = next
                 continue
             }
@@ -150,7 +168,7 @@ public enum Markdown {
             // one, cannot stop a paragraph in front of it: "Quick guide" with a
             // table on the next line rendered the whole table as prose.
             while index < lines.count, !isBlank(lines[index]), !startsBlock(lines[index]),
-                  !startsTable(lines, at: index) {
+                  !startsTable(lines, at: index), readMath(lines, from: index) == nil {
                 paragraph.append(lines[index])
                 index += 1
             }
@@ -401,7 +419,7 @@ public enum Markdown {
                 }
                 break
             }
-            if !startsBlock(line), !startsTable(lines, at: index), !items.isEmpty {
+            if !startsBlock(line), !startsTable(lines, at: index), readMath(lines, from: index) == nil, !items.isEmpty {
                 // A subscript write, not a read-then-append: `let item = items[i]`
                 // shares the string with the element, and appending to the copy
                 // writes the whole string back. See `Transcript.appendDelta`.
@@ -424,5 +442,145 @@ public enum Markdown {
             return MarkdownItem(label: "\(digits)\(mark)", text: String(rest))
         }
         return MarkdownItem(label: "", text: String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces))
+    }
+
+    // MARK: formulas
+
+    private static let displayDelimiters: [(open: String, close: String)] = [("\\[", "\\]"), ("$$", "$$")]
+
+    /// A display formula starting on `start`, and the line after it.
+    ///
+    /// Nil unless it closes before a blank line: LaTeX has no blank line inside a
+    /// formula, so an opener with no closer by then is not one. A formula still
+    /// streaming in, or a line that opens with `$$` and was a price, stays text
+    /// until it closes, rather than taking the rest of the answer with it.
+    private static func readMath(_ lines: [String], from start: Int) -> (String, Int)? {
+        let first = lines[start].trimmingCharacters(in: .whitespaces)
+        guard let delimiter = displayDelimiters.first(where: { first.hasPrefix($0.open) }) else { return nil }
+        var body: [String] = []
+        var line = String(first.dropFirst(delimiter.open.count))
+        var index = start
+        while true {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasSuffix(delimiter.close) {
+                body.append(String(trimmed.dropLast(delimiter.close.count)))
+                let latex = body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                return latex.isEmpty ? nil : (latex, index + 1)
+            }
+            body.append(line)
+            index += 1
+            guard index < lines.count, !isBlank(lines[index]) else { return nil }
+            line = lines[index]
+        }
+    }
+
+    /// One line of inline text, cut into markdown and formulas.
+    ///
+    /// The view hands the text runs to `AttributedString(markdown:)` and typesets
+    /// the formulas, which that parser would mangle: `\(` is an escaped `(` to it
+    /// and `p_{a}` an emphasis. A code span is the markdown's, so a `$` inside
+    /// backticks stays code.
+    ///
+    /// A single `$` follows pandoc's rule, because a model writes prices: the
+    /// opener has a non-space after it, the closer a non-space before it and no
+    /// digit after it, and both are on one line. `$5 and $10` is text, `$x$` a
+    /// formula, `\$` a dollar sign.
+    public static func inlineRuns(_ text: String) -> [InlineRun] {
+        guard text.contains("\\(") || text.contains("\\[") || text.contains("$") else { return [.text(text)] }
+        let chars = Array(text)
+        var runs: [InlineRun] = []
+        var plain = ""
+        var i = 0
+
+        func flush() {
+            if !plain.isEmpty { runs.append(.text(plain)) }
+            plain = ""
+        }
+        func find(_ closer: [Character], from start: Int) -> Int? {
+            var j = start
+            while j + closer.count <= chars.count {
+                if chars[j] == "\n" { return nil }
+                if Array(chars[j..<(j + closer.count)]) == closer { return j }
+                j += 1
+            }
+            return nil
+        }
+        func formula(_ from: Int, _ to: Int) -> String {
+            String(chars[from..<to]).trimmingCharacters(in: .whitespaces)
+        }
+
+        while i < chars.count {
+            let c = chars[i]
+            if c == "`" {
+                let ticks = chars[i...].prefix(while: { $0 == "`" }).count
+                var j = i + ticks
+                var end: Int?
+                while j < chars.count {
+                    let run = chars[j...].prefix(while: { $0 == "`" }).count
+                    if run == ticks { end = j; break }
+                    j += max(run, 1)
+                }
+                let stop = end.map { $0 + ticks } ?? i + ticks
+                plain += String(chars[i..<stop])
+                i = stop
+                continue
+            }
+            if c == "\\", i + 1 < chars.count {
+                let next = chars[i + 1]
+                if next == "(" || next == "[",
+                   let end = find(["\\", next == "(" ? ")" : "]"], from: i + 2), end > i + 2 {
+                    flush()
+                    runs.append(.math(formula(i + 2, end)))
+                    i = end + 2
+                    continue
+                }
+                // Any other escape stays whole, for the markdown parser to read:
+                // `\$` is a dollar sign, not an opener.
+                plain.append(c)
+                plain.append(next)
+                i += 2
+                continue
+            }
+            if c == "$" {
+                if i + 1 < chars.count, chars[i + 1] == "$" {
+                    if let end = find(["$", "$"], from: i + 2), end > i + 2 {
+                        flush()
+                        runs.append(.math(formula(i + 2, end)))
+                        i = end + 2
+                    } else {
+                        plain += "$$"
+                        i += 2
+                    }
+                    continue
+                }
+                if let end = closingDollar(chars, after: i) {
+                    flush()
+                    runs.append(.math(String(chars[(i + 1)..<end])))
+                    i = end + 1
+                    continue
+                }
+            }
+            plain.append(c)
+            i += 1
+        }
+        flush()
+        return runs
+    }
+
+    /// The `$` that closes the one at `open`, by pandoc's rule; nil for a price.
+    private static func closingDollar(_ chars: [Character], after open: Int) -> Int? {
+        guard open + 1 < chars.count, !chars[open + 1].isWhitespace else { return nil }
+        var j = open + 2
+        while j < chars.count {
+            let c = chars[j]
+            if c == "\n" { return nil }
+            if c == "\\" { j += 2; continue }
+            if c == "$" {
+                let after = j + 1 < chars.count ? chars[j + 1] : " "
+                if !chars[j - 1].isWhitespace, !after.isNumber { return j }
+            }
+            j += 1
+        }
+        return nil
     }
 }

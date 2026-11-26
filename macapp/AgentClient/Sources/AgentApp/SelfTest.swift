@@ -1,4 +1,5 @@
 import AgentAppCore
+import AgentAppUI
 import AgentClient
 import Foundation
 
@@ -73,6 +74,19 @@ enum SelfTest {
             case .repository(let root):
                 throw Failure("not a bundled sidecar; resolved the repository at \(root.path)")
             }
+        })
+
+        // SwiftMath's fonts are a resource bundle the packaging has to copy in,
+        // and a bundle without them crashes on the first formula, not at launch.
+        await step("math", {
+            let fonts = Bundle.main.resourceURL?.appendingPathComponent(FormulaProbe.bundleName)
+            guard let fonts, FileManager.default.fileExists(atPath: fonts.path) else {
+                throw Failure("no \(FormulaProbe.bundleName) in Contents/Resources: the first formula would crash")
+            }
+            guard let size = FormulaProbe.typeset("\\frac{a}{b}") else {
+                throw Failure("SwiftMath could not typeset \\frac{a}{b}")
+            }
+            return "\\frac{a}{b} typeset at \(Int(size.width))x\(Int(size.height)) pt"
         })
 
         await step("start", {

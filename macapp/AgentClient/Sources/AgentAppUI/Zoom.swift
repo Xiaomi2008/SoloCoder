@@ -127,10 +127,18 @@ extension NSAttributedString {
     /// Every font in the string, `zoom` times its size: the answer's text view
     /// is built at the system sizes and scaled once, rather than every builder
     /// taking the factor.
+    @MainActor
     func zoomed(_ zoom: CGFloat) -> NSAttributedString {
         guard zoom != 1 else { return self }
         let out = NSMutableAttributedString(attributedString: self)
         let all = NSRange(location: 0, length: out.length)
+        // A formula is an image, which the fonts' scale does not reach: it is
+        // typeset again at the new size.
+        out.enumerateAttribute(.attachment, in: all) { value, range, _ in
+            guard let formula = value as? FormulaAttachment,
+                  let resized = formula.resized(by: zoom, maxWidth: Theme.columnWidth * zoom) else { return }
+            out.addAttribute(.attachment, value: resized, range: range)
+        }
         out.enumerateAttribute(.font, in: all) { value, range, _ in
             guard let font = value as? NSFont else { return }
             out.addAttribute(.font, value: font.withSize(font.pointSize * zoom), range: range)
