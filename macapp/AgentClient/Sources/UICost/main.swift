@@ -333,6 +333,7 @@ func blockChars(_ block: MarkdownBlock) -> Int {
     case .quote(let lines): return lines.reduce(0) { $0 + $1.utf8.count }
     case .table(let rows, _): return rows.reduce(0) { r, row in r + row.reduce(0) { $0 + $1.utf8.count } }
     case .rule: return 3
+    case .math(let latex): return latex.utf8.count
     }
 }
 

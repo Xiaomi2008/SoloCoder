@@ -216,6 +216,71 @@ func markdownChecks(_ checks: Checks) {
         "a pipe inside a paragraph, with no `---` row under it, stays in the paragraph"
     )
 
+    // MARK: formulas
+
+    // The answer that showed bare brackets: `\[` on its own line, then the LaTeX,
+    // then `\]`. The inline parser read `\[` as an escaped `[`.
+    checks.equal(
+        Markdown.blocks("For a normal greedy decode:\n\n\\[\ny_t = \\arg\\max_v \\log p_{\\theta}(v \\mid x, y_{<t})\n\\]\n\nThe model picks."),
+        [
+            .paragraph("For a normal greedy decode:"),
+            .math("y_t = \\arg\\max_v \\log p_{\\theta}(v \\mid x, y_{<t})"),
+            .paragraph("The model picks."),
+        ],
+        "`\\[` … `\\]` on their own lines is a display formula"
+    )
+    checks.equal(
+        Markdown.blocks("$$a^2 + b^2 = c^2$$"),
+        [.math("a^2 + b^2 = c^2")],
+        "`$$ … $$` on one line is a display formula"
+    )
+    checks.equal(
+        Markdown.blocks("so:\n$$\nx = 1\n$$"),
+        [.paragraph("so:"), .math("x = 1")],
+        "a paragraph stops in front of a formula on the next line"
+    )
+    checks.equal(
+        Markdown.blocks("\\[\nx = 1\n\nmore text"),
+        [.paragraph("\\[\nx = 1"), .paragraph("more text")],
+        "an opener with no closer before a blank line is text, not a formula that takes the answer"
+    )
+    checks.equal(
+        Markdown.blocks("$$ is what it costs"),
+        [.paragraph("$$ is what it costs")],
+        "a line opening with `$$` that never closes is text"
+    )
+
+    checks.equal(
+        Markdown.inlineRuns("the score \\(s(v)\\) is highest"),
+        [.text("the score "), .math("s(v)"), .text(" is highest")],
+        "`\\( … \\)` inside a line is a formula"
+    )
+    checks.equal(
+        Markdown.inlineRuns("with $\\alpha$ and $p_{a}$."),
+        [.text("with "), .math("\\alpha"), .text(" and "), .math("p_{a}"), .text(".")],
+        "`$ … $` inside a line is a formula"
+    )
+    checks.equal(
+        Markdown.inlineRuns("it costs $5 and $10, or $5-$10"),
+        [.text("it costs $5 and $10, or $5-$10")],
+        "prices are not formulas: no `$` closes after a space or before a digit"
+    )
+    checks.equal(
+        Markdown.inlineRuns("a \\$5 fee and **bold**"),
+        [.text("a \\$5 fee and **bold**")],
+        "`\\$` and other escapes stay for the markdown parser"
+    )
+    checks.equal(
+        Markdown.inlineRuns("run `echo $HOME $PATH` then"),
+        [.text("run `echo $HOME $PATH` then")],
+        "a `$` inside a code span stays code"
+    )
+    checks.equal(
+        Markdown.inlineRuns("no math here"),
+        [.text("no math here")],
+        "a line with no formula is one text run"
+    )
+
     checks.equal(
         Markdown.blocks("cat a.txt | wc -l"),
         [.paragraph("cat a.txt | wc -l")],
@@ -253,7 +318,7 @@ func markdownChecks(_ checks: Checks) {
     // parser that mis-classifies a line has to render it, not lose it.
     let allText = blocks.map { block in
         switch block {
-        case .heading(_, let text), .paragraph(let text), .code(_, let text): return text
+        case .heading(_, let text), .paragraph(let text), .code(_, let text), .math(let text): return text
         case .bullets(let items), .quote(let items): return items.joined(separator: "\n")
         case .numbered(let items): return items.map(\.text).joined(separator: "\n")
         case .table(let rows, _): return rows.joined(separator: [" "]).joined(separator: "\n")

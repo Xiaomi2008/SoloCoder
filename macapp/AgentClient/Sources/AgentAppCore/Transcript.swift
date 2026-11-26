@@ -1173,6 +1173,8 @@ public struct Transcript: Equatable, Sendable {
             let (t, d) = cut(text); return (.heading(level: level, text: t), d)
         case .code(let language, let text):
             let (t, d) = cut(text); return (.code(language: language, text: t), d)
+        case .math(let latex):
+            let (t, d) = cut(latex); return (.math(t), d)
         case .bullets(let items):
             let (k, d) = cutItems(items); return (.bullets(k), d)
         case .numbered(let items):

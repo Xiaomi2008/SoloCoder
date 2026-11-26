@@ -51,6 +51,7 @@ struct BlocksView: View {
 
 struct BlockView: View {
     let block: MarkdownBlock
+    @Environment(\.zoom) private var zoom
 
     // `body` in the type's own declaration: the result-builder transform is not
     // applied to a `body` in an extension, and a `switch` body in one fails with
@@ -89,17 +90,66 @@ struct BlockView: View {
             TableView(rows: rows, alignment: alignment)
         case .rule:
             Divider()
+        case .math(let latex):
+            FormulaBlockView(latex: latex)
         }
     }
 
     @ViewBuilder
     private func inlineText(_ text: String) -> some View {
-        markdownText(text)
+        markdownText(text, zoom: zoom)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// A run of inline markdown — `**bold**`, `` `code` ``, a link — as a `Text`.
+/// A display formula, centred on its own line, and never wider than the column:
+/// a long one is drawn smaller rather than pushing the answer sideways. The LaTeX
+/// as written when SwiftMath cannot parse it.
+struct FormulaBlockView: View {
+    let latex: String
+    @Environment(\.zoom) private var zoom
+
+    var body: some View {
+        Group {
+            if let typeset = Formula.typeset(latex, size: bodySize * zoom, display: true) {
+                Image(nsImage: typeset.template)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: typeset.image.size.width)
+            } else {
+                Text(verbatim: "\\[\(latex)\\]").zoomFont(.system(.body, design: .monospaced))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+/// The point size of `.body`, which formulas are typeset to match.
+var bodySize: CGFloat { NSFont.preferredFont(forTextStyle: .body).pointSize }
+
+/// A run of inline markdown — `**bold**`, `` `code` ``, a link — as a `Text`,
+/// with its formulas typeset in it, on the text's baseline.
+///
+/// `zoom` sizes the formulas: they are images, and the `zoomFont` a caller puts
+/// on the result reaches only the text.
+@MainActor
+func markdownText(_ text: String, zoom: CGFloat = 1) -> Text {
+    let runs = Markdown.inlineRuns(text)
+    guard runs != [.text(text)] else { return markup(text) }
+    return runs.reduce(Text(verbatim: "")) { line, run in
+        switch run {
+        case .text(let piece):
+            return line + markup(piece)
+        case .math(let latex):
+            guard let typeset = Formula.typeset(latex, size: bodySize * zoom, display: false) else {
+                return line + Text(verbatim: "\\(\(latex)\\)").monospaced()
+            }
+            return line + Text(Image(nsImage: typeset.template)).baselineOffset(-typeset.descent)
+        }
+    }
+}
+
+/// Inline markdown as a `Text`.
 ///
 /// Falls back to the literal string when the system parser refuses it: it refuses
 /// on malformed markup, and the answer is the product, so the fallback shows the
@@ -107,7 +157,7 @@ struct BlockView: View {
 ///
 /// Not `Text(.init(text))`, which is the usual idiom and is not this: that
 /// resolves to `LocalizedStringKey`, which does no markdown at all.
-func markdownText(_ text: String) -> Text {
+private func markup(_ text: String) -> Text {
     if let attributed = try? AttributedString(
         markdown: text,
         options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -120,6 +170,7 @@ func markdownText(_ text: String) -> Text {
 struct HeadingView: View {
     let level: Int
     let text: String
+    @Environment(\.zoom) private var zoom
 
     var body: some View {
         Group {
@@ -138,7 +189,7 @@ struct HeadingView: View {
     }
 
     private func styled(_ font: ZoomFont) -> some View {
-        markdownText(text).zoomFont(font)
+        markdownText(text, zoom: zoom).zoomFont(font)
     }
 }
 
@@ -182,6 +233,7 @@ struct CodeView: View {
 struct LabeledItemView: View {
     let label: String
     let text: String
+    @Environment(\.zoom) private var zoom
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -189,7 +241,7 @@ struct LabeledItemView: View {
                 .zoomFont(.body)
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 16, alignment: .trailing)
-            markdownText(text)
+            markdownText(text, zoom: zoom)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -220,6 +272,7 @@ struct LabeledItemView: View {
 struct TableView: View {
     let rows: [[String]]
     let alignment: [ColumnAlignment]
+    @Environment(\.zoom) private var zoom
 
     /// How wide one cell may get before it wraps. Four of these plus the spacing
     /// fill the 760 pt reading column, which is the widest table a model writes
@@ -231,7 +284,7 @@ struct TableView: View {
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 GridRow {
                     ForEach(Array(row.enumerated()), id: \.offset) { column, cell in
-                        markdownText(cell)
+                        markdownText(cell, zoom: zoom)
                             .fontWeight(index == 0 ? .semibold : .regular)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: Self.cellCap, alignment: Alignment(horizontal: align(column), vertical: .top))

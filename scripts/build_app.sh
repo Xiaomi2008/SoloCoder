@@ -67,6 +67,18 @@ copy_app_icon() {
     cp "$out/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 }
 
+# SwiftPM's resource bundles (SwiftMath's math fonts), where `Bundle.module` looks
+# in an app: `Contents/Resources`. Built beside the binary, they are not in the
+# bundle unless copied, and a missing one is a crash on the first formula.
+copy_app_resources() {
+    local bundle
+    for bundle in "$PKG/.build/release/"*.bundle; do
+        [[ -d "$bundle" ]] || continue
+        rm -rf "$APP/Contents/Resources/$(basename "$bundle")"
+        cp -R "$bundle" "$APP/Contents/Resources/"
+    done
+}
+
 # The project's own source, into the bundle: small, and the thing most likely to
 # be stale after a Python edit. Byte-compiled with the bundle's interpreter, so
 # the magic number matches what will run it.
@@ -110,6 +122,7 @@ while [[ $# -gt 0 ]]; do
             copy_app_source
             [[ -f "$APP/Contents/MacOS/SoloCoder" ]] || { echo "no bundle to update; run without --binary first" >&2; exit 1; }
             cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
+            copy_app_resources
             copy_app_icon
             # A bundle built before the icon existed has no key naming it.
             /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$APP/Contents/Info.plist" >/dev/null 2>&1 ||
@@ -161,6 +174,7 @@ cp "$PKG/.build/release/solocoder" "$APP/Contents/MacOS/SoloCoder"
 # makes the tree relocatable.
 cp -R "$PY_DIR" "$APP/Contents/Resources/sidecar/python"
 copy_app_source
+copy_app_resources
 copy_app_icon
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
