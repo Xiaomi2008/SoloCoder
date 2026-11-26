@@ -17,6 +17,23 @@ from openagent.providers import (
 )
 
 
+#: The header a local server keeps a conversation's slot by (basalt, and load
+#: balancers in front of llama.cpp). Without it basalt guesses the slot from
+#: the prompt, and a compacted history matches none and is read again in full.
+SESSION_HEADER = "x-session-id"
+
+
+def session_headers(kwargs: dict[str, Any]) -> dict[str, str] | None:
+    """Take the runner's ``session_id`` out of ``kwargs``, as ``extra_headers``.
+
+    The runner sends it on every turn; an API that has no such field must not
+    see it, so every adapter pops it, and the SDK-based ones send it on as a
+    header, which a server that does not know it ignores.
+    """
+    session_id = kwargs.pop("session_id", None)
+    return {SESSION_HEADER: session_id} if session_id else None
+
+
 class BaseProvider(ABC):
     def __init__(self, model: str, api_key: str | None = None, **kwargs: Any) -> None:
         self.model = model

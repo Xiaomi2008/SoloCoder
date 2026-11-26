@@ -188,8 +188,13 @@ class AgentRunner:
         device_lock: asyncio.Lock | None = None,
         vision: bool = True,
         video: bool = False,
+        session_id: str | None = None,
     ) -> None:
         self.provider = provider
+        #: Sent with every request, so a local server (basalt) runs each turn
+        #: in the slot that holds this conversation, not the one whose prompt
+        #: looks closest. None: the server matches by prompt alone.
+        self.session_id = session_id
         # `session or Session(...)` is a trap here: Session defines __len__, so
         # a brand-new empty session is falsy and the caller's session would be
         # silently replaced — the service would then save an empty conversation
@@ -847,11 +852,7 @@ class AgentRunner:
                     summary_type="detailed",
                     keep_tokens=keep_tokens or int(settings.max_context_tokens * COMPACTION_KEEP_FRACTION),
                     tools=tool_defs,
-                    chat_kwargs=(
-                        {"reasoning_effort": self.reasoning_effort}
-                        if self.reasoning_effort
-                        else {}
-                    ),
+                    chat_kwargs=self._session_kwargs(),
                     is_prompt=is_user_prompt,
                     max_request_tokens=settings.max_context_tokens,
                 )
@@ -1014,13 +1015,24 @@ class AgentRunner:
         The image dominates the context, and an unbounded reply on a local
         model stalls the run for minutes.
         """
-        kwargs = dict(base_kwargs)
-        if self.reasoning_effort:
-            kwargs.setdefault("reasoning_effort", self.reasoning_effort)
+        kwargs = {**self._session_kwargs(), **base_kwargs}
         if screenshot_followup_added:
             kwargs["max_tokens"] = min(
                 kwargs.get("max_tokens", 8192), self.SCREENSHOT_FOLLOWUP_MAX_TOKENS
             )
+        return kwargs
+
+    def _session_kwargs(self) -> dict[str, Any]:
+        """What every request of this run carries: turns and compaction's summary alike.
+
+        The summary is this conversation plus one message, so on basalt it reads
+        the history from the same slot rather than from scratch.
+        """
+        kwargs: dict[str, Any] = {}
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        if self.session_id:
+            kwargs["session_id"] = self.session_id
         return kwargs
 
 

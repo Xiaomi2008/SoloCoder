@@ -18,7 +18,7 @@ from openagent.core.types import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from openagent.provider.base import BaseProvider
+from openagent.provider.base import BaseProvider, session_headers
 from openagent.provider.converter import MessageConverterMixin
 from openagent.providers.events import (
     CallClock,
@@ -305,6 +305,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         **kwargs: Any,
     ) -> Message:
         retryable = get_provider_retryable_exceptions("openai")
+        headers = session_headers(kwargs)
 
         @with_retry(max_retries=self._max_retries, retryable_exceptions=retryable)
         async def _call() -> Message:
@@ -317,6 +318,8 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
             }
             if tools:
                 api_kwargs["tools"] = self.convert_tools(tools)
+            if headers:
+                api_kwargs["extra_headers"] = headers
             response = await self._client.chat.completions.create(**api_kwargs)
             return self.convert_response(response)
 
@@ -330,6 +333,7 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         **kwargs: Any,
     ) -> AsyncIterator[ProviderStreamEvent]:
         """Stream provider events from OpenAI text responses."""
+        headers = session_headers(kwargs)
         converted = self.convert_messages(messages, system_prompt)
         api_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -341,6 +345,8 @@ class OpenAIProvider(OpenAIConverterMixin, BaseProvider):
         }
         if tools:
             api_kwargs["tools"] = self.convert_tools(tools)
+        if headers:
+            api_kwargs["extra_headers"] = headers
 
         fallback_message_id = f"msg_{uuid.uuid4().hex[:24]}"
         message_id: str | None = None

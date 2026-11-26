@@ -610,6 +610,26 @@ async def test_reasoning_effort_reaches_every_provider_turn():
     assert all(c["kwargs"].get("reasoning_effort") == "none" for c in provider.calls)
 
 
+async def test_session_id_reaches_every_provider_turn():
+    """basalt runs a turn in the slot its session's conversation sits in; a turn
+    without the id is placed by prompt alone, and a compacted history is read
+    again from scratch."""
+    registry, _ = scoped_registry()
+    provider = ScriptedStreamProvider(
+        [tool_turn("touch", {"name": "note.txt"}), text_turn("done")]
+    )
+    runner = AgentRunner(provider, tools=registry, session_id="sess-1")
+
+    await collect(runner)
+
+    assert len(provider.calls) == 2
+    assert all(c["kwargs"].get("session_id") == "sess-1" for c in provider.calls)
+
+    anonymous = ScriptedStreamProvider([text_turn("done")])
+    await collect(AgentRunner(anonymous))
+    assert "session_id" not in anonymous.calls[0]["kwargs"]
+
+
 async def test_run_helper_returns_the_result_and_raises_on_failure():
     ok = AgentRunner(ScriptedStreamProvider([text_turn("fine")]))
     assert (await ok.run("go")).output_text == "fine"

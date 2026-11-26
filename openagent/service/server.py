@@ -722,6 +722,7 @@ class AgentService:
                 reasoning_effort=reasoning_effort,
                 context_window=ref.caps.context_window or None,
                 max_output_tokens=ref.caps.max_output_tokens or None,
+                session_id=session_id,
             )
             run = _Run(
                 run_id=run_id,
